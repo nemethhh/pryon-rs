@@ -1,7 +1,11 @@
 #[cfg(all(pryon_neon, target_arch = "arm"))]
 mod armv7;
-#[cfg(any(test, not(all(pryon_neon, target_arch = "arm"))))]
+#[cfg_attr(all(pryon_neon, target_arch = "arm", not(test)), allow(dead_code))]
 mod portable;
+
+/// `out[r] = Σ_c w[r·cols + c]·q[c]` for every `r < out.len()`; `w` is row-major, `q.len() >= cols`.
+// portable on every target until the NEON twin lands
+pub(crate) use portable::dot_i8_rows;
 
 /// `out[r] = Σ_c W[r][c] k[c]` over `c < stride` for weights stored by `store_weight` in the `block_index` layout;
 /// `out.len()` is a multiple of 4, `w.len() == out.len() * stride`, `stride` a multiple of 8, `k.len() >= stride`.
@@ -89,6 +93,22 @@ mod tests {
             let want: i32 = (0..stride).map(|c| load_weight(w[block_index(r, c, stride)]) as i32 * k[c] as i32).sum();
             assert_eq!(o, want, "row {r}");
         }
+    }
+
+    #[test]
+    fn dot_i8_rows_each_row() {
+        let (rows, cols) = (5, 37);
+        let w: Vec<i8> = (0..rows * cols).map(|i| ((i * 37) % 256) as u8 as i8).collect();
+        let q: Vec<i8> = (0..cols).map(|i| ((i * 91) % 128) as i8).collect();
+        let mut out = [7i32; 5];
+        super::dot_i8_rows(&w, cols, &q, &mut out);
+        for (r, &o) in out.iter().enumerate() {
+            let want: i32 = (0..cols).map(|c| w[r * cols + c] as i32 * q[c] as i32).sum();
+            assert_eq!(o, want, "row {r}");
+        }
+        let mut out = [0i32; 2];
+        super::dot_i8_rows(&[-128; 2880], 1440, &[127; 1440], &mut out);
+        assert_eq!(out, [-128 * 127 * 1440; 2]);
     }
 
     #[test]

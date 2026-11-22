@@ -33,6 +33,7 @@ pub enum AttrValue {
     Str(Vec<u8>),
     Ints(Vec<i64>),
     Floats(Vec<f32>),
+    Strs(Vec<Vec<u8>>),
     Tensor(TensorProto),
     /// Any other attribute type, by its `AttributeProto.type` number.
     Other(i32),
@@ -259,7 +260,7 @@ fn parse_attr(b: &[u8]) -> Result<(String, AttrValue), String> {
     let mut name = String::new();
     let mut ty = 0i32;
     let (mut fl, mut i, mut s, mut t) = (0f32, 0i64, Vec::new(), None);
-    let (mut floats, mut ints) = (Vec::new(), Vec::new());
+    let (mut floats, mut ints, mut strs) = (Vec::new(), Vec::new(), Vec::new());
     let mut seen = 0u32; // bit per value field, to infer a missing type
     fields(b, |f, v| {
         match f {
@@ -289,6 +290,10 @@ fn parse_attr(b: &[u8]) -> Result<(String, AttrValue), String> {
                 push_ints(&mut ints, &v)?;
                 seen |= 1 << 7;
             }
+            9 => {
+                strs.push(v.len()?.to_vec());
+                seen |= 1 << 8;
+            }
             20 => ty = v.varint()? as i32,
             _ => {}
         }
@@ -303,6 +308,7 @@ fn parse_attr(b: &[u8]) -> Result<(String, AttrValue), String> {
             5 => 5,
             6 => 6,
             7 => 7,
+            8 => 8,
             _ => 0,
         };
     }
@@ -313,6 +319,7 @@ fn parse_attr(b: &[u8]) -> Result<(String, AttrValue), String> {
         4 => AttrValue::Tensor(t.ok_or_else(|| format!("attribute {name}: tensor missing"))?),
         6 => AttrValue::Floats(floats),
         7 => AttrValue::Ints(ints),
+        8 => AttrValue::Strs(strs),
         o => AttrValue::Other(o),
     };
     Ok((name, val))
@@ -428,6 +435,7 @@ mod tests {
                     ("e", Attr::Floats(vec![0.5, 2.0])),
                     ("f", Attr::Tensor(vec![2], vec![1.0, 2.0])),
                     ("g", Attr::Graph),
+                    ("h", Attr::Strs(vec!["Sigmoid".into(), "Tanh".into()])),
                 ],
             )
             .build()
@@ -464,6 +472,7 @@ mod tests {
         let AttrValue::Tensor(t) = a(5).1 else { panic!("tensor attr") };
         assert_eq!((&t.dims, &t.data), (&vec![2], &raw(&[1.0, 2.0])));
         assert_eq!(a(6), ("g", &AttrValue::Other(5)));
+        assert_eq!(a(7), ("h", &AttrValue::Strs(vec![b"Sigmoid".to_vec(), b"Tanh".to_vec()])));
     }
 
     #[test]

@@ -14,6 +14,7 @@ pub enum Attr {
     Float(f32),
     Floats(Vec<f32>),
     Str(String),
+    Strs(Vec<String>),
     /// f32 tensor: dims and raw-encoded data.
     Tensor(Vec<i64>, Vec<f32>),
     /// A subgraph (empty); readers report it as an unsupported attribute type.
@@ -120,6 +121,12 @@ fn attribute(name: &str, a: &Attr) -> Vec<u8> {
         Attr::Ints(v) => {
             put_packed(&mut b, 8, v.iter().copied());
             7
+        }
+        Attr::Strs(v) => {
+            for s in v {
+                put_bytes(&mut b, 9, s.as_bytes());
+            }
+            8
         }
     };
     put_int(&mut b, 20, ty);

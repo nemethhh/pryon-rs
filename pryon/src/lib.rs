@@ -1,6 +1,7 @@
 //! Bit-exact reimplementation of libpryon's acoustic event (Alexa Guard) detector: see [`SoundDetector`].
 pub mod cmn;
 pub mod config;
+mod cpunk;
 pub mod error;
 pub mod lfbe;
 mod kernels;

@@ -25,3 +25,9 @@ pub(crate) fn dequant_rows(acc: &[i32], [rinv, off, sx]: [f32; 3], rs: &[f32], b
         *yr = bias[r] + (*yr + t);
     }
 }
+
+pub(crate) fn dot_i8_rows(w: &[i8], cols: usize, q: &[i8], out: &mut [i32]) {
+    for (row, o) in w.chunks_exact(cols).zip(out.iter_mut()) {
+        *o = row.iter().zip(&q[..cols]).map(|(&a, &b)| i32::from(a) * i32::from(b)).sum();
+    }
+}

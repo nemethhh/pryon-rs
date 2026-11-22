@@ -2,6 +2,7 @@
 //! returns a runtime [`Op`] holding whatever it precomputed at load.
 
 mod elementwise;
+mod hybrid;
 mod reduce;
 mod shape;
 
@@ -35,6 +36,9 @@ pub(crate) static OPS: &[(&str, BuildFn)] = &[
     ("Cast", shape::cast),
     ("Concat", shape::concat),
     ("Gather", shape::gather),
+    ("HybridConv", hybrid::hybrid_conv),
+    ("HybridGemm", hybrid::hybrid_gemm),
+    ("HybridLSTM", hybrid::hybrid_lstm),
     ("Mul", elementwise::binary::<elementwise::Mul>),
     ("MaxPool", reduce::max_pool),
     ("Neg", elementwise::unary::<elementwise::Neg>),
@@ -163,6 +167,14 @@ impl Attrs {
             None => Ok(None),
             Some(AttrValue::Str(v)) => Ok(Some(String::from_utf8_lossy(&v).into_owned())),
             Some(_) => Err(self.wrong(name, "a string")),
+        }
+    }
+
+    pub fn strings(&mut self, name: &str) -> Result<Option<Vec<String>>, String> {
+        match self.take(name) {
+            None => Ok(None),
+            Some(AttrValue::Strs(v)) => Ok(Some(v.iter().map(|s| String::from_utf8_lossy(s).into_owned()).collect())),
+            Some(_) => Err(self.wrong(name, "a list of strings")),
         }
     }
 
