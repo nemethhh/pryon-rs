@@ -8,13 +8,12 @@ use super::kwcfg::{ClassifierSpec, RestartSpec, SpotterSpec};
 use super::pipeline::{LoadedSet, StepOut};
 use super::{Detection, DetectionKind};
 use crate::Error;
-use classifier::{aggregate, weights_exact, Column, Entry, Smoother, Tracker, Word};
+use classifier::{aggregate, aggregator, Column, Entry, Exp, Smoother, Tracker, Word};
 use machine::Machine;
 use std::collections::VecDeque;
 use std::path::Path;
 
-/// Samples per LFBE frame (pinned 10 ms shift at 16 kHz).
-const FRAME_SAMPLES: u64 = 160;
+const FRAME_SAMPLES: u64 = crate::lfbe::HOP as u64;
 /// Frame shift in milliseconds (pinned).
 const FRAME_MS: u32 = 10;
 /// libpryon's preroll the keyword start may reach back to (predicted_index_calculator.cpp).
@@ -78,7 +77,7 @@ enum Scorer {
     Single { col: Column, se: Column, smoother: Smoother },
     /// KeywordMultiWordSpotter: word components under a weighted geometric average; the start is the first
     /// component's best entry's.
-    Words(Vec<Word>),
+    Words { words: Vec<Word>, exps: Vec<Exp>, inv: Exp },
 }
 
 #[derive(Debug)]
@@ -101,8 +100,7 @@ struct Spot {
     prev: f32,
     /// The verifier of a primary, the primary of a verifier.
     sibling: Option<usize>,
-    /// The spotter's frame count: libpryon's enable copies the orchestra's count into it, so one enabled by an
-    /// earlier spotter's accept and then run in the same frame stays one frame ahead.
+    /// Own frame count: one ahead of the stream if enabled and then run in the same frame (0x9bf658).
     own: u64,
 }
 
@@ -142,19 +140,17 @@ impl Spot {
                 let (score, at) = smoother.score(col, values, t);
                 Cand { score, start: start_frame(n, cap, se.at(values, t, at), own) }
             }
-            Scorer::Words(words) => {
+            Scorer::Words { words, exps, inv } => {
                 let mut best = [0.0f32; MAX_WORDS];
-                let mut weights = [0.0f32; MAX_WORDS];
                 for (k, w) in words.iter_mut().enumerate() {
                     let score = w.decay.score(&w.col, values, t).0;
                     let start = start_frame(n, cap, w.se.get(values, 0), own);
                     w.track.push(Entry { frame: own, score, start });
                     best[k] = w.track.max().map_or(0.0, |e| e.score);
-                    weights[k] = w.weight;
                 }
                 let k = words.len();
                 let start = words[0].track.max().map_or(1, |e| e.start);
-                Cand { score: aggregate(&best[..k], &weights[..k]), start }
+                Cand { score: aggregate(&best[..k], exps, *inv), start }
             }
         }
     }
@@ -164,7 +160,7 @@ impl Spot {
         self.state = State::Idle;
         match &mut self.scorer {
             Scorer::Single { smoother, .. } => smoother.reset(),
-            Scorer::Words(words) => {
+            Scorer::Words { words, .. } => {
                 for w in words {
                     w.decay.reset();
                     w.track.reset();
@@ -238,12 +234,12 @@ impl Orchestra {
             };
             let scorer = match &s.classifier {
                 ClassifierSpec::WeightedGeometricAverage { weights } => {
-                    if !weights_exact(weights) {
+                    let Some((exps, inv)) = aggregator(weights) else {
                         let w = format!("weights {weights:?} need a powf other than libm's exact cases (0, 0.5, 1, 2)");
                         return Err(what(w));
-                    }
+                    };
                     let mut words = Vec::new();
-                    for ((c, &rate), &weight) in s.components.iter().zip(&s.smoothers).zip(weights) {
+                    for (c, &rate) in s.components.iter().zip(&s.smoothers) {
                         let col = column(s, &c.component, c.class)?;
                         let Some(se_name) = &c.start_end else {
                             return Err(what("no keyword-start-end-component".into()));
@@ -255,9 +251,9 @@ impl Orchestra {
                         }
                         let decay = Smoother::Decay { rate, state: 0.0 };
                         let track = Tracker::new(c.history.unwrap_or(1));
-                        words.push(Word { col, se, weight, decay, track });
+                        words.push(Word { col, se, decay, track });
                     }
-                    Scorer::Words(words)
+                    Scorer::Words { words, exps, inv }
                 }
                 c => {
                     let smoother = match *c {
@@ -538,9 +534,7 @@ impl Orchestra {
         }
     }
 
-    /// An accept moves the machine and checks the restart trigger: its keyword's accepts and near misses within the
-    /// span (Defensively restarting ... "Accept count: 29, NearMiss count: 1"). libpryon measures the span on the
-    /// wall clock, the engine on the stream (equal in real time).
+    /// The restart span runs on stream time here, on the wall clock in libpryon (equal in real time).
     fn accepted(&mut self, keyword: usize, f: u64) {
         let enabled = self.machine.on_accept(keyword);
         self.enable(enabled, f);

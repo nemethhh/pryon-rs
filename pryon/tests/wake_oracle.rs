@@ -4,10 +4,9 @@ use pryon::wake::{load_set, Detection, DetectionKind, Spotter, SpotterModel, Spo
 use pryon_testkit::compare::{
     compare as compare_events, oracle_cache_key, pad_clip, pushed, Diff, Ev, Limits, Tally, LEAD_MS, TAIL_MS,
 };
-use pryon_testkit::oracle::{parse_wake, OracleEvent, OracleKind};
+use pryon_testkit::oracle::{parse_wake, OracleCmd, OracleEvent, OracleKind};
 use pryon_testkit::wakeset::{write_davs_set, write_fw_set, WakeSetOpts};
 use pryon_testkit::{synth, Clip, TempDir};
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -261,10 +260,41 @@ fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> 
     out.into_inner().unwrap().into_iter().map(Option::unwrap).collect()
 }
 
-/// Rust against the oracle on every corpus clip, padded as `pryon-cli validate` pads them; the oracle outputs are
-/// validate's cache, `<corpus>/../validate-v2/<checksum>/<key>.txt` (no commands, -x 1). Every oracle accept must
-/// pair, except after a firmware decoder restart: the firmware oracle then scores nothing for ~1.7 s again (its
-/// unexplained start gate, which the lead padding covers only at the clip start), so those are printed.
+/// Firmware oracle's unscored frames after (re)start; path-dependent (174 for another copy), so not reproduced.
+const FW_GATE_FRAMES: u64 = 168;
+
+/// Known begin differences: 317 truncates a frame earlier; the firmware ones follow >= 1e-3 score differences.
+const BEGIN_EXCEPTIONS: &[(&str, &str)] = &[
+    ("alexa", "alexa_real/picovoice_real_alexa_real_317"),
+    ("fw", "alexa_real/picovoice_real_alexa_real_322"),
+    ("fw", "tts_stop/amy-medium-alexa-gap0600-stop"),
+    ("fw", "tts_stop/lessac-medium-alexa-gap0600-stop"),
+];
+
+/// A `pryon-cli validate` pass: clip-sample commands and the corpus groups it ran on (`local/task12/final.sh`).
+struct Pass {
+    name: &'static str,
+    props: &'static [(u64, &'static str, i32)],
+    ends: &'static [u64],
+    groups: &'static [&'static str],
+}
+
+const PASSES: &[Pass] = &[
+    Pass { name: "base", props: &[], ends: &[], groups: &[] },
+    Pass {
+        name: "AlarmState=1",
+        props: &[(0, "AlarmState", 1)],
+        ends: &[],
+        groups: &["alexa_real", "tts_alexa", "tts_stop", "tts_disney"],
+    },
+    Pass { name: "AudioPlayerState=1@8000", props: &[(8000, "AudioPlayerState", 1)], ends: &[], groups: &["alexa_real"] },
+    Pass { name: "-e 8000", props: &[], ends: &[8000], groups: &["alexa_real"] },
+    Pass { name: "-e 28000", props: &[], ends: &[28000], groups: &["tts_stop", "tts_disney"] },
+];
+
+/// Every validate pass against its cached oracle outputs, `<corpus>/../validate-v2/<checksum>/<key>.txt`: kind, begin
+/// and end equal, nothing one-sided. Firmware skips the gate (+ a lock period) after a session end and everything
+/// after the oracle's first restart, where the gate-hidden accepts make the restart points part.
 #[test]
 fn oracle_corpus_validate_cache() {
     let Some(root) = env_dir("PRYON_WAKE_CORPUS") else { return };
@@ -273,51 +303,70 @@ fn oracle_corpus_validate_cache() {
     assert!(!clips.is_empty(), "{}: no <group>/<clip>.raw", root.display());
     let cache = root.parent().unwrap().join("validate-v2");
     let lead = u64::from(LEAD_MS) * 16;
+    let shift = |at: u64| if at == 0 { 0 } else { at + lead };
     let mut failures = Vec::new();
-    for (name, dir) in sets {
-        let m = Arc::new(SpotterModel::load(&dir).unwrap());
-        let thr = thresholds(&dir);
+    for (name, dir) in &sets {
+        let m = Arc::new(SpotterModel::load(dir).unwrap());
+        let thr = thresholds(dir);
         let sum = m.checksum().to_string();
-        let results = par_map(&clips, |(group, clip, path)| {
-            let pcm = pad_clip(&read_clip(path), LEAD_MS, TAIL_MS);
-            let bytes: Vec<u8> = pcm.iter().flat_map(|x| x.to_le_bytes()).collect();
-            let key = oracle_cache_key(pryon_testkit::fnv1a64(&bytes), &[], 1.0);
-            let cached = cache.join(&sum).join(format!("{key:016x}.txt"));
-            let Ok(text) = std::fs::read_to_string(&cached) else { return None };
-            let mut oracle = parse_wake(&text).unwrap_or_else(|e| panic!("{}: {e}", cached.display()));
-            for e in &mut oracle {
-                (e.begin, e.end) = (e.begin.saturating_sub(lead), e.end.saturating_sub(lead));
+        let lock = load_set(dir).unwrap().spotters.iter().map(|s| u64::from(s.lock)).max().unwrap_or(0);
+        for pass in PASSES {
+            let mut oracle_cmds: Vec<OracleCmd> = Vec::new();
+            let mut cmds: Vec<Cmd> = Vec::new();
+            for &(at, n, v) in pass.props {
+                oracle_cmds.push(OracleCmd::Property { at: shift(at), name: n.into(), value: v });
+                cmds.push(Cmd::Prop(shift(at), n, v));
             }
-            assert_eq!(pushed(&text), Some(pcm.len()), "{}: the oracle was not fed the whole clip", cached.display());
-            let mut rust = spot(&m, &pcm, 1600);
-            for e in &mut rust {
-                (e.begin, e.end) = (e.begin.saturating_sub(lead), e.end.saturating_sub(lead));
+            for &at in pass.ends {
+                oracle_cmds.push(OracleCmd::SessionEnd { at: shift(at) });
+                cmds.push(Cmd::End(shift(at)));
             }
-            let mut diffs = Vec::new();
-            let t = compare(&oracle, &rust, &thr, &mut diffs);
-            let gated = name == "fw" && text.contains("\nrestart: ");
-            Some((group.clone(), clip.clone(), t, diffs, gated))
-        });
-        let missing = results.iter().filter(|r| r.is_none()).count();
-        println!("== {name} ({sum}): {} clips cached, {missing} without oracle output", clips.len() - missing);
-        let mut groups: BTreeMap<String, Tally> = BTreeMap::new();
-        for (group, clip, t, diffs, gated) in results.into_iter().flatten() {
-            groups.entry(group.clone()).or_default().add(&t);
-            if t.accepts_paired < t.accepts {
-                let what = format!("{name} {group}/{clip}: oracle accept unpaired\n  {}", diffs.join("\n  "));
-                if gated {
-                    println!("after a firmware restart: {what}");
-                } else {
-                    failures.push(what);
+            let chosen: Vec<_> = clips.iter().filter(|c| pass.groups.is_empty() || pass.groups.contains(&c.0.as_str())).collect();
+            let results = par_map(&chosen, |(group, clip, path)| {
+                let pcm = pad_clip(&read_clip(path), LEAD_MS, TAIL_MS);
+                let bytes: Vec<u8> = pcm.iter().flat_map(|x| x.to_le_bytes()).collect();
+                let key = oracle_cache_key(pryon_testkit::fnv1a64(&bytes), &oracle_cmds, 1.0);
+                let cached = cache.join(&sum).join(format!("{key:016x}.txt"));
+                let Ok(text) = std::fs::read_to_string(&cached) else { return None };
+                assert_eq!(pushed(&text), Some(pcm.len()), "{}: oracle not fed the whole clip", cached.display());
+                let mut oracle = parse_wake(&text).unwrap_or_else(|e| panic!("{}: {e}", cached.display()));
+                let mut rust = spot_cmds(&m, &pcm, &cmds);
+                let mut skipped = 0;
+                if *name == "fw" {
+                    let gate = (FW_GATE_FRAMES + lock) * 160;
+                    let first_restart = text.lines().find_map(|l| l.strip_prefix("restart: new decoder fed from sample "));
+                    let first_restart = first_restart.and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(u64::MAX);
+                    let keep = |end: u64| end < first_restart && !cmds.iter().any(|c| matches!(*c, Cmd::End(s) if end >= s && end <= s + gate));
+                    let n = oracle.len() + rust.len();
+                    oracle.retain(|e| keep(e.end));
+                    rust.retain(|e| keep(e.end));
+                    skipped = n - oracle.len() - rust.len();
+                }
+                for e in &mut oracle {
+                    (e.begin, e.end) = (e.begin.saturating_sub(lead), e.end.saturating_sub(lead));
+                }
+                for e in &mut rust {
+                    (e.begin, e.end) = (e.begin.saturating_sub(lead), e.end.saturating_sub(lead));
+                }
+                let mut diffs = Vec::new();
+                let t = compare(&oracle, &rust, &thr, &mut diffs);
+                Some((format!("{group}/{clip}"), t, diffs, skipped))
+            });
+            let missing = results.iter().filter(|r| r.is_none()).count();
+            let mut total = Tally::default();
+            let mut skipped = 0;
+            for (clip, t, diffs, s) in results.into_iter().flatten() {
+                total.add(&t);
+                skipped += s;
+                let begin_ok = t.begin_eq == t.kind_eq || BEGIN_EXCEPTIONS.contains(&(*name, clip.as_str()));
+                let n = t.oracle;
+                if t.oracle_only + t.engine_only > 0 || t.kind_eq != n || t.end_eq != n || !begin_ok {
+                    failures.push(format!("{name} [{}] {clip}:\n  {}", pass.name, diffs.join("\n  ")));
                 }
             }
+            println!("{name} [{}] ({missing} uncached, {skipped} firmware events not compared): {}", pass.name, total.line());
+            assert!(missing < chosen.len(), "{name} [{}]: nothing cached", pass.name);
         }
-        let mut total = Tally::default();
-        for (group, g) in &groups {
-            println!("{group:>14} {}", g.line());
-            total.add(g);
-        }
-        println!("{:>14} {}", "all", total.line());
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
@@ -674,9 +723,7 @@ fn stop_while_awake_matches_oracle() {
 
 const DISNEY_ACCEPT: &str = r#""accept-threshold": 0.45, "notify-threshold": 0.2"#;
 
-/// HEY_DISNEY at score ~0.17 (classes at (1 - 0.4) / 3) accepts and wakes the machine; STOP (0.4, decay 0.6)
-/// accepts only after it. At force 0.01 the HEY_DISNEY classes sit at 0.33 to an ulp, so which history entry is the
-/// maximum (and so the begin sample) follows network rounding: those probes wait for bit-exact scores.
+/// At force 0.4 (not 0.01, where the history maximum and begin follow ulp-level network noise).
 #[test]
 fn hey_disney_wakes() {
     let edits = [

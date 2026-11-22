@@ -181,17 +181,47 @@ impl Tracker {
     }
 }
 
-/// powf(x, y) for the exponents where bionic's powf (FreeBSD msun e_powf.c, Android 7.1) takes an exact special
-/// case: y = 0, 1, 2 and 0.5 (sqrtf for x >= +0). `None` for any other exponent.
-pub(crate) fn powf_exact(x: f32, y: f32) -> Option<f32> {
-    match y {
-        _ if y == 0.0 => Some(1.0),
-        _ if x == 1.0 => Some(1.0),
-        1.0 => Some(x),
-        2.0 => Some(x * x),
-        0.5 if x.to_bits() >> 31 == 0 => Some(x.sqrt()),
-        _ => None,
+/// An exponent bionic's powf (FreeBSD msun e_powf.c, Android 7.1) treats as an exact special case.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Exp {
+    Zero,
+    Half,
+    One,
+    Two,
+}
+
+impl Exp {
+    pub fn of(y: f32) -> Option<Exp> {
+        match y {
+            _ if y == 0.0 => Some(Exp::Zero),
+            0.5 => Some(Exp::Half),
+            1.0 => Some(Exp::One),
+            2.0 => Some(Exp::Two),
+            _ => None,
+        }
     }
+
+    /// msun's powf(x, y) in its check order.
+    pub fn powf(self, x: f32) -> f32 {
+        match self {
+            Exp::Zero => 1.0,
+            _ if x == 1.0 => 1.0,
+            _ if x.is_nan() => x,
+            Exp::One => x,
+            Exp::Two => x * x,
+            Exp::Half if x.to_bits() >> 31 == 0 => x.sqrt(),
+            // -0 and -inf take the |x| path; other negatives are NaN for a non-integer exponent
+            Exp::Half if x == 0.0 || x == f32::NEG_INFINITY => -x,
+            Exp::Half => f32::NAN,
+        }
+    }
+}
+
+/// WeightedGeometricAverageAggregator exponents: per weight, then 1 / (0 + w_0 + ...); `None` unless all are exact.
+pub(crate) fn aggregator(weights: &[f32]) -> Option<(Vec<Exp>, Exp)> {
+    let sum = weights.iter().fold(0.0f32, |a, &w| a + w);
+    let exps = weights.iter().map(|&w| Exp::of(w)).collect::<Option<Vec<_>>>()?;
+    Some((exps, Exp::of(1.0 / sum)?))
 }
 
 /// One word component of a multi-word spotter (0x9afa78): its class score through an exponential decay, then the
@@ -200,26 +230,14 @@ pub(crate) fn powf_exact(x: f32, y: f32) -> Option<f32> {
 pub(crate) struct Word {
     pub col: Column,
     pub se: Column,
-    pub weight: f32,
     pub decay: Smoother,
     pub track: Tracker,
 }
 
-/// WeightedGeometricAverageAggregator::score (0x9ab474): prod(powf(s_i, w_i)) from 1.0, then powf(prod, 1 / sum(w_i))
-/// with the weights summed from 0.0.
-pub(crate) fn aggregate(scores: &[f32], weights: &[f32]) -> f32 {
-    let (mut prod, mut sum) = (1.0f32, 0.0f32);
-    for (&s, &w) in scores.iter().zip(weights) {
-        prod *= powf_exact(s, w).expect("weights checked at load");
-        sum += w;
-    }
-    powf_exact(prod, 1.0 / sum).expect("weights checked at load")
-}
-
-/// Whether [`aggregate`] can run `weights` with exact powf special cases only.
-pub(crate) fn weights_exact(weights: &[f32]) -> bool {
-    let sum = weights.iter().fold(0.0f32, |a, &w| a + w);
-    weights.iter().all(|&w| powf_exact(0.5, w).is_some()) && sum > 0.0 && powf_exact(0.5, 1.0 / sum).is_some()
+/// WeightedGeometricAverageAggregator::score (0x9ab474): prod(powf(s_i, w_i)) from 1.0, then powf(prod, 1 / sum).
+pub(crate) fn aggregate(scores: &[f32], exps: &[Exp], inv: Exp) -> f32 {
+    let prod = scores.iter().zip(exps).fold(1.0f32, |p, (&s, e)| p * e.powf(s));
+    inv.powf(prod)
 }
 
 #[cfg(test)]
@@ -351,7 +369,8 @@ mod tests {
             let c1 = Column { class: 3, ..c };
             let s1 = d1.score(&c1, &vals, k as u64).0;
             h0.push(Entry { frame: 8 * (k as u64 + 1), score: s0, start: 1 });
-            got.push(aggregate(&[h0.max().unwrap().score, s1], &[1.0, 1.0]));
+            let (exps, inv) = aggregator(&[1.0, 1.0]).unwrap();
+            got.push(aggregate(&[h0.max().unwrap().score, s1], &exps, inv));
         }
         let (mut x1, mut m0) = (0.0f32, 0.0f32);
         let want: Vec<f32> = inputs
@@ -369,15 +388,20 @@ mod tests {
     #[test]
     fn powf_special_cases() {
         let x = 0.37f32;
-        assert_eq!(powf_exact(x, 1.0), Some(x));
-        assert_eq!(powf_exact(x, 2.0), Some(x * x));
-        assert_eq!(powf_exact(x, 0.5), Some(x.sqrt()));
-        assert_eq!(powf_exact(x, 0.0), Some(1.0));
-        assert_eq!(powf_exact(0.0, 0.5), Some(0.0));
-        assert_eq!(powf_exact(x, 0.25), None);
-        assert_eq!(powf_exact(x, -1.0), None);
-        assert_eq!(aggregate(&[0.25, 0.64], &[1.0, 1.0]), 0.4);
-        assert_eq!(aggregate(&[0.3], &[1.0]), 0.3);
+        let p = |y: f32, x: f32| Exp::of(y).unwrap().powf(x);
+        assert_eq!((p(1.0, x), p(2.0, x), p(0.5, x), p(0.0, x)), (x, x * x, x.sqrt(), 1.0));
+        assert_eq!((Exp::of(0.25), Exp::of(-1.0)), (None, None));
+        // msun beyond the scores' range: -0 -> +0, -inf -> +inf, NaN in -> NaN out, other negatives -> NaN
+        assert_eq!(p(0.5, -0.0).to_bits(), 0);
+        assert_eq!(p(0.5, f32::NEG_INFINITY), f32::INFINITY);
+        assert!(p(0.5, f32::NAN).is_nan() && p(1.0, f32::NAN).is_nan() && p(0.5, -0.5).is_nan());
+        assert_eq!((p(0.0, f32::NAN), p(0.5, 1.0)), (1.0, 1.0));
+        let (exps, inv) = aggregator(&[1.0, 1.0]).unwrap();
+        assert_eq!(aggregate(&[0.25, 0.64], &exps, inv), 0.4);
+        let (exps, inv) = aggregator(&[1.0]).unwrap();
+        assert_eq!(aggregate(&[0.3], &exps, inv), 0.3);
+        assert_eq!(aggregator(&[2.0, 2.0]), None, "1 / 4 is not a special case");
+        assert!(aggregator(&[2.0, 0.0]).is_some());
     }
 
     #[test]

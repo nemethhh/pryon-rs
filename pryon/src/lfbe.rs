@@ -7,8 +7,9 @@ use crate::num::sdot_vfp;
 
 pub const BINS: usize = 20;
 const MAX_BINS: usize = 128;
-const FL: usize = 400;
-const HOP: usize = 160;
+/// Samples per frame window (25 ms) and per frame shift (10 ms) at 16 kHz.
+pub(crate) const FL: usize = 400;
+pub(crate) const HOP: usize = 160;
 const N: usize = 512;
 const TW81: f32 = 0.70710678;
 const TW81N: f32 = -0.70710678;

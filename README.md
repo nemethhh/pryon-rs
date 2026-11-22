@@ -90,7 +90,12 @@ link it with the native libraries rustc lists for the target
   (`--speed 1`, the default) because libpryon's results depend on feed timing at higher speeds, `--jobs` clips at a
   time. Both engines get each clip between `--lead-ms` (default 2500) and `--tail-ms` (default 1000) of digital
   silence: the firmware oracle scores nothing in its first ~1.7 s, and libpryon reports an accept only ~120 ms after
-  the keyword ends, so not at the very end of a clip; events are printed in clip samples. `-p` sets a client
+  the keyword ends, so not at the very end of a clip; events are printed in clip samples. That firmware gate
+  (168 frames with the shipped model path, 174 with another; the same at any feed speed and host load) restarts
+  with every session end and decoder restart, and the engine does not reproduce it, its length not being a property
+  of the set: on the firmware set, events within the gate and a lock period after an `-e` differ, and after the
+  first restart of a clip the restart points (and with them the events) part, because the gate hides accepts the
+  engine counts toward the trigger. `-p` sets a client
   property and `-e` ends the session (`Spotter::reset`, libpryon's `PryonDecoder_SessionEnd`) before the given clip
   sample, in both engines. libpryon's probabilistic accept (a random accept of a near miss, drawn from a
   clock-seeded generator) is switched off for the oracle only: it runs a copy of the set whose
@@ -199,7 +204,8 @@ that fires on every step makes libpryon fall behind at `-x 1000`, and then the e
 `synth-variants/` and `synth-scripts/` are the same sets with single kw.cfg/op.cfg edits, client properties and
 session ends at given samples (the probes of the keyword rules, the operating-state machine, HEY_DISNEY's
 aggregator, the restart trigger); every one was run twice with identical events.
-In all wake fixtures the `META` lines keep only the `kw*` fields and the LSB-metadata flags.
+In all wake fixtures the `META` lines keep only the `kw*` fields, `activeKeywords`, `clientProperties` (which also
+carries libpryon's `PryonLastReceivedSampleIndex`) and the LSB-metadata flags.
 
 ## Third-party notices
 

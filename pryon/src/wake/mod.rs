@@ -89,9 +89,8 @@ pub struct Spotter {
     fed: u64,
 }
 
-/// A front-end frame completes once this many samples follow the last origin (25 ms window, 10 ms shift).
-const WINDOW: u64 = 400;
-const HOP: u64 = 160;
+const WINDOW: u64 = crate::lfbe::FL as u64;
+const HOP: u64 = crate::lfbe::HOP as u64;
 
 impl Spotter {
     pub fn new(model: Arc<SpotterModel>, _opts: SpotterOptions) -> Result<Spotter, Error> {

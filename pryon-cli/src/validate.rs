@@ -345,6 +345,15 @@ fn git_head() -> String {
         .map_or("unknown".into(), |o| String::from_utf8_lossy(&o.stdout).trim().to_string())
 }
 
+/// Removed on every return path.
+struct Scratch(PathBuf);
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 pub fn run(args: &[String]) -> Result<ExitCode, (bool, String)> {
     let a = parse_args(args).map_err(|e| (true, e))?;
     let model_dir = std::fs::canonicalize(&a.model).map_err(|e| (false, format!("{}: {e}", a.model.display())))?;
@@ -360,12 +369,12 @@ pub fn run(args: &[String]) -> Result<ExitCode, (bool, String)> {
         _ => None,
     };
     let checksum = model.checksum().to_string();
-    let scratch = std::env::temp_dir().join(format!("pryon-validate-{}", std::process::id()));
-    std::fs::create_dir_all(&scratch).map_err(|e| (false, e.to_string()))?;
-    let oracle_set = deterministic_set(&model_dir, &scratch.join("oracle-set")).map_err(|e| (false, format!("oracle set: {e}")))?;
-    let ctx = Ctx { args: &a, model: model.clone(), manifest: oracle_set.join("pryon.manifest"), limits, checksum: checksum.clone(), env, scratch: scratch.clone() };
+    let scratch = Scratch(std::env::temp_dir().join(format!("pryon-validate-{}", std::process::id())));
+    std::fs::create_dir_all(&scratch.0).map_err(|e| (false, e.to_string()))?;
+    let oracle_set = deterministic_set(&model_dir, &scratch.0.join("oracle-set")).map_err(|e| (false, format!("oracle set: {e}")))?;
+    let ctx = Ctx { args: &a, model: model.clone(), manifest: oracle_set.join("pryon.manifest"), limits, checksum: checksum.clone(), env, scratch: scratch.0.clone() };
     let results = par_map(a.jobs, &a.clips, |p| one_clip(&ctx, p));
-    let _ = std::fs::remove_dir_all(&scratch);
+    drop(scratch);
 
     let mut errors = 0usize;
     let mut totals: BTreeMap<String, Tally> = BTreeMap::new();

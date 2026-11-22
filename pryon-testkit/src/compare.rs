@@ -204,8 +204,7 @@ pub fn compare(oracle: &[OracleEvent], engine: &[Ev], limits: &Limits, exact: bo
     t
 }
 
-/// Oracle outputs depend on the harness and the oracle set: v2 = pryon_test continues after a restart, and the
-/// oracle runs `oracle::deterministic_set` (no probabilistic accept).
+/// v2: pryon_test goes on after a restart; the oracle runs `deterministic_set`.
 pub const ORACLE_CACHE_VERSION: u32 = 2;
 
 /// Cache key of one oracle run: the padded clip's FNV-1a, the commands and the feed speed.

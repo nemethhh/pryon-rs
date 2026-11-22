@@ -11,7 +11,7 @@ use std::sync::Arc;
 /// Stage outputs a set may expose; `push` hands them out from a stack array.
 const MAX_COMPONENTS: usize = 32;
 /// Samples per front-end push: keeps the LFBE buffer within its preallocated capacity.
-const HOP: usize = 160;
+const HOP: usize = crate::lfbe::HOP;
 
 /// One stage output, as the keyword rules address it.
 #[derive(Debug, Clone, PartialEq)]

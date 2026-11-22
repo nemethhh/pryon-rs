@@ -101,10 +101,7 @@ pub fn zero_probability(text: &str) -> (String, bool) {
     (out, changed)
 }
 
-/// The set the oracle should run for `set`: `set` itself, or, when a kw.cfg.json gives a nonzero
-/// probabilistic-accept-probability, a tree of symlinks under `work` with those values at 0. libpryon then always
-/// ends a probabilistic-accept window in a near miss (its draw is seeded from the clock), the only effect of the
-/// field (keyword_spotter.cpp, 0x9b5488).
+/// `set`, or a symlink copy under `work` with probabilistic-accept-probability 0: libpryon's draw is clock-seeded.
 pub fn deterministic_set(set: &Path, work: &Path) -> std::io::Result<PathBuf> {
     fn walk(src: &Path, dst: &Path, patch: &mut Vec<(PathBuf, String)>, links: &mut Vec<(PathBuf, PathBuf)>) -> std::io::Result<()> {
         for e in std::fs::read_dir(src)? {
