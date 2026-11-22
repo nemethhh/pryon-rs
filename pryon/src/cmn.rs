@@ -7,7 +7,6 @@ const SILENT_RUN_FLUSH: usize = 49;
 const FRAME: usize = 400;
 const HOP: usize = 160;
 const SILENT_ZEROS: usize = 200;
-const HISTORY: usize = 2 * FRAME;
 
 type Frame = [f32; 20];
 
@@ -100,7 +99,7 @@ fn sub(x: &Frame, m: &Frame) -> Frame {
 
 pub struct SilenceTracker {
     total: u64,
-    // Zero flags of the last HISTORY samples.
+    // Zero flags of the last FRAME samples.
     zeros: VecDeque<bool>,
 }
 
@@ -112,31 +111,28 @@ impl Default for SilenceTracker {
 
 impl SilenceTracker {
     pub fn new() -> Self {
-        SilenceTracker { total: 0, zeros: VecDeque::with_capacity(HISTORY + 1) }
+        SilenceTracker { total: 0, zeros: VecDeque::with_capacity(FRAME + 1) }
     }
 
-    pub fn push(&mut self, pcm: &[i16]) {
-        self.total += pcm.len() as u64;
-        // Only the last HISTORY samples can matter, so skip any older part of a long push.
-        let keep = pcm.len().min(HISTORY);
-        self.zeros.extend(pcm[pcm.len() - keep..].iter().map(|&s| s == 0));
-        while self.zeros.len() > HISTORY {
-            self.zeros.pop_front();
+    /// Appends one verdict per newly completed frame (frame f completes when sample 160f+399 has been pushed), in
+    /// frame order, for any chunk size. A frame is silent iff it has >= 200 contiguous zero samples inside its own
+    /// 400 samples.
+    pub fn push(&mut self, pcm: &[i16], out: &mut Vec<bool>) {
+        for &s in pcm {
+            if self.zeros.len() == FRAME {
+                self.zeros.pop_front();
+            }
+            self.zeros.push_back(s == 0);
+            self.total += 1;
+            if self.total >= FRAME as u64 && (self.total - FRAME as u64) % HOP as u64 == 0 {
+                out.push(self.window_silent());
+            }
         }
     }
 
-    /// frame f is silent iff it contains >= 200 contiguous zero samples inside its own 400 samples.
-    /// Answerable while 160f+400 <= samples pushed and 160f >= pushed - 800; otherwise false.
-    pub fn frame_silent(&self, f: u64) -> bool {
-        let start = f * HOP as u64;
-        let end = start + FRAME as u64;
-        let oldest = self.total - self.zeros.len() as u64;
-        if end > self.total || start < oldest {
-            return false;
-        }
-        let off = (start - oldest) as usize;
+    fn window_silent(&self) -> bool {
         let mut run = 0;
-        for &z in self.zeros.range(off..off + FRAME) {
+        for &z in &self.zeros {
             run = if z { run + 1 } else { 0 };
             if run >= SILENT_ZEROS {
                 return true;
@@ -232,7 +228,7 @@ mod tests {
 
     #[test]
     fn run49_flushes_raw() {
-        let mut frames: Vec<(Frame, bool)> = (0..10).map(|i| (fr(1.0 + i as f32), false)).collect();
+        let frames: Vec<(Frame, bool)> = (0..10).map(|i| (fr(1.0 + i as f32), false)).collect();
         let mut n = ChannelNorm::new();
         let mut out = Vec::new();
         for (t, (x, s)) in frames.iter().enumerate() {
@@ -257,7 +253,6 @@ mod tests {
         // 90 more non-silent frames complete the 100 non-silent sums (10 earlier + 90)
         for i in 0..90 {
             let x = fr(2.0 + i as f32);
-            frames.push((x, false));
             n.push(60 + i, &x, false, &mut out);
         }
         assert_eq!(out.len(), 90);
@@ -337,73 +332,62 @@ mod tests {
         v
     }
 
+    fn verdicts(pcm: &[i16], chunk: usize) -> Vec<bool> {
+        let mut t = SilenceTracker::new();
+        let mut out = Vec::new();
+        for c in pcm.chunks(chunk) {
+            t.push(c, &mut out);
+        }
+        out
+    }
+
+    fn brute(pcm: &[i16]) -> Vec<bool> {
+        let mut out = Vec::new();
+        let mut f = 0;
+        while 160 * f + 400 <= pcm.len() {
+            let (mut run, mut best) = (0, 0);
+            for &s in &pcm[160 * f..160 * f + 400] {
+                run = if s == 0 { run + 1 } else { 0 };
+                best = best.max(run);
+            }
+            out.push(best >= 200);
+            f += 1;
+        }
+        out
+    }
+
     #[test]
     fn silence_tracker_boundaries() {
-        let mut t = SilenceTracker::new();
-        t.push(&pcm_with_zero_run(400, 100, 199));
-        assert!(!t.frame_silent(0));
-        let mut t = SilenceTracker::new();
-        t.push(&pcm_with_zero_run(400, 100, 200));
-        assert!(t.frame_silent(0));
-        // not answerable before its samples have arrived
-        let mut t = SilenceTracker::new();
-        t.push(&vec![0i16; 399]);
-        assert!(!t.frame_silent(0));
-        t.push(&[0]);
-        assert!(t.frame_silent(0));
-
-        // zeros 100..460: frame 0 sees 300 (silent), frame 1 (160..560) sees 300 inside, frame 2 (320..720) sees 140
-        let mut t = SilenceTracker::new();
-        let mut pcm = vec![1i16; 720];
-        pcm[100..460].fill(0);
-        t.push(&pcm[..400]);
-        assert!(t.frame_silent(0));
-        t.push(&pcm[400..560]);
-        assert!(t.frame_silent(1));
-        t.push(&pcm[560..]);
-        assert!(!t.frame_silent(2));
+        assert_eq!(verdicts(&pcm_with_zero_run(400, 100, 199), 400), vec![false]);
+        assert_eq!(verdicts(&pcm_with_zero_run(400, 100, 200), 400), vec![true]);
+        // nothing is reported before the 400th sample
+        assert!(verdicts(&vec![0i16; 399], 399).is_empty());
+        assert_eq!(verdicts(&vec![0i16; 400], 1), vec![true]);
     }
 
     #[test]
     fn silence_tracker_run_started_in_previous_frame() {
-        // zeros 0..300; frame 1 (160..560) only has 140 of them
+        // zeros 100..460: frame 0 sees 300, frame 1 (160..560) sees 300, frame 2 (320..720) only 140
+        let mut pcm = vec![1i16; 720];
+        pcm[100..460].fill(0);
+        assert_eq!(verdicts(&pcm, 720), vec![true, true, false]);
+        // zeros 0..300: frame 1 (160..560) only has 140 of them
         let mut pcm = vec![1i16; 560];
         pcm[..300].fill(0);
-        let mut t = SilenceTracker::new();
-        t.push(&pcm);
-        assert!(t.frame_silent(0));
-        assert!(!t.frame_silent(1));
+        assert_eq!(verdicts(&pcm, 560), vec![true, false]);
     }
 
     #[test]
     fn silence_tracker_chunking_invariant() {
-        let mut pcm = vec![1i16; 3000];
+        let mut pcm = vec![1i16; 20_000];
         pcm[500..1100].fill(0);
-        let mut a = SilenceTracker::new();
-        let mut b = SilenceTracker::new();
-        let mut expect = Vec::new();
-        let mut got = Vec::new();
-        let mut f = 0u64;
-        for chunk in pcm.chunks(7) {
-            b.push(chunk);
-            while 160 * f + 400 <= b.total {
-                got.push(b.frame_silent(f));
-                f += 1;
-            }
+        pcm[3000..3199].fill(0);
+        pcm[9000..9200].fill(0);
+        pcm[12_000..16_000].fill(0);
+        let want = brute(&pcm);
+        assert!(want.iter().any(|&s| s) && want.iter().any(|&s| !s));
+        for chunk in [1, 159, 401, 5000, 20_000] {
+            assert_eq!(verdicts(&pcm, chunk), want, "chunk {chunk}");
         }
-        a.push(&pcm[..400]);
-        let mut fa = 0;
-        let mut pos = 400;
-        loop {
-            expect.push(a.frame_silent(fa));
-            fa += 1;
-            if pos + 160 > pcm.len() {
-                break;
-            }
-            a.push(&pcm[pos..pos + 160]);
-            pos += 160;
-        }
-        assert_eq!(got, expect);
-        assert!(got.iter().any(|&s| s));
     }
 }
