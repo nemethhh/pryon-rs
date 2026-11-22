@@ -1,0 +1,9 @@
+[package]
+name = "pryon-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+pryon = { path = "../pryon" }
+pryon-testkit = { path = "../pryon-testkit" }
