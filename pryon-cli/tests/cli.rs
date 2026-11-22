@@ -76,6 +76,19 @@ fn bench_streams_clip() {
 }
 
 #[test]
+fn bench_speed_paces_feeds() {
+    let (d, model, clip) = setup("speed");
+    // 25 s of audio at 40x real time: at least half a second of wall time.
+    let t = std::time::Instant::now();
+    let out = ok(&["bench", "-m", &model, "--speed", "40", &clip]);
+    assert!(t.elapsed().as_secs_f64() >= 0.5, "{out}");
+    assert_eq!(key(&out, "windows"), 2.0, "{out}");
+    let bad = Command::new(BIN).args(["bench", "-m", &model, "--speed", "0", &clip]).output().unwrap();
+    assert_eq!(bad.status.code(), Some(2));
+    let _ = std::fs::remove_dir_all(d);
+}
+
+#[test]
 fn rusage_reports_child() {
     let out = Command::new(BIN).args(["rusage", "--", "sh", "-c", "echo hi; exit 3"]).output().unwrap();
     assert_eq!(out.status.code(), Some(3));

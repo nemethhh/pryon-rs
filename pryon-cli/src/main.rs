@@ -10,7 +10,7 @@ const USAGE: &str = "usage:
   pryon-cli run -m DIR [-t a,b] [--bits] CLIP.raw
   pryon-cli synth NAME OUT.raw
   pryon-cli synth-model DIR [--threshold X]
-  pryon-cli bench -m DIR [--chunk N] CLIP.raw
+  pryon-cli bench -m DIR [--chunk N] [--speed X] CLIP.raw
   pryon-cli rusage -- CMD ARGS...";
 
 enum Fail {
@@ -65,6 +65,7 @@ struct Opts {
     bits: bool,
     chunk: Option<usize>,
     threshold: Option<f32>,
+    speed: Option<f64>,
     pos: Vec<String>,
 }
 
@@ -83,6 +84,10 @@ fn parse(args: &[String], allowed: &[&str]) -> Result<Opts, Fail> {
             "--chunk" => match val()?.parse::<usize>() {
                 Ok(n) if n > 0 => o.chunk = Some(n),
                 _ => return usage("--chunk needs a positive integer"),
+            },
+            "--speed" => match val()?.parse::<f64>() {
+                Ok(x) if x > 0.0 && x.is_finite() => o.speed = Some(x),
+                _ => return usage("--speed needs a positive number"),
             },
             "--threshold" => match val()?.parse::<f32>() {
                 Ok(x) => o.threshold = Some(x),
@@ -202,7 +207,7 @@ fn read_full(f: &mut std::fs::File, buf: &mut [u8]) -> std::io::Result<usize> {
 }
 
 fn cmd_bench(args: &[String]) -> Res {
-    let (o, clip) = run_setup(args, &["-m", "--chunk"])?;
+    let (o, clip) = run_setup(args, &["-m", "--chunk", "--speed"])?;
     let t0 = Instant::now();
     let mut det = load(o.model.as_ref().unwrap(), &[])?;
     let load_ms = t0.elapsed().as_secs_f64() * 1e3;
@@ -228,6 +233,10 @@ fn cmd_bench(args: &[String]) -> Res {
         let t = Instant::now();
         det.feed(&pcm, &mut wins);
         worst = worst.max(t.elapsed().as_secs_f64() * 1e6);
+        if let Some(x) = o.speed {
+            // Paced like aed_test -x, so both engines run under the same CPU frequency governor conditions.
+            std::thread::sleep(std::time::Duration::from_secs_f64(pcm.len() as f64 / 16000.0 / x));
+        }
         windows += wins.len();
         wins.clear();
         if n < bytes.len() {
