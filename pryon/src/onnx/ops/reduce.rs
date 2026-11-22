@@ -3,7 +3,7 @@
 use super::{arg, axes_of, axis, fold_numel, opt_arg, strides, Attrs, Built, Op, Value};
 use crate::num::exp_ps;
 use crate::onnx::proto::NodeProto;
-use crate::onnx::tensor::{numel, Data, DType, Tensor};
+use crate::onnx::tensor::{numel, Data, DType, Tensor, MAX_RANK};
 
 /// Folds when every input is a constant f32 tensor, otherwise stays a runtime op.
 fn finish(op: Box<dyn Op>, ins: &[Value], dims: Vec<usize>) -> Result<Built, String> {
@@ -120,11 +120,11 @@ struct Reduce<K> {
 impl<K: RedKind> Op for Reduce<K> {
     fn run(&self, ins: &[&[f32]], outs: &mut [&mut [f32]]) {
         outs[0].fill(K::INIT);
-        let mut idx = vec![0usize; self.dims.len()];
+        let mut idx = [0usize; MAX_RANK];
         let mut off = 0;
         for &x in ins[0] {
             outs[0][off] = K::step(outs[0][off], x);
-            for k in (0..idx.len()).rev() {
+            for k in (0..self.dims.len()).rev() {
                 idx[k] += 1;
                 off += self.ostride[k];
                 if idx[k] < self.dims[k] {
@@ -140,6 +140,9 @@ impl<K: RedKind> Op for Reduce<K> {
 pub(super) fn reduce<K: RedKind>(_: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -> Result<Built, String> {
     let x = float_arg(ins, 0)?;
     let dims = x.dims().to_vec();
+    if dims.len() > MAX_RANK {
+        return Err(format!("input of rank {}", dims.len()));
+    }
     let keep = a.int("keepdims")?.unwrap_or(1) != 0;
     if a.int("noop_with_empty_axes")?.unwrap_or(0) != 0 {
         return Err("noop_with_empty_axes set".into());

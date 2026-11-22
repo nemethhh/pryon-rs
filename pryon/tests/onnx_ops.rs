@@ -575,3 +575,39 @@ fn batchnorm_values() {
     let e = unsupported(load(t, &[("x", &[2, 2, 3])], &[]));
     assert!(e.contains("training_mode"), "{e}");
 }
+
+#[test]
+fn float_ops_fold_constants() {
+    let m = ModelBuilder::new(6, 13)
+        .input("x", F, &d(&[2]))
+        .output("y", F, &d(&[2]))
+        .init_f32("c", &[2, 2], &[1.0, 2.0, 3.0, 4.0])
+        .node("ReduceSum", &["c"], &["s"], &[("axes", Attr::Ints(vec![1])), ("keepdims", Attr::Int(0))])
+        .node("Softmax", &["c"], &["sm"], &[])
+        .node("ReduceMax", &["sm"], &["mx"], &[("keepdims", Attr::Int(0)), ("axes", Attr::Ints(vec![1]))])
+        .node("Add", &["x", "s"], &["t"], &[])
+        .node("Add", &["t", "mx"], &["y"], &[]);
+    let g = load(m, &[("x", &[2])], &[]).unwrap();
+    let (o, traced) = run(g, &[("x", &[10.0, 20.0])], &["y"]);
+    assert_eq!(traced, ["t", "y"]);
+    let mx = softmax_ref(&[1.0, 2.0])[1];
+    close(&o[0], &[13.0 + mx, 27.0 + mx], 1e-6);
+}
+
+#[test]
+fn extra_outputs_refused() {
+    let mp = ModelBuilder::new(6, 11)
+        .input("x", F, &d(&[1, 1, 4, 4]))
+        .output("y", F, &d(&[1, 1, 2, 2]))
+        .node_named("p", "MaxPool", &["x"], &["y", "idx"], &[("kernel_shape", Attr::Ints(vec![2, 2])), ("strides", Attr::Ints(vec![2, 2]))]);
+    let e = unsupported(load(mp, &[("x", &[1, 1, 4, 4])], &[]));
+    assert!(e.contains("MaxPool (node p) with 2 outputs"), "{e}");
+    let bn = ModelBuilder::new(6, 11)
+        .input("x", F, &d(&[1, 2]))
+        .output("y", F, &d(&[1, 2]))
+        .init_f32("g", &[2], &[1.0, 1.0])
+        .init_f32("b", &[2], &[0.0, 0.0])
+        .node_named("n", "BatchNormalization", &["x", "g", "b", "g", "g"], &["y", "m", "v"], &[]);
+    let e = unsupported(load(bn, &[("x", &[1, 2])], &[]));
+    assert!(e.contains("BatchNormalization (node n) with 3 outputs"), "{e}");
+}
