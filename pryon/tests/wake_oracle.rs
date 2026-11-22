@@ -271,10 +271,6 @@ const BEGIN_EXCEPTIONS: &[(&str, &str)] = &[
     ("fw", "tts_stop/lessac-medium-alexa-gap0600-stop"),
 ];
 
-/// Paired firmware events that still differ because of the gate: the oracle's spotter starts fresh at the gate end
-/// (accept at SE + 168 frames), the engine's carries the gate-era state and accepts one cycle later.
-const GATE_PAIR_EXCEPTIONS: &[(&str, &str)] = &[("-e 8000", "alexa_real/picovoice_real_alexa_real_015")];
-
 /// A `pryon-cli validate` pass: clip-sample commands and the corpus groups it ran on (`local/task12/final.sh`).
 struct Pass {
     name: &'static str,
@@ -296,38 +292,7 @@ const PASSES: &[Pass] = &[
     Pass { name: "-e 28000", props: &[], ends: &[28000], groups: &["tts_stop", "tts_disney"] },
 ];
 
-/// Engine events and restart samples, feeding as `spot_cmds` does.
-fn spot_restarts(m: &Arc<SpotterModel>, pcm: &[i16], cmds: &[Cmd]) -> (Vec<Ev>, Vec<u64>) {
-    let at = |c: &Cmd| match *c {
-        Cmd::Prop(s, ..) | Cmd::End(s) => s as usize,
-    };
-    let mut cmds: Vec<&Cmd> = cmds.iter().collect();
-    cmds.sort_by_key(|c| at(c));
-    let mut sp = Spotter::new(m.clone(), SpotterOptions::default()).unwrap();
-    let (mut out, mut restarts, mut pos, mut next) = (Vec::new(), Vec::new(), 0usize, 0usize);
-    loop {
-        while next < cmds.len() && at(cmds[next]) <= pos {
-            match *cmds[next] {
-                Cmd::Prop(_, n, v) => sp.set_property(n, v),
-                Cmd::End(_) => sp.reset(&mut out),
-            }
-            next += 1;
-        }
-        if pos == pcm.len() {
-            break;
-        }
-        let end = (pos + 1600).min(cmds.get(next).map_or(pcm.len(), |c| at(c).min(pcm.len())));
-        let before = sp.origin();
-        sp.feed(&pcm[pos..end], &mut out);
-        if sp.origin() != before {
-            restarts.push(sp.origin());
-        }
-        pos = end;
-    }
-    (from_rust(m.keywords(), &out), restarts)
-}
-
-/// A regression net over every validate pass; the firmware oracle's unreproduced gate is the only allowance.
+/// Every validate pass vs the cache; allowed: listed begin-only pairs and, on firmware, the unreproduced gate.
 #[test]
 fn oracle_corpus_validate_cache() {
     let Some(root) = env_dir("PRYON_WAKE_CORPUS") else { return };
@@ -365,15 +330,21 @@ fn oracle_corpus_validate_cache() {
                 let Ok(text) = std::fs::read_to_string(&cached) else { return None };
                 assert_eq!(pushed(&text), Some(pcm.len()), "{}: oracle not fed the whole clip", cached.display());
                 let mut oracle = parse_wake(&text).unwrap_or_else(|e| panic!("{}: {e}", cached.display()));
-                let (mut rust, engine_restarts) = spot_restarts(&m, &pcm, &cmds);
+                let (mut rust, engine_restarts) = spot_cmds(&m, &pcm, &cmds);
                 let oracle_restarts: Vec<u64> = text
                     .lines()
                     .filter_map(|l| l.strip_prefix("restart: new decoder fed from sample ")?.trim().parse().ok())
                     .collect();
                 // from the first restart the engines place differently on, nothing lines up any more
                 let agree = oracle_restarts.iter().zip(&engine_restarts).take_while(|(a, b)| a == b).count();
+                let mut bad = Vec::new();
                 let cut = match (oracle_restarts.get(agree), engine_restarts.get(agree)) {
                     (None, None) => u64::MAX,
+                    // only the firmware gate can move a restart; anywhere else it is a bug
+                    (a, b) if *name != "fw" => {
+                        bad.push(format!("restart samples differ: oracle {a:?} engine {b:?}"));
+                        u64::MAX
+                    }
                     (a, b) => (*a.unwrap_or(&u64::MAX)).min(*b.unwrap_or(&u64::MAX)),
                 };
                 let n = oracle.len() + rust.len();
@@ -397,18 +368,20 @@ fn oracle_corpus_validate_cache() {
                 }
                 let mut diffs: Vec<Diff> = Vec::new();
                 let t = compare_events(&oracle, &rust, &thr, false, &mut diffs);
-                let gated = |end: u64| starts.iter().any(|&s| end + lead >= s && end + lead <= s + window);
+                let fw = *name == "fw";
+                let gated = |end: u64| fw && starts.iter().any(|&s| end + lead >= s && end + lead <= s + window);
+                let id = format!("{group}/{clip}");
+                let begin_ok = BEGIN_EXCEPTIONS.contains(&(*name, id.as_str()));
                 let mut exempt = 0;
-                let mut bad = Vec::new();
                 for d in &diffs {
                     match (&d.oracle, &d.engine) {
-                        (Some(o), Some(e)) if o.kind == e.kind && o.end == e.end && o.begin == e.begin => {}
-                        (Some(_), Some(_)) => bad.push(d.to_string()),
-                        (Some(x), None) | (None, Some(x)) if *name == "fw" && gated(x.end) => exempt += 1,
+                        (Some(o), Some(e)) if o.kind == e.kind && o.end == e.end && (o.begin == e.begin || begin_ok) => {}
+                        (Some(o), Some(e)) if gated(o.end) && gated(e.end) => exempt += 2,
+                        (Some(x), None) | (None, Some(x)) if gated(x.end) => exempt += 1,
                         _ => bad.push(d.to_string()),
                     }
                 }
-                Some((format!("{group}/{clip}"), t, bad, [exempt, in_gate, after_cut]))
+                Some((id, t, bad, [exempt, in_gate, after_cut]))
             });
             let missing = results.iter().filter(|r| r.is_none()).count();
             assert!(missing < chosen.len(), "{name} [{}]: nothing cached", pass.name);
@@ -421,18 +394,13 @@ fn oracle_corpus_validate_cache() {
                 for (a, b) in skip.iter_mut().zip(s) {
                     *a += b;
                 }
-                let begin_only = bad.iter().all(|d| {
-                    let both = !d.contains("oracle=-") && !d.contains("rust=-");
-                    both && BEGIN_EXCEPTIONS.contains(&(*name, clip.as_str()))
-                });
-                let gate_pair = *name == "fw" && GATE_PAIR_EXCEPTIONS.contains(&(pass.name, clip.as_str()));
-                if !bad.is_empty() && !begin_only && !gate_pair {
+                if !bad.is_empty() {
                     failures.push(format!("{name} [{}] {clip}:\n  {}", pass.name, bad.join("\n  ")));
                 }
             }
             println!(
-                "{name} [{}]: compared {} events; exempt: {} one-sided in a gate window, {} engine events inside the \
-                 gate, {} after a diverging restart; {missing} clips uncached | {}",
+                "{name} [{}]: compared {} events; exempt: {} in a gate window (one-sided or a pair with both ends there), \
+                 {} engine events inside the gate, {} after a diverging restart; {missing} clips uncached | {}",
                 pass.name,
                 total.oracle + total.engine - skip[0],
                 skip[0],
@@ -497,15 +465,15 @@ fn probe_set(name: &str, fw: bool, force: f32, edits: &[(Cfg, Edit)]) -> (TempDi
     (d, m)
 }
 
-/// Rust's events with the commands applied before their samples, in pryon_test's order (stable by sample).
-fn spot_cmds(m: &Arc<SpotterModel>, pcm: &[i16], cmds: &[Cmd]) -> Vec<Ev> {
+/// Rust's events and restart samples, the commands applied before their samples in pryon_test's order.
+fn spot_cmds(m: &Arc<SpotterModel>, pcm: &[i16], cmds: &[Cmd]) -> (Vec<Ev>, Vec<u64>) {
     let at = |c: &Cmd| match *c {
         Cmd::Prop(s, ..) | Cmd::End(s) => s as usize,
     };
     let mut cmds: Vec<&Cmd> = cmds.iter().collect();
     cmds.sort_by_key(|c| at(c));
     let mut sp = Spotter::new(m.clone(), SpotterOptions::default()).unwrap();
-    let (mut out, mut pos, mut next) = (Vec::new(), 0usize, 0usize);
+    let (mut out, mut restarts, mut pos, mut next) = (Vec::new(), Vec::new(), 0usize, 0usize);
     loop {
         while next < cmds.len() && at(cmds[next]) <= pos {
             match *cmds[next] {
@@ -518,10 +486,14 @@ fn spot_cmds(m: &Arc<SpotterModel>, pcm: &[i16], cmds: &[Cmd]) -> Vec<Ev> {
             break;
         }
         let end = (pos + 1600).min(cmds.get(next).map_or(pcm.len(), |c| at(c).min(pcm.len())));
+        let origin = sp.origin();
         sp.feed(&pcm[pos..end], &mut out);
+        if sp.origin() != origin {
+            restarts.push(sp.origin());
+        }
         pos = end;
     }
-    from_rust(m.keywords(), &out)
+    (from_rust(m.keywords(), &out), restarts)
 }
 
 fn fixture(dir: &str, name: &str) -> String {
@@ -540,7 +512,7 @@ fn check_probe(dir: &str, name: &str, fw: bool, force: f32, edits: &[(Cfg, Edit)
     let oracle = parse_wake(&text).unwrap();
     let pcm = synth(clip);
     assert_eq!(pushed(&text), Some(pcm.len()), "{dir}/{name}: the oracle was not fed the whole clip");
-    let rust = spot_cmds(&m, &pcm, cmds);
+    let rust = spot_cmds(&m, &pcm, cmds).0;
     let mut diff = Vec::new();
     let t = compare_events(&oracle, &rust, &thresholds(&d), true, &mut diff);
     println!("{dir}/{name}: {}", t.line());
