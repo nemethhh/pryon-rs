@@ -271,6 +271,34 @@ const BEGIN_EXCEPTIONS: &[(&str, &str)] = &[
     ("fw", "tts_stop/lessac-medium-alexa-gap0600-stop"),
 ];
 
+/// `Some(0)` matched, `Some(n)` n events exempt, `None` a failure; a gated pair needs equal kinds and one window.
+fn judge(d: &Diff, begin_ok: bool, windows: &[(u64, u64)]) -> Option<usize> {
+    let has = |&(a, b): &(u64, u64), end: u64| a <= end && end <= b;
+    match (&d.oracle, &d.engine) {
+        (Some(o), Some(e)) if o.kind == e.kind && o.end == e.end && (o.begin == e.begin || begin_ok) => Some(0),
+        (Some(o), Some(e)) if o.kind == e.kind && windows.iter().any(|w| has(w, o.end) && has(w, e.end)) => Some(2),
+        (Some(x), None) | (None, Some(x)) if windows.iter().any(|w| has(w, x.end)) => Some(1),
+        _ => None,
+    }
+}
+
+#[test]
+fn judge_gate_pairs() {
+    let ev = |kind, end| Some(Ev { keyword: "ALEXA".into(), kind, score: 0.9, begin: end - 8000, end });
+    let pair = |ok, ek, oe, ee| Diff { keyword: "ALEXA".into(), oracle: ev(ok, oe), engine: ev(ek, ee) };
+    let w = [(10_000, 50_000), (60_000, 90_000)];
+    let (a, n) = (OracleKind::Accept, OracleKind::NearMiss);
+    assert_eq!(judge(&pair(a, a, 36_880, 37_840), false, &w), Some(2));
+    assert_eq!(judge(&pair(a, n, 36_880, 37_840), false, &w), None);
+    assert_eq!(judge(&pair(a, a, 36_880, 37_840), false, &[]), None);
+    assert_eq!(judge(&pair(a, a, 45_000, 65_000), false, &w), None);
+    assert_eq!(judge(&pair(n, a, 20_000, 20_000), true, &w), None);
+    assert_eq!(judge(&pair(a, a, 20_000, 20_000), false, &[]), Some(0));
+    let one = Diff { keyword: "ALEXA".into(), oracle: None, engine: ev(n, 70_000) };
+    assert_eq!(judge(&one, false, &w), Some(1));
+    assert_eq!(judge(&one, false, &[]), None);
+}
+
 /// A `pryon-cli validate` pass: clip-sample commands and the corpus groups it ran on (`local/task12/final.sh`).
 struct Pass {
     name: &'static str,
@@ -368,17 +396,18 @@ fn oracle_corpus_validate_cache() {
                 }
                 let mut diffs: Vec<Diff> = Vec::new();
                 let t = compare_events(&oracle, &rust, &thr, false, &mut diffs);
-                let fw = *name == "fw";
-                let gated = |end: u64| fw && starts.iter().any(|&s| end + lead >= s && end + lead <= s + window);
+                let windows: Vec<(u64, u64)> = if *name == "fw" {
+                    starts.iter().map(|&s| (s.saturating_sub(lead), (s + window).saturating_sub(lead))).collect()
+                } else {
+                    Vec::new()
+                };
                 let id = format!("{group}/{clip}");
                 let begin_ok = BEGIN_EXCEPTIONS.contains(&(*name, id.as_str()));
                 let mut exempt = 0;
                 for d in &diffs {
-                    match (&d.oracle, &d.engine) {
-                        (Some(o), Some(e)) if o.kind == e.kind && o.end == e.end && (o.begin == e.begin || begin_ok) => {}
-                        (Some(o), Some(e)) if gated(o.end) && gated(e.end) => exempt += 2,
-                        (Some(x), None) | (None, Some(x)) if gated(x.end) => exempt += 1,
-                        _ => bad.push(d.to_string()),
+                    match judge(d, begin_ok, &windows) {
+                        Some(n) => exempt += n,
+                        None => bad.push(d.to_string()),
                     }
                 }
                 Some((id, t, bad, [exempt, in_gate, after_cut]))
