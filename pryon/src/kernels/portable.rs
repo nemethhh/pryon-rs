@@ -8,3 +8,11 @@ pub(crate) fn dot_rows(w: &[i8], stride: usize, k: &[u8], out: &mut [i32]) {
         }
     }
 }
+
+pub(crate) fn sigmoid_inplace(x: &mut [f32]) {
+    x.iter_mut().for_each(|v| *v = crate::num::sigmoid(*v));
+}
+
+pub(crate) fn tanh_inplace(x: &mut [f32]) {
+    x.iter_mut().for_each(|v| *v = crate::num::tanh(*v));
+}

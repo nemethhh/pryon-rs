@@ -1,8 +1,8 @@
 //! Dynamic-quant int8 transformer (QAffine) and the LSTM cell built on it.
 
-use crate::kernels::dot_rows;
+use crate::kernels::{dot_rows, sigmoid_inplace, tanh_inplace};
 use crate::mlp::{QLstmParams, QMatrix};
-use crate::num::{neon_sum, quantize, sigmoid, tanh};
+use crate::num::{neon_sum, quantize};
 use std::sync::Arc;
 
 const LEVELS: f32 = 129.0;
@@ -67,14 +67,19 @@ impl QLstm {
         z.fill(0.0);
         qaffine(x, &p.wx, &p.bx, z, &mut self.k, &mut self.acc);
         qaffine(&self.h, &p.wh, &p.bh, z, &mut self.k, &mut self.acc);
+        let (g, ifo) = z.split_at_mut(n);
+        tanh_inplace(g);
+        sigmoid_inplace(ifo);
+        let (i, fo) = ifo.split_at(n);
+        let (f, o) = fo.split_at(n);
         for j in 0..n {
-            let g = tanh(z[j]);
-            let i = sigmoid(z[n + j]);
-            let f = sigmoid(z[2 * n + j]);
-            self.c[j] = f * self.c[j];
-            self.c[j] = self.c[j] + i * g;
-            let o = sigmoid(z[3 * n + j]);
-            self.h[j] = o * tanh(self.c[j]);
+            self.c[j] = f[j] * self.c[j];
+            self.c[j] = self.c[j] + i[j] * g[j];
+        }
+        g.copy_from_slice(&self.c);
+        tanh_inplace(g);
+        for j in 0..n {
+            self.h[j] = o[j] * g[j];
         }
         &self.h
     }

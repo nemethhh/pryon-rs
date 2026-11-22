@@ -10,6 +10,12 @@ pub(crate) use armv7::dot_rows;
 #[cfg(not(all(pryon_neon, target_arch = "arm")))]
 pub(crate) use portable::dot_rows;
 
+/// `num::sigmoid` / `num::tanh` over a slice in place, bit for bit.
+#[cfg(all(pryon_neon, target_arch = "arm"))]
+pub(crate) use armv7::{sigmoid_inplace, tanh_inplace};
+#[cfg(not(all(pryon_neon, target_arch = "arm")))]
+pub(crate) use portable::{sigmoid_inplace, tanh_inplace};
+
 /// Position of `W[r][c]`: blocks of four rows by eight columns (row-major inside), so the kernel streams one run.
 pub(crate) fn block_index(r: usize, c: usize, stride: usize) -> usize {
     (r / 4) * 4 * stride + (c / 8) * 32 + (r % 4) * 8 + c % 8
@@ -84,6 +90,38 @@ mod tests {
                 super::dot_rows(&w, stride, &k, &mut a);
                 super::portable::dot_rows(&w, stride, &k, &mut b);
                 assert_eq!(a, b, "rows={rows} stride={stride}");
+            }
+        }
+    }
+
+    #[cfg(all(pryon_neon, target_arch = "arm"))]
+    fn act_inputs() -> Vec<f32> {
+        let mut next = xorshift(0x2545_f491);
+        let mut v: Vec<f32> = [0.0, -0.0, 1e-40, -1e-40, 1e-20, -1e-20, 0.3465, -0.3466, 1.0, -1.0, 44.0, -44.0]
+            .into_iter()
+            .chain([87.0, -87.0, 87.4, -87.4, 88.5, -88.5, 100.0, -100.0, f32::MAX, f32::MIN, 1e-10, -1e-10])
+            .collect();
+        v.extend((-40_000..40_000).map(|i| i as f32 * 0.0025));
+        v.extend((0..200_000).map(|_| f32::from_bits(next())).filter(|x| x.is_finite()));
+        v.extend((0..100_000).map(|_| (next() as i32 as f32) * 2.4e-8));
+        v.truncate(v.len() & !3);
+        v.push(0.75);
+        v
+    }
+
+    #[cfg(all(pryon_neon, target_arch = "arm"))]
+    #[test]
+    fn act_asm_equals_portable() {
+        let x = act_inputs();
+        for (name, asm, port) in [
+            ("sigmoid", super::sigmoid_inplace as fn(&mut [f32]), super::portable::sigmoid_inplace as fn(&mut [f32])),
+            ("tanh", super::tanh_inplace, super::portable::tanh_inplace),
+        ] {
+            let (mut a, mut b) = (x.clone(), x.clone());
+            asm(&mut a);
+            port(&mut b);
+            for ((&i, &p), &q) in x.iter().zip(&a).zip(&b) {
+                assert_eq!(p.to_bits(), q.to_bits(), "{name}({i:e} = {:#010x})", i.to_bits());
             }
         }
     }
