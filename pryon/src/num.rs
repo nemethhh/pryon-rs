@@ -35,6 +35,7 @@ pub(crate) fn neon_sum(x: &[f32]) -> f32 {
     t
 }
 
+// Port of Julien Pommier's neon_mathfun exp_ps (zlib); altered version, see THIRD_PARTY_NOTICES.md.
 pub(crate) fn exp_ps(x: f32) -> f32 {
     let c = f32::from_bits;
     let x = x.min(c(0x42B0C0A5)).max(c(0xC2B0C0A5));

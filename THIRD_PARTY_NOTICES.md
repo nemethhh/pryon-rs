@@ -11,6 +11,8 @@ The source attribution is Copyright 2014–16 ARM Limited and Contributors.
 The project's Copyright 2012–16 ARM Limited and Contributors notice, all three BSD conditions, and the full
 disclaimer are reproduced verbatim in [licenses/Ne10-LICENSE.txt](licenses/Ne10-LICENSE.txt). Preserve them with source
 and binary distributions, including documentation accompanying any standalone frontend binary.
+The twiddle tables `NE_TW` and `NE_SU` in `pryon/src/lfbe_tables.rs` are Ne10's, dumped from the C reference build, and
+fall under the same notice.
 
 ## Kaldi
 
@@ -32,11 +34,12 @@ The ported `msun_logf` in `pryon/src/lfbe.rs` retains this notice:
 
 ## OpenBLAS
 
-The ARMv7 `sdot` accumulation order was observed in the shipped library and independently expressed in `pryon/src/lfbe.rs`.
-No OpenBLAS source is included in this code. This is attribution for the algorithm/order studied.
+The ARMv7 `sdot_vfp` accumulation order lives in `pryon/src/num.rs` (used by `pryon/src/lfbe.rs`), and `dot_seq` there
+follows the OpenBLAS sgemv/sgemm accumulation order; both were observed in the shipped library and independently
+expressed. No OpenBLAS source is included in this code. This is attribution for the algorithm/order studied.
 
 ## Julien Pommier neon_mathfun / sse_mathfun
 
-`exp_ps` in `pryon/src/num.rs` reimplements the `exp_ps` polynomial of Julien Pommier's neon_mathfun / sse_mathfun,
-Copyright (C) 2011 Julien Pommier, under the zlib licence reproduced in
+`exp_ps` in `pryon/src/num.rs` and its NEON port in `pryon/src/kernels/armv7.rs` (activation kernel) reimplement the
+`exp_ps` polynomial of Julien Pommier's neon_mathfun / sse_mathfun, Copyright (C) 2011 Julien Pommier, under the zlib licence reproduced in
 [licenses/neon_mathfun-zlib.txt](licenses/neon_mathfun-zlib.txt).

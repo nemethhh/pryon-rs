@@ -19,10 +19,11 @@
  * samples past the window end have been fed.
  *
  * Threads: a handle is used by one thread at a time; separate handles are independent;
- * there is no global state. Model files are read at open only. A feed call can run up
- * to a window's worth of network steps at once on degenerate input (digital silence
- * keeping channel-norm statistics from forming), typically about 50 steps at the start
- * of each window, so real-time threads should feed from a worker thread.
+ * there is no global state. Model files are read at open only. A feed call can release
+ * about 50 network steps at once (when channel-norm statistics form at the window's
+ * 100th non-silent frame, or at the frame-997 flush) on top of the steps of its own
+ * chunk, so real-time threads should feed from a worker thread. A trailing partial
+ * window yields nothing.
  */
 #ifndef PRYON_H
 #define PRYON_H
@@ -52,8 +53,8 @@ struct pryon_sound_type_result {
 };
 
 /*
- * One window result. max_energy is the window's maximum energy level, 0..32767 (per-frame
- * max |x|; a frame containing -32768 contributes nothing). n is the number of valid
+ * One window result. max_energy is the window's maximum energy level over its 998 frames,
+ * 0..32767 (per-frame max |x|; a frame containing -32768 contributes nothing). n is the number of valid
  * entries in type[], in the order of pryon_sound_type_name().
  */
 struct pryon_sound_result {
@@ -68,6 +69,7 @@ typedef struct pryon_sound pryon_sound;
 /*
  * Opens the model directory. types NULL or n 0 selects every type of the model, in
  * AED.json order; otherwise (types non-NULL, n > 0) the n named types (unknown or duplicate name is an error).
+ * Negative n with non-NULL types is an error.
  * More than PRYON_SOUND_MAX_TYPES types is an error. Returns NULL on error and, if err
  * is non-NULL and errlen > 0, writes a NUL-terminated message truncated to errlen-1 bytes.
  */
@@ -83,7 +85,7 @@ pryon_sound *pryon_sound_open(const char *model_dir, const char *const *types, i
 int pryon_sound_feed(pryon_sound *s, const int16_t *pcm, size_t n,
                      struct pryon_sound_result *out, int max);
 
-/* Number of types served by the handle. */
+/* Number of types served by the handle; -1 if s is NULL. */
 int pryon_sound_type_count(const pryon_sound *s);
 
 /* Name of type i (0 <= i < count), NUL-terminated, valid until close; NULL if out of range. */

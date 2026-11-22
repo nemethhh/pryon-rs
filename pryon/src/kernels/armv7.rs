@@ -53,6 +53,7 @@ pub(crate) fn dot_rows(w: &[u8], stride: usize, k: &[u8], out: &mut [i32]) {
     }
 }
 
+// NEON port of Julien Pommier's neon_mathfun exp_ps (zlib); altered version, see THIRD_PARTY_NOTICES.md.
 // exp_ps constants: clamp, fx rounding, 1.0, poly terms added (P1..P5), then the by-scalar pair log2e, c1, c2, p0.
 static ACT_K: [u32; 13] = [
     0x42B0C0A5, 0xC2B0C0A5, 0x3F000000, 0x3F800000, 0x3AB743CE, 0x3C088908, 0x3D2AA9C1, 0x3E2AAAAA, 0x3F000000,

@@ -7,8 +7,39 @@ Local repo, not published.
 
 - `pryon`: the engine (no runtime dependencies).
 - `pryon-ffi`: C API (staticlib/cdylib).
-- `pryon-cli`: command-line tools (`synth`, more later).
+- `pryon-cli`: command-line tools: `run` (print windows of a clip), `synth` (write a synthetic clip), `synth-model`
+  (write a synthetic model dir), `bench [--chunk N] [--speed X]` (CPU and RSS over a clip), `rusage` (run a command, report
+  its CPU and RSS).
 - `pryon-testkit`: deterministic synthetic clips and test models.
+
+## Using the library
+
+Rust (`pryon = { path = "pryon-rs/pryon" }`):
+
+```rust
+use pryon::{SoundDetector, SoundModel};
+use std::{path::Path, sync::Arc};
+
+let model = Arc::new(SoundModel::load(Path::new("/path/to/model"))?);
+let mut det = SoundDetector::new(model, &[])?; // empty list: every type
+let mut windows = Vec::new();
+det.feed(&pcm_16khz_mono_i16, &mut windows); // any chunking; call repeatedly
+for w in &windows {
+    for (name, t) in det.type_names().iter().zip(&w.types) {
+        if t.detected { println!("window {} {name} {:.3}", w.index, t.score); }
+    }
+}
+```
+
+C: include `pryon-ffi/include/pryon.h` and link the staticlib (`cargo build --release -p pryon-ffi`,
+`target/release/libpryon_ffi.a`) with the native libs rustc reports for the target
+(`cargo rustc -p pryon-ffi --release --crate-type staticlib -- --print native-static-libs`):
+
+    cc app.c libpryon_ffi.a -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc        # x86_64 Linux
+    armv7a-linux-androideabi24-clang app.c libpryon_ffi.a -ldl -llog -lunwind -lm -lc   # Echo, NDK libunwind.a
+
+Host builds do not flush subnormals to zero while NEON does; host parity holds on every fixture, device parity is the
+device check.
 
 ## Tests
 
