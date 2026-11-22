@@ -13,6 +13,7 @@ const USAGE: &str = "usage:
   pryon-cli synth-model DIR [--threshold X]
   pryon-cli synth-wake-set fw|davs DIR [--seed N] [--force SCORE]
   pryon-cli inspect DIR
+  pryon-cli wake-dump -m SET [--lfbe OUT.f32] [--out DIR] CLIP.raw
   pryon-cli bench -m DIR [--chunk N] [--speed X] CLIP.raw
   pryon-cli rusage -- CMD ARGS...";
 
@@ -56,6 +57,7 @@ fn dispatch(args: &[String]) -> Result<ExitCode, Fail> {
         "synth-model" => cmd_synth_model(rest)?,
         "synth-wake-set" => cmd_synth_wake_set(rest)?,
         "inspect" => cmd_inspect(rest)?,
+        "wake-dump" => cmd_wake_dump(rest)?,
         "bench" => cmd_bench(rest)?,
         "rusage" => return cmd_rusage(rest),
         _ => return usage(format!("unknown command {cmd}")),
@@ -73,6 +75,8 @@ struct Opts {
     speed: Option<f64>,
     seed: Option<u64>,
     force: Option<f32>,
+    lfbe: Option<String>,
+    out: Option<String>,
     pos: Vec<String>,
 }
 
@@ -108,6 +112,8 @@ fn parse(args: &[String], allowed: &[&str]) -> Result<Opts, Fail> {
                 Ok(x) if x > 0.0 && x < 1.0 => o.force = Some(x),
                 _ => return usage("--force needs a score strictly between 0 and 1"),
             },
+            "--lfbe" => o.lfbe = Some(val()?),
+            "--out" => o.out = Some(val()?),
             _ => o.pos.push(a.clone()),
         }
     }
@@ -213,6 +219,45 @@ fn cmd_inspect(args: &[String]) -> Res {
     };
     let set = rt(dir, pryon::wake::load_set(Path::new(dir)))?;
     print!("{}", rt(dir, pryon::wake::describe(&set))?);
+    Ok(())
+}
+
+fn f32_bytes(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|x| x.to_le_bytes()).collect()
+}
+
+/// Rust LFBE frames and per-step stage outputs (`<key>.f32`, steps x values) for reference comparisons.
+fn cmd_wake_dump(args: &[String]) -> Res {
+    use pryon::wake::{LoadedSet, Pipeline, StepOut};
+    let (o, clip) = run_setup(args, &["-m", "--lfbe", "--out"])?;
+    let model = o.model.as_ref().unwrap();
+    let set = Arc::new(rt(model, LoadedSet::load(Path::new(model)))?);
+    let pcm = read_clip(&clip)?;
+    if let Some(path) = &o.lfbe {
+        let mut fe = pryon::lfbe::Lfbe::with_spec(set.spec.fe);
+        let mut frames = Vec::new();
+        fe.push_flat(&pcm, &mut frames);
+        rt(path, std::fs::write(path, f32_bytes(&frames)))?;
+    }
+    let mut rows: Vec<Vec<f32>> = vec![Vec::new(); set.components.len()];
+    let mut steps = 0u64;
+    let mut frames = 0u64;
+    Pipeline::new(&set).push(&pcm, &mut |s: &StepOut| {
+        for (r, v) in rows.iter_mut().zip(s.values) {
+            r.extend_from_slice(v);
+        }
+        steps = s.step + 1;
+        frames = s.frames;
+    });
+    println!("set {} checksum {}: {steps} steps, {frames} frames", model, set.spec.checksum);
+    for (c, r) in set.components.iter().zip(&rows) {
+        println!("  {} {:?}", c.key, c.shape);
+        if let Some(dir) = &o.out {
+            let path = Path::new(dir).join(format!("{}.f32", c.key));
+            rt(dir, std::fs::create_dir_all(path.parent().unwrap()))?;
+            rt(&path.display().to_string(), std::fs::write(&path, f32_bytes(r)))?;
+        }
+    }
     Ok(())
 }
 

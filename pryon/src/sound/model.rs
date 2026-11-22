@@ -112,7 +112,7 @@ impl Net {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::qlstm::tests::{fnv, inputs};
     use pryon_testkit::{write_mlp, write_model_dir, TempDir, TYPE_NAMES};
@@ -148,7 +148,7 @@ mod tests {
     static GLOBAL: CountingAlloc = CountingAlloc;
 
     #[cfg(not(target_os = "android"))]
-    fn allocs() -> usize {
+    pub(crate) fn allocs() -> usize {
         ALLOCS.with(Cell::get)
     }
 

@@ -527,6 +527,11 @@ impl Lfbe {
         self.bins
     }
 
+    /// Drops buffered samples; the next frame starts at the next sample pushed.
+    pub fn reset(&mut self) {
+        self.buf.clear();
+    }
+
     fn push_with(&mut self, pcm: &[i16], mut emit: impl FnMut(&[f32])) {
         self.buf.extend_from_slice(pcm);
         let mut pos = 0;

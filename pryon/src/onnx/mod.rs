@@ -90,6 +90,13 @@ impl Session {
         &self.arena[io.off..io.off + io.len]
     }
 
+    /// Copies output `o` into input `i` (streaming state carried to the next step).
+    pub fn feed_back(&mut self, o: usize, i: usize) {
+        let (src, dst) = (&self.graph.plan.outputs[o], &self.graph.plan.inputs[i]);
+        assert_eq!(src.len, dst.len, "feed_back between different sizes");
+        self.arena.copy_within(src.off..src.off + src.len, dst.off);
+    }
+
     /// `run`, calling `f(name, shape, data)` for every runtime value right after it is computed.
     #[doc(hidden)]
     pub fn run_traced(&mut self, f: &mut dyn FnMut(&str, &[usize], &[f32])) {
