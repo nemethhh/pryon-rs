@@ -11,6 +11,8 @@ pub enum Error {
     Config(String),
     /// A requested type name is not in the model.
     UnknownType(String),
+    /// A model uses something the engine does not implement (operator, attribute, data layout, rule field).
+    Unsupported { file: PathBuf, what: String },
 }
 
 impl fmt::Display for Error {
@@ -20,6 +22,7 @@ impl fmt::Display for Error {
             Error::Format(m) => write!(f, "bad model format: {m}"),
             Error::Config(m) => write!(f, "bad config: {m}"),
             Error::UnknownType(t) => write!(f, "unknown type: {t}"),
+            Error::Unsupported { file, what } => write!(f, "{}: unsupported {what}", file.display()),
         }
     }
 }

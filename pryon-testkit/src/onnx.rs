@@ -180,13 +180,31 @@ impl ModelBuilder {
         self.init(tensor(name, 7, dims, |t| put_packed(t, 7, data.iter().copied())))
     }
 
-    pub fn node(mut self, op: &str, ins: &[&str], outs: &[&str], attrs: &[(&str, Attr)]) -> Self {
+    /// Tensor whose data lives in an external file (`data_location = EXTERNAL`).
+    pub fn init_external(self, name: &str, elem: i32, dims: &[i64]) -> Self {
+        self.init(tensor(name, elem, dims, |t| {
+            let mut kv = Vec::new();
+            put_bytes(&mut kv, 1, b"location");
+            put_bytes(&mut kv, 2, b"weights.bin");
+            put_bytes(t, 13, &kv);
+            put_int(t, 14, 1);
+        }))
+    }
+
+    pub fn node(self, op: &str, ins: &[&str], outs: &[&str], attrs: &[(&str, Attr)]) -> Self {
+        self.node_named("", op, ins, outs, attrs)
+    }
+
+    pub fn node_named(mut self, name: &str, op: &str, ins: &[&str], outs: &[&str], attrs: &[(&str, Attr)]) -> Self {
         let mut n = Vec::new();
         for i in ins {
             put_bytes(&mut n, 1, i.as_bytes());
         }
         for o in outs {
             put_bytes(&mut n, 2, o.as_bytes());
+        }
+        if !name.is_empty() {
+            put_bytes(&mut n, 3, name.as_bytes());
         }
         put_bytes(&mut n, 4, op.as_bytes());
         for (name, a) in attrs {

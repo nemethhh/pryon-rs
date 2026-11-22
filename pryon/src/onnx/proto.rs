@@ -1,7 +1,5 @@
 //! Minimal protobuf reader for the ONNX subset the wake engine runs.
 
-#![allow(dead_code)] // consumed by the executor (next task)
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelProto {
     pub ir_version: i64,
