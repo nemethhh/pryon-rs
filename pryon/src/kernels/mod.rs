@@ -1,11 +1,12 @@
-#[cfg(pryon_neon)]
+#[cfg(all(pryon_neon, target_arch = "arm"))]
 mod armv7;
+#[cfg(any(test, not(all(pryon_neon, target_arch = "arm"))))]
 mod portable;
 
 /// Dot product of int8-range weights with u8 activations; `w.len()` is a multiple of 8, `k.len() >= w.len()`.
-#[cfg(pryon_neon)]
+#[cfg(all(pryon_neon, target_arch = "arm"))]
 pub(crate) use armv7::dot_i16_u8;
-#[cfg(not(pryon_neon))]
+#[cfg(not(all(pryon_neon, target_arch = "arm")))]
 pub(crate) use portable::dot_i16_u8;
 
 #[cfg(test)]
@@ -20,7 +21,7 @@ mod tests {
         assert_eq!(super::dot_i16_u8(&w[..8], &k), want8);
     }
 
-    #[cfg(pryon_neon)]
+    #[cfg(all(pryon_neon, target_arch = "arm"))]
     #[test]
     fn dot_asm_equals_portable() {
         let mut s = 0x1234_5678u32;

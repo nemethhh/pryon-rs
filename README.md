@@ -29,8 +29,11 @@ repeats them (and `--cfg pryon_neon`, which selects the NEON kernel; `target_fea
 
     NDK=/path/to/android-ndk-r21e
     export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang
-    export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="-C target-feature=+neon,+d32 -C target-cpu=cortex-a35 --cfg pryon_neon -L native=$NDK/sources/cxx-stl/llvm-libc++/libs/armeabi-v7a"
+    export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="-C target-feature=+neon -C target-cpu=cortex-a35 --cfg pryon_neon -C link-arg=-fuse-ld=lld -L native=$NDK/sources/cxx-stl/llvm-libc++/libs/armeabi-v7a"
     cargo build --release --target armv7-linux-androideabi -p pryon-ffi -p pryon-cli
+
+The one remaining rustc warning (`unstable feature specified for -Ctarget-feature: neon`) is expected on stable; `+neon` is
+required to assemble the asm (cortex-a35 alone does not enable it) and implies the d16-d31 registers; lld replaces gold.
 
 Tests run on the host under qemu-arm with the Echo rootfs (the `unshare` is required: bionic hangs or crashes
 under bare qemu-arm). `TMPDIR` is needed because Android's default temp dir does not exist on the host;
