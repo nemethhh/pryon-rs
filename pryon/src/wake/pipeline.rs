@@ -218,6 +218,13 @@ impl Pipeline {
         self.frames = 0;
     }
 
+    /// Current value of a stage's input; a fresh pipeline holds the state step 0 runs with (test support).
+    #[doc(hidden)]
+    pub fn input(&self, stage: usize, name: &str) -> Option<&[f32]> {
+        let i = self.set.graphs.get(stage)?.input_index(name)?;
+        Some(self.sessions[stage].input(i))
+    }
+
     /// Feeds 16 kHz mono PCM; calls `f` once per completed step.
     pub fn push(&mut self, pcm: &[i16], f: &mut dyn FnMut(&StepOut)) {
         self.push_frames(pcm, &mut |_, s| {

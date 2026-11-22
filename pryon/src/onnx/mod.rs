@@ -81,6 +81,11 @@ impl Session {
         &mut self.arena[io.off..io.off + io.len]
     }
 
+    pub fn input(&self, i: usize) -> &[f32] {
+        let io = &self.graph.plan.inputs[i];
+        &self.arena[io.off..io.off + io.len]
+    }
+
     pub fn run(&mut self) {
         self.exec(None);
     }
