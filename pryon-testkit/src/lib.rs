@@ -1,5 +1,7 @@
 //! Deterministic, integer-only synthetic clips (16 kHz mono s16).
 
+pub mod oracle;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Clip {
     Noise,
