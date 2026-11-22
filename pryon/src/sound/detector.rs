@@ -81,19 +81,22 @@ impl Energy {
         *self = Energy::new(std::mem::take(&mut self.thresholds));
     }
 
-    fn push(&mut self, pcm: &[i16]) {
-        for &s in pcm {
+    fn push(&mut self, mut pcm: &[i16]) {
+        // Window ends are block ends (159680 = 1996 * 80), so whole-segment passes never straddle either.
+        while !pcm.is_empty() {
+            let left = (BLOCK - self.samples % BLOCK) as usize;
+            let (seg, rest) = pcm.split_at(left.min(pcm.len()));
+            pcm = rest;
             // libpryon's |x| is i16: -32768 never counts and voids every frame max it falls in (oracle probes).
-            if s == i16::MIN {
-                self.block_void = true;
-            } else {
-                let a = (s as i32).abs();
-                self.block_max = self.block_max.max(a);
-                for (n, &t) in self.above.iter_mut().zip(&self.thresholds) {
-                    *n += (a >= t) as u32;
-                }
+            let n_min = if seg.contains(&i16::MIN) { seg.iter().filter(|&&s| s == i16::MIN).count() } else { 0 };
+            self.block_void |= n_min > 0;
+            // A void block's max is never read, so -32768 (abs 32768) may enter it.
+            self.block_max = self.block_max.max(seg.iter().map(|&s| (s as i32).abs()).max().unwrap_or(0));
+            for (n, &t) in self.above.iter_mut().zip(&self.thresholds) {
+                let all = seg.iter().filter(|&&s| (s as i32).abs() >= t).count();
+                *n += (all - if t <= 32768 { n_min } else { 0 }) as u32;
             }
-            self.samples += 1;
+            self.samples += seg.len() as u64;
             if self.samples % BLOCK == 0 {
                 self.end_block();
             }
@@ -320,6 +323,37 @@ mod tests {
         assert!(w[0].types.iter().all(|t| t.samples_above == 2));
         let w = run(&m, &[], &spikes(160_080, &[(1050, 900), (1200, -32768)]), 33);
         assert_eq!(w[0].max_energy, 900);
+    }
+
+    // Segment-wise counting against the per-sample rule, over thresholds at and past both ends of |x|.
+    #[test]
+    fn energy_counts_match_per_sample_rule() {
+        let thresholds = vec![-5, 0, 1, 82, 32767, 32768, 40000];
+        let mut rng = Rng(77);
+        let n = 2 * WINDOW_SAMPLES as usize + 123;
+        let pcm: Vec<i16> = (0..n)
+            .map(|_| match rng.next_u32() % 50 {
+                0 => i16::MIN,
+                1 => i16::MAX,
+                2 => 0,
+                _ => (rng.next_u32() % 65536) as u16 as i16 / 64,
+            })
+            .collect();
+        let mut e = Energy::new(thresholds.clone());
+        let mut i = 0;
+        while i < n {
+            let len = (rng.next_u32() % 500) as usize + 1;
+            e.push(&pcm[i..(i + len).min(n)]);
+            i += len;
+        }
+        for w in 0..2 {
+            let win = &pcm[w * WINDOW_SAMPLES as usize..(w + 1) * WINDOW_SAMPLES as usize];
+            let want: Vec<u32> = thresholds
+                .iter()
+                .map(|&t| win.iter().filter(|&&s| s != i16::MIN && (s as i32).abs() >= t).count() as u32)
+                .collect();
+            assert_eq!(e.done_above.pop_front().unwrap(), want, "window {w}");
+        }
     }
 
     // The max covers the window's 998 frames, whose last two reach 240 samples into the next window.
