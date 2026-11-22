@@ -1,14 +1,15 @@
 //! Dynamic-quant int8 transformer (QAffine) and the LSTM cell built on it.
 
-use crate::kernels::dot_i16_u8;
+use crate::kernels::dot_rows;
 use crate::mlp::{QLstmParams, QMatrix};
 use crate::num::{neon_sum, quantize, sigmoid, tanh};
 use std::sync::Arc;
 
 const LEVELS: f32 = 129.0;
 
-/// `y = bias + (y + W x)` for one input row, `y` holding `y_old` on entry; `k` is scratch of at least `m.stride8`.
-fn qaffine(x: &[f32], m: &QMatrix, bias: &[f32], y: &mut [f32], k: &mut [u8]) {
+/// `y = bias + (y + W x)` for one input row, `y` holding `y_old` on entry; scratch `k` holds at least `m.stride8`,
+/// `acc` at least `m.rows`.
+fn qaffine(x: &[f32], m: &QMatrix, bias: &[f32], y: &mut [f32], k: &mut [u8], acc: &mut [i32]) {
     let (lo, hi) = x.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &v| (lo.min(v), hi.max(v)));
     let inv = if hi == lo { LEVELS } else { LEVELS / (hi - lo) };
     let off = lo + 1.0 / (inv + inv);
@@ -17,8 +18,10 @@ fn qaffine(x: &[f32], m: &QMatrix, bias: &[f32], y: &mut [f32], k: &mut [u8]) {
     k[x.len()..].fill(0);
     let sx = neon_sum(x);
     let rinv = 1.0 / inv;
-    for (r, (w, yr)) in m.w.chunks_exact(m.stride8).zip(y.iter_mut()).enumerate() {
-        let mut t = (rinv * dot_i16_u8(w, k) as f32) * m.rs[r];
+    let acc = &mut acc[..m.rows];
+    dot_rows(&m.w, m.stride8, k, acc);
+    for (r, (&d, yr)) in acc.iter().zip(y.iter_mut()).enumerate() {
+        let mut t = (rinv * d as f32) * m.rs[r];
         t = t + off * m.b[r];
         t = t + sx * m.a[r];
         *yr = bias[r] + (*yr + t);
@@ -33,13 +36,15 @@ pub(crate) struct QLstm {
     c: Vec<f32>,
     z: Vec<f32>,
     k: Vec<u8>,
+    acc: Vec<i32>,
 }
 
 impl QLstm {
     pub fn new(p: QLstmParams) -> Self {
         let n = p.cell;
         let k = vec![0; p.wx.stride8.max(p.wh.stride8)];
-        QLstm { h: vec![0.0; n], c: vec![0.0; n], z: vec![0.0; 4 * n], k, p: Arc::new(p) }
+        let acc = vec![0; p.wx.rows.max(p.wh.rows)];
+        QLstm { h: vec![0.0; n], c: vec![0.0; n], z: vec![0.0; 4 * n], k, acc, p: Arc::new(p) }
     }
 
     pub fn input(&self) -> usize {
@@ -60,8 +65,8 @@ impl QLstm {
         let (p, n) = (&*self.p, self.p.cell);
         let z = &mut self.z;
         z.fill(0.0);
-        qaffine(x, &p.wx, &p.bx, z, &mut self.k);
-        qaffine(&self.h, &p.wh, &p.bh, z, &mut self.k);
+        qaffine(x, &p.wx, &p.bx, z, &mut self.k, &mut self.acc);
+        qaffine(&self.h, &p.wh, &p.bh, z, &mut self.k, &mut self.acc);
         for j in 0..n {
             let g = tanh(z[j]);
             let i = sigmoid(z[n + j]);
@@ -115,8 +120,8 @@ pub(crate) mod tests {
     fn qaffine_equal_rows() {
         let p = trunk();
         let mut y = vec![0f32; 256];
-        let mut k = [0u8; 24];
-        qaffine(&[0.75; 20], &p.wx, &p.bx, &mut y, &mut k);
+        let (mut k, mut acc) = ([0u8; 24], [0i32; 256]);
+        qaffine(&[0.75; 20], &p.wx, &p.bx, &mut y, &mut k, &mut acc);
         assert!(y.iter().all(|v| v.is_finite()));
         assert_eq!(bits(&y[..4]), [0xBE906534, 0xBF6DCC64, 0x3F82C00A, 0xBF11DF08]);
         assert_eq!(fnv(bits(&y)), 5324349622486203207);

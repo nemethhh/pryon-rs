@@ -2,6 +2,12 @@ pub(crate) fn dot_i16_u8(w: &[i16], k: &[u8]) -> i32 {
     w.iter().zip(k).map(|(&a, &b)| a as i32 * b as i32).sum()
 }
 
+pub(crate) fn dot_rows(w: &[i16], stride: usize, k: &[u8], out: &mut [i32]) {
+    for (row, o) in w.chunks_exact(stride).zip(out.iter_mut()) {
+        *o = dot_i16_u8(row, &k[..stride]);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
