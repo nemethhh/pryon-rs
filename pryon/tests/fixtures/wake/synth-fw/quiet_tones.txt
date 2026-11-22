@@ -1,0 +1,64 @@
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-0: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 0 Preroll frame index (wrt cms): 0 Preroll sample index (wrt result audio): 0
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-0: {KWS} Error generating pryon_old_upl_msec metric. Exception: The estimated spoken time for end of speech was greater than recognition delivery time. (The metrics timeline may have been GC'd prematurely.)
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-0: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-0: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.9,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=160 end=960 (0.01s..0.06s) meta=952
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.9,"kwSampleStartIndex":160,"kwSampleEndIndex":3520,"kwSampleDetectionIndex":960,"activeKeywords":["ALEXA","STOP"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-1: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 1440 Preroll frame index (wrt cms): 9 Preroll sample index (wrt result audio): 1440
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-1: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-1: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.9,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=9440 end=17280 (0.59s..1.08s) meta=992
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.9,"kwSampleStartIndex":9440,"kwSampleEndIndex":16800,"kwSampleDetectionIndex":17280,"activeKeywords":["ALEXA","STOP"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-2: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 17760 Preroll frame index (wrt cms): 111 Preroll sample index (wrt result audio): 17760
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-2: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-2: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.9,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=25760 end=33600 (1.61s..2.10s) meta=968
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.9,"kwSampleStartIndex":25760,"kwSampleEndIndex":33120,"kwSampleDetectionIndex":33600,"activeKeywords":["ALEXA","STOP"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-3: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 34080 Preroll frame index (wrt cms): 213 Preroll sample index (wrt result audio): 34080
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-3: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-3: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.9,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=42080 end=49920 (2.63s..3.12s) meta=968
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.9,"kwSampleStartIndex":42080,"kwSampleEndIndex":49440,"kwSampleDetectionIndex":49920,"activeKeywords":["ALEXA","STOP"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-4: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 50400 Preroll frame index (wrt cms): 315 Preroll sample index (wrt result audio): 50400
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-4: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-4: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.9,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=58400 end=66240 (3.65s..4.14s) meta=968
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.9,"kwSampleStartIndex":58400,"kwSampleEndIndex":65760,"kwSampleDetectionIndex":66240,"activeKeywords":["ALEXA","STOP"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-5: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 66720 Preroll frame index (wrt cms): 417 Preroll sample index (wrt result audio): 66720
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-5: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-5: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.9,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=74720 end=82560 (4.67s..5.16s) meta=968
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.9,"kwSampleStartIndex":74720,"kwSampleEndIndex":82080,"kwSampleDetectionIndex":82560,"activeKeywords":["ALEXA","STOP"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-6: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 83040 Preroll frame index (wrt cms): 519 Preroll sample index (wrt result audio): 83040
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-6: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-6: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.9,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=91040 end=98880 (5.69s..6.18s) meta=968
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.9,"kwSampleStartIndex":91040,"kwSampleEndIndex":98400,"kwSampleDetectionIndex":98880,"activeKeywords":["ALEXA","STOP"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-7: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 99360 Preroll frame index (wrt cms): 621 Preroll sample index (wrt result audio): 99360
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-7: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-7: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.9,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=107360 end=115200 (6.71s..7.20s) meta=968
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.9,"kwSampleStartIndex":107360,"kwSampleEndIndex":114720,"kwSampleDetectionIndex":115200,"activeKeywords":["ALEXA","STOP"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-8: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 115680 Preroll frame index (wrt cms): 723 Preroll sample index (wrt result audio): 115680
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-8: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-8: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.9,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=123680 end=131520 (7.73s..8.22s) meta=968
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.9,"kwSampleStartIndex":123680,"kwSampleEndIndex":131040,"kwSampleDetectionIndex":131520,"activeKeywords":["ALEXA","STOP"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-9: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 132000 Preroll frame index (wrt cms): 825 Preroll sample index (wrt result audio): 132000
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-9: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-9: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.9,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=140000 end=147840 (8.75s..9.24s) meta=968
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.9,"kwSampleStartIndex":140000,"kwSampleEndIndex":147360,"kwSampleDetectionIndex":147840,"activeKeywords":["ALEXA","STOP"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-10: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 148320 Preroll frame index (wrt cms): 927 Preroll sample index (wrt result audio): 148320
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-10: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-10: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.9,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=156320 end=164160 (9.77s..10.26s) meta=968
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.9,"kwSampleStartIndex":156320,"kwSampleEndIndex":163680,"kwSampleDetectionIndex":164160,"activeKeywords":["ALEXA","STOP"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-11: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 164640 Preroll frame index (wrt cms): 1029 Preroll sample index (wrt result audio): 164640
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-11: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-11: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.9,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=172640 end=180480 (10.79s..11.28s) meta=1000
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.9,"kwSampleStartIndex":172640,"kwSampleEndIndex":180000,"kwSampleDetectionIndex":180480,"activeKeywords":["ALEXA","STOP"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[2] ERROR: DecoderID=dec: Defensively restarting Pryon decoder due to too many detection events in a short period of time.  Accept count: 12, NearMiss count: 0 at /codebuild/output/src919018660/src/Pryon/pryon/cpp/core/enumerated_notifier.cpp:2041 in PryonDecoder_PushAudioEventSamples
+pryon[2] ERROR: DecoderID=dec: Defensively restarting Pryon decoder due to too many detection events in a short period of time.  Accept count: 12, NearMiss count: 0 at /codebuild/output/src919018660/src/Pryon/pryon/cpp/core/enumerated_notifier.cpp:2041 in PryonDecoder_BacklogWait
+pushed 180800 samples (11.3s), 12 callbacks

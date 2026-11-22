@@ -14,6 +14,8 @@ const USAGE: &str = "usage:
   pryon-cli synth-wake-set fw|davs DIR [--seed N] [--force SCORE]
   pryon-cli inspect DIR
   pryon-cli wake-dump -m SET [--lfbe OUT.f32] [--out DIR] CLIP.raw
+  pryon-cli wake -m SET [-p NAME=VALUE[@SAMPLE]]... [--reset-at SAMPLE]... [--chunk N] [--bits] CLIP.raw
+  pryon-cli bench-wake -m SET [--chunk N] CLIP.raw
   pryon-cli bench -m DIR [--chunk N] [--speed X] CLIP.raw
   pryon-cli rusage -- CMD ARGS...";
 
@@ -58,6 +60,8 @@ fn dispatch(args: &[String]) -> Result<ExitCode, Fail> {
         "synth-wake-set" => cmd_synth_wake_set(rest)?,
         "inspect" => cmd_inspect(rest)?,
         "wake-dump" => cmd_wake_dump(rest)?,
+        "wake" => cmd_wake(rest)?,
+        "bench-wake" => cmd_bench_wake(rest)?,
         "bench" => cmd_bench(rest)?,
         "rusage" => return cmd_rusage(rest),
         _ => return usage(format!("unknown command {cmd}")),
@@ -77,6 +81,9 @@ struct Opts {
     force: Option<f32>,
     lfbe: Option<String>,
     out: Option<String>,
+    /// (sample, name, value).
+    props: Vec<(u64, String, i32)>,
+    resets: Vec<u64>,
     pos: Vec<String>,
 }
 
@@ -111,6 +118,24 @@ fn parse(args: &[String], allowed: &[&str]) -> Result<Opts, Fail> {
             "--force" => match val()?.parse::<f32>() {
                 Ok(x) if x > 0.0 && x < 1.0 => o.force = Some(x),
                 _ => return usage("--force needs a score strictly between 0 and 1"),
+            },
+            "-p" => {
+                let v = val()?;
+                let (assign, at) = match v.split_once('@') {
+                    Some((a, s)) => (a, s.parse::<u64>().ok()),
+                    None => (v.as_str(), Some(0)),
+                };
+                match (assign.split_once('='), at) {
+                    (Some((n, x)), Some(at)) if !n.is_empty() => match x.parse::<i32>() {
+                        Ok(x) => o.props.push((at, n.to_string(), x)),
+                        Err(_) => return usage(format!("-p {v}: VALUE must be an integer")),
+                    },
+                    _ => return usage(format!("-p {v}: expected NAME=VALUE[@SAMPLE]")),
+                }
+            }
+            "--reset-at" => match val()?.parse::<u64>() {
+                Ok(n) => o.resets.push(n),
+                Err(_) => return usage("--reset-at needs a sample index"),
             },
             "--lfbe" => o.lfbe = Some(val()?),
             "--out" => o.out = Some(val()?),
@@ -261,6 +286,71 @@ fn cmd_wake_dump(args: &[String]) -> Res {
     Ok(())
 }
 
+fn load_spotter(model: &str) -> Result<(pryon::wake::Spotter, f64), Fail> {
+    use pryon::wake::{Spotter, SpotterModel, SpotterOptions};
+    let t0 = Instant::now();
+    let m = Arc::new(rt(model, SpotterModel::load(Path::new(model)))?);
+    let sp = rt(model, Spotter::new(m, SpotterOptions::default()))?;
+    Ok((sp, t0.elapsed().as_secs_f64() * 1e3))
+}
+
+fn print_detection(keywords: &[String], d: &pryon::wake::Detection, bits: bool) {
+    let mut line = format!(
+        "EVENT keyword={} kind={:?} score={:.6} begin={} end={}",
+        keywords[d.keyword], d.kind, d.score, d.begin_sample, d.end_sample
+    );
+    if let Some(a) = d.afe {
+        line.push_str(&format!(" afe={},{}", a.start, a.end));
+    }
+    if bits {
+        line.push_str(&format!(" bits={:08x}", d.score.to_bits()));
+    }
+    println!("{line}");
+}
+
+/// Feeds the clip in `--chunk` pieces, applying properties and session ends at their samples (before that sample).
+fn cmd_wake(args: &[String]) -> Res {
+    let (o, clip) = run_setup(args, &["-m", "-p", "--reset-at", "--chunk", "--bits"])?;
+    let (mut sp, _) = load_spotter(o.model.as_ref().unwrap())?;
+    let pcm = read_clip(&clip)?;
+    let chunk = o.chunk.unwrap_or(pcm.len().max(1));
+    // (sample, order, command): properties before session ends at the same sample, each in command-line order
+    let mut cmds: Vec<(u64, usize, Option<(&str, i32)>)> = Vec::new();
+    for (i, (at, n, v)) in o.props.iter().enumerate() {
+        cmds.push((*at, i, Some((n.as_str(), *v))));
+    }
+    for (i, at) in o.resets.iter().enumerate() {
+        cmds.push((*at, o.props.len() + i, None));
+    }
+    cmds.sort();
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    let mut next = cmds.iter().peekable();
+    loop {
+        while let Some(&&(at, _, c)) = next.peek() {
+            if at > pos as u64 {
+                break;
+            }
+            match c {
+                Some((n, v)) => sp.set_property(n, v),
+                None => sp.reset(),
+            }
+            next.next();
+        }
+        if pos == pcm.len() {
+            break;
+        }
+        let stop = next.peek().map_or(pcm.len(), |c| (c.0 as usize).min(pcm.len()));
+        let end = (pos + chunk).min(stop);
+        sp.feed(&pcm[pos..end], &mut out);
+        pos = end;
+    }
+    for d in &out {
+        print_detection(sp.keywords(), d, o.bits);
+    }
+    Ok(())
+}
+
 fn self_usage() -> libc::rusage {
     // SAFETY: zeroed rusage is a valid out-buffer for getrusage.
     let mut ru: libc::rusage = unsafe { std::mem::zeroed() };
@@ -336,6 +426,50 @@ fn cmd_bench(args: &[String]) -> Res {
     println!("worst_feed_us: {worst:.0}");
     println!("max_rss_kib: {}", after.ru_maxrss);
     println!("windows: {windows}");
+    println!("load_ms: {load_ms:.1}");
+    Ok(())
+}
+
+fn cmd_bench_wake(args: &[String]) -> Res {
+    let (o, clip) = run_setup(args, &["-m", "--chunk"])?;
+    let (mut sp, load_ms) = load_spotter(o.model.as_ref().unwrap())?;
+    let mut f = rt(&clip, std::fs::File::open(&clip))?;
+    let chunk = o.chunk.unwrap_or(1600);
+    let mut bytes = vec![0u8; 2 * chunk];
+    let mut pcm = Vec::with_capacity(chunk);
+    let mut samples = 0u64;
+    let (mut out, mut detections) = (Vec::new(), 0usize);
+    let mut worst = 0.0f64;
+    let before = cpu(&self_usage());
+    loop {
+        let n = rt(&clip, read_full(&mut f, &mut bytes))?;
+        if n % 2 != 0 {
+            return Err(Fail::Run(format!("{clip}: odd byte count, not s16le")));
+        }
+        if n == 0 {
+            break;
+        }
+        pcm.clear();
+        pcm.extend(bytes[..n].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])));
+        samples += pcm.len() as u64;
+        let t = Instant::now();
+        sp.feed(&pcm, &mut out);
+        worst = worst.max(t.elapsed().as_secs_f64() * 1e6);
+        detections += out.len();
+        out.clear();
+        if n < bytes.len() {
+            break;
+        }
+    }
+    let after = self_usage();
+    let cpu_s = cpu(&after) - before;
+    let audio_s = samples as f64 / 16000.0;
+    println!("audio_s: {audio_s:.3}");
+    println!("cpu_s: {cpu_s:.3}");
+    println!("cpu_pct_of_core: {:.2}", if audio_s > 0.0 { 100.0 * cpu_s / audio_s } else { 0.0 });
+    println!("worst_feed_us: {worst:.0}");
+    println!("max_rss_kib: {}", after.ru_maxrss);
+    println!("detections: {detections}");
     println!("load_ms: {load_ms:.1}");
     Ok(())
 }

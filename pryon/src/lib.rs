@@ -1,4 +1,5 @@
-//! Bit-exact reimplementation of libpryon's acoustic event (Alexa Guard) detector: see [`SoundDetector`].
+//! Reimplementation of libpryon: the acoustic event (Alexa Guard) detector, bit-exact (see [`SoundDetector`]), and the
+//! wake word engine (see [`Spotter`]).
 pub mod cmn;
 pub mod config;
 mod cpunk;
@@ -18,3 +19,4 @@ pub use config::{SoundConfig, TypeConfig};
 pub use error::Error;
 pub use mlp::{AffineParams, Mlp, QLstmParams, QMatrix};
 pub use sound::{SoundDetector, SoundModel, SoundWindow, TypeResult, WINDOW_FRAMES, WINDOW_SAMPLES};
+pub use wake::{AfeTimes, Detection, DetectionKind, Spotter, SpotterModel, SpotterOptions};

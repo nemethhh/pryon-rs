@@ -1,0 +1,2 @@
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-0: Scorer "ww_stop" is already activated
+pushed 400000 samples (25.0s), 0 callbacks

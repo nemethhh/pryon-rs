@@ -167,6 +167,18 @@ reference of the recipe that matches the printed scores.
 On a PC, very small intermediate values are not flushed to zero, whereas NEON flushes them (as libpryon does on the
 device). No fixture is affected. Run on the device to confirm parity there.
 
+### Wake oracle fixtures
+
+`pryon/tests/fixtures/wake/{fw,alexa}/<clip>.txt` are the wake events of `pryon_test` (echo-dot-assist
+`src/tools/pryon_test.c`) for the firmware ALEXA set and alexa-en-US on the synthetic clips, run as above with
+`-m SET/pryon.manifest -x 1000`. Their tests need `PRYON_WAKE_FW_DIR` (the firmware ALEXA directory) and
+`PRYON_WAKE_SETS_DIR` (a directory holding `alexa-en-US/`).
+
+`synth-{fw,davs}/<clip>.txt` are libpryon's events for the synthetic sets of `pryon-cli synth-wake-set fw|davs DIR
+--force 0.99` on the same clips; they probe libpryon's keyword rules. They were run in real time (`-x 1`): a set
+that fires on every step makes libpryon fall behind at `-x 1000`, and then the event times change from run to run.
+In all wake fixtures the `META` lines keep only the `kw*` fields and the LSB-metadata flags.
+
 ## Third-party notices
 
 The front end and the exp approximation are reimplementations of FreeBSD msun, Ne10, Kaldi and Julien Pommier's

@@ -99,3 +99,56 @@ fn usage_errors_exit_2() {
     let out = Command::new(BIN).args(["run", "-m", "/nonexistent", clip.to_str().unwrap()]).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
 }
+
+fn wake_setup(tag: &str, force: &str) -> (TempDir, String, String) {
+    let d = scratch(tag);
+    let set = d.join("set");
+    let clip = d.join("noise.raw");
+    ok(&["synth-wake-set", "davs", set.to_str().unwrap(), "--force", force]);
+    ok(&["synth", "noise", clip.to_str().unwrap()]);
+    (d, set.to_str().unwrap().into(), clip.to_str().unwrap().into())
+}
+
+#[test]
+fn wake_prints_events() {
+    let (_d, set, clip) = wake_setup("wake", "0.99");
+    let out = ok(&["wake", "-m", &set, &clip]);
+    let first = out.lines().next().unwrap_or_default();
+    assert!(first.starts_with("EVENT keyword=ALEXA kind=Accept score=0.990000 begin=0 end=1280"), "{out}");
+    assert!(out.lines().all(|l| l.starts_with("EVENT keyword=")), "{out}");
+    assert_eq!(ok(&["wake", "-m", &set, "--chunk", "777", &clip]), out);
+    let bits = ok(&["wake", "-m", &set, "--bits", &clip]);
+    let last = bits.lines().next().unwrap().rsplit(' ').next().unwrap();
+    assert!(last.starts_with("bits=") && u32::from_str_radix(&last[5..], 16).is_ok(), "{bits}");
+}
+
+#[test]
+fn wake_property_and_reset() {
+    let (_d, set, clip) = wake_setup("wakeprop", "0.8");
+    let alexa = |out: &str| {
+        let lines = out.lines().filter(|l| l.contains("keyword=ALEXA"));
+        lines.map(|l| l.split(' ').nth(2).unwrap().to_string()).collect::<Vec<_>>()
+    };
+    let plain = alexa(&ok(&["wake", "-m", &set, &clip]));
+    assert!(!plain.is_empty() && plain.iter().all(|k| k == "kind=NearMiss"), "{plain:?}");
+    let alarm = alexa(&ok(&["wake", "-m", &set, "-p", "AlarmState=1", &clip]));
+    assert!(!alarm.is_empty() && alarm.iter().all(|k| k == "kind=Accept"), "{alarm:?}");
+    let late = ok(&["wake", "-m", &set, "-p", "AlarmState=1@200000", &clip]);
+    let first_accept = late.lines().find(|l| l.contains("keyword=ALEXA kind=Accept")).unwrap();
+    let end: u64 = first_accept.rsplit("end=").next().unwrap().parse().unwrap();
+    assert!(end > 200000, "{late}");
+    let reset = ok(&["wake", "-m", &set, "-p", "AlarmState=1", "--reset-at", "100000", &clip]);
+    assert!(reset.lines().any(|l| l.contains("ALEXA kind=Accept score=0.800000 begin=100000 end=101280")), "{reset}");
+    let bad = Command::new(BIN).args(["wake", "-m", &set, "-p", "AlarmState", &clip]).output().unwrap();
+    assert_eq!(bad.status.code(), Some(2));
+}
+
+#[test]
+fn bench_wake_prints_keys() {
+    let (_d, set, clip) = wake_setup("benchwake", "0.99");
+    let out = ok(&["bench-wake", "-m", &set, "--chunk", "1600", &clip]);
+    for k in ["audio_s", "cpu_s", "cpu_pct_of_core", "worst_feed_us", "max_rss_kib", "detections", "load_ms"] {
+        assert!(out.lines().any(|l| l.starts_with(&format!("{k}: "))), "{k}:\n{out}");
+    }
+    assert!(key(&out, "detections") > 10.0, "{out}");
+}
