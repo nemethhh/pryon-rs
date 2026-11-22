@@ -113,6 +113,97 @@ pub fn synth(clip: Clip) -> Vec<i16> {
     }
 }
 
+fn rf(rng: &mut Rng, lo: f32, hi: f32) -> f32 {
+    lo + (rng.next_u32() >> 8) as f32 / 16_777_216.0 * (hi - lo)
+}
+
+fn put_i32(o: &mut Vec<u8>, v: usize) {
+    o.push(0x04);
+    o.extend((v as i32).to_le_bytes());
+}
+
+fn put_u64(o: &mut Vec<u8>, v: usize) {
+    o.push(0xf8);
+    o.extend((v as u64).to_le_bytes());
+}
+
+fn put_fv(o: &mut Vec<u8>, v: &[f32]) {
+    o.extend(b"FV ");
+    put_i32(o, v.len());
+    v.iter().for_each(|x| o.extend(x.to_le_bytes()));
+}
+
+fn put_fm(o: &mut Vec<u8>, rows: usize, cols: usize, v: &[f32]) {
+    o.extend(b"FM ");
+    put_i32(o, rows);
+    put_i32(o, cols);
+    v.iter().for_each(|x| o.extend(x.to_le_bytes()));
+}
+
+const STRIDE_PAD: usize = 4;
+
+// Draw order per block: s, A, B (rows each), then rows*cols weights.
+fn put_qblock(o: &mut Vec<u8>, rng: &mut Rng, rows: usize, cols: usize) {
+    let s: Vec<f32> = (0..rows).map(|_| 50.0 + (rng.next_u32() % 101) as f32).collect();
+    let a: Vec<f32> = (0..rows).map(|_| rf(rng, -0.1, 0.1)).collect();
+    let b: Vec<f32> = (0..rows).map(|_| rf(rng, -0.1, 0.1)).collect();
+    o.extend(b"v1 ");
+    put_fv(o, &s);
+    put_fv(o, &a);
+    put_fv(o, &b);
+    let stride = cols + STRIDE_PAD;
+    put_u64(o, rows);
+    put_u64(o, cols);
+    put_u64(o, stride);
+    for _ in 0..rows {
+        o.extend((0..cols).map(|_| ((rng.next_u32() % 255) as i32 - 127) as i8 as u8));
+        o.extend([0u8; STRIDE_PAD]);
+    }
+}
+
+fn put_lstm(o: &mut Vec<u8>, rng: &mut Rng, name: &str, input: usize, cell: usize) {
+    o.extend(format!("<component> {name} <dynamic_quant_int_8_lstm> ").as_bytes());
+    for v in [cell, input, cell, 1] {
+        put_i32(o, v);
+    }
+    let rows = 4 * cell;
+    for cols in [input, cell] {
+        put_qblock(o, rng, rows, cols);
+        let bias: Vec<f32> = (0..rows).map(|_| rf(rng, -0.5, 0.5)).collect();
+        put_fv(o, &bias);
+    }
+    put_fm(o, 3, cell, &vec![0.0; 3 * cell]);
+    o.push(b'\n');
+}
+
+/// Synthetic dnnrt `.mlp`: `Hlstm0` trunk, `Hlstm1..=heads` (input = trunk cell), `Affine1..=heads`, routing `Affine`.
+pub fn write_mlp(trunk: (usize, usize), heads: usize, head_cell: usize, seed: u64) -> Vec<u8> {
+    let mut rng = Rng(seed);
+    let mut o = b"<dnnrt synthetic> <graph> \n".to_vec();
+    put_lstm(&mut o, &mut rng, "Hlstm0_layer_0", trunk.0, trunk.1);
+    for i in 1..=heads {
+        put_lstm(&mut o, &mut rng, &format!("Hlstm{i}_layer_0"), trunk.1, head_cell);
+    }
+    for i in 1..=heads {
+        o.extend(format!("<component> Affine{i} <affinetransform> ").as_bytes());
+        let w: Vec<f32> = (0..head_cell).map(|_| rf(&mut rng, -0.5, 0.5)).collect();
+        put_fm(&mut o, 1, head_cell, &w);
+        put_fv(&mut o, &[rf(&mut rng, -0.5, 0.5)]);
+        o.push(b'\n');
+    }
+    // Real routing: types 0-8 -> heads 0-8; 9, 10 -> head 1; 11 -> head 6.
+    let route = [0, 1, 2, 3, 4, 5, 6, 7, 8, 1, 1, 6];
+    let mut r = vec![0.0f32; 12 * 9];
+    for (t, &h) in route.iter().enumerate() {
+        r[t * 9 + h] = 1.0;
+    }
+    o.extend(b"<component> Affine <affinetransform> ");
+    put_fm(&mut o, 12, 9, &r);
+    put_fv(&mut o, &[0.0; 12]);
+    o.push(b'\n');
+    o
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
