@@ -20,6 +20,7 @@ fn shape_err<T>(m: String) -> Result<T, Error> {
     Err(Error::Format(m))
 }
 
+/// A loaded model directory: configuration plus network weights, shared (`Arc`) by any number of detectors.
 pub struct SoundModel {
     pub(crate) config: SoundConfig,
     trunk: QLstm,
@@ -28,6 +29,7 @@ pub struct SoundModel {
 }
 
 impl SoundModel {
+    /// Reads `pryon.config`, `AED.json` and the `.mlp` from `dir`; every failure is an `Err`.
     pub fn load(dir: &Path) -> Result<SoundModel, Error> {
         let config = SoundConfig::load(dir)?;
         let path = &config.mlp_path;
@@ -64,6 +66,7 @@ impl SoundModel {
         Ok(SoundModel { config, trunk, heads, readout })
     }
 
+    /// All sound types of the model, in `AED.json` order.
     pub fn type_names(&self) -> Vec<&str> {
         self.config.types.iter().map(|t| t.name.as_str()).collect()
     }

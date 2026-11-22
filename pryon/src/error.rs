@@ -1,10 +1,15 @@
 use std::{fmt, io, path::PathBuf};
 
+/// Everything loading a model or opening a detector can fail with; nothing in the crate panics on bad model files.
 #[derive(Debug)]
 pub enum Error {
+    /// A model file could not be read.
     Io { path: PathBuf, source: io::Error },
+    /// A model file is malformed or its shapes do not match the network.
     Format(String),
+    /// `pryon.config` or `AED.json` is malformed, or the requested type list is invalid (e.g. duplicate).
     Config(String),
+    /// A requested type name is not in the model.
     UnknownType(String),
 }
 

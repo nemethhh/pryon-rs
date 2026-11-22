@@ -7,25 +7,37 @@ use crate::{Error, SoundModel};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
+/// Feature frames (10 ms each) in one window.
 pub const WINDOW_FRAMES: usize = 998;
+/// Samples in one window (9.98 s at 16 kHz).
 pub const WINDOW_SAMPLES: u64 = 159_680;
 // A 400-sample frame at hop 160 spans 80-sample blocks 2f..2f+4.
 const BLOCK: u64 = 80;
 const FRAME_BLOCKS: usize = 5;
 
 #[derive(Clone, Debug, PartialEq)]
+/// One sound type's result for one window.
 pub struct TypeResult {
+    /// Sigmoid score of the type's output, 0..1.
     pub score: f32,
+    /// Samples of the window with `|x|` >= the type's energy threshold (-32768 never counts).
     pub samples_above: u32,
+    /// `score >= threshold && samples_above >= min samples`.
     pub detected: bool,
+    /// `!detected && score >= near-miss threshold` (no energy test).
     pub near_miss: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+/// The result of one complete window of `WINDOW_SAMPLES` samples counted since `new`/`reset`.
 pub struct SoundWindow {
+    /// Zero-based window number.
     pub index: u64,
+    /// `(index + 1) * WINDOW_SAMPLES`.
     pub end_sample: u64,
+    /// Max per-frame `|x|` over the window's 998 frames, 0..32767 (a frame containing -32768 contributes nothing).
     pub max_energy: i32,
+    /// One entry per requested type, in `SoundDetector::type_names` order.
     pub types: Vec<TypeResult>,
 }
 
@@ -44,6 +56,7 @@ struct Energy {
     done_max: VecDeque<i32>,
 }
 
+/// Streaming detector over 16 kHz mono s16 PCM; a trailing partial window yields nothing.
 pub struct SoundDetector {
     model: Arc<SoundModel>,
     names: Vec<String>,
@@ -123,11 +136,13 @@ impl Energy {
     }
 
     fn pop(&mut self) -> Option<(Vec<u32>, i32)> {
+        debug_assert_eq!(self.done_above.is_empty(), self.done_max.is_empty());
         Some((self.done_above.pop_front()?, self.done_max.pop_front()?))
     }
 }
 
 impl SoundDetector {
+    /// Serves the named types (empty = all, in model order); unknown or duplicate names are an `Err`.
     pub fn new(model: Arc<SoundModel>, types: &[&str]) -> Result<SoundDetector, Error> {
         let all = &model.config.types;
         let sel: Vec<usize> = if types.is_empty() {
@@ -162,10 +177,12 @@ impl SoundDetector {
         })
     }
 
+    /// The served types, in the order of `SoundWindow::types`.
     pub fn type_names(&self) -> &[String] {
         &self.names
     }
 
+    /// Restarts the stream: window counting begins at 0.
     pub fn reset(&mut self) {
         self.lfbe = Lfbe::new();
         self.silence = SilenceTracker::new();
@@ -175,12 +192,15 @@ impl SoundDetector {
         self.energy.reset();
     }
 
+    /// Appends the windows completed by `pcm`; a window comes out in the feed that supplies the 240th sample past its
+    /// end, and one feed can release up to ~50 network steps at once (channel-norm warm-up or the frame-997 flush).
     pub fn feed(&mut self, pcm: &[i16], out: &mut Vec<SoundWindow>) {
         self.energy.push(pcm);
         self.frames.clear();
         self.verdicts.clear();
         self.lfbe.push(pcm, &mut self.frames);
         self.silence.push(pcm, &mut self.verdicts);
+        debug_assert_eq!(self.frames.len(), self.verdicts.len());
         for i in 0..self.frames.len() {
             let t = (self.frame % WINDOW_FRAMES as u64) as usize;
             let index = self.frame / WINDOW_FRAMES as u64;
@@ -314,7 +334,7 @@ mod tests {
         let w = run(&m, &[], &clip_with_energy(&[(5, 10), (-32768, 1)]), 5000);
         assert_eq!(w[0].max_energy, 0);
         assert!(w[0].types.iter().all(|t| t.samples_above == 0));
-        // 1050 lies in frames 5 and 6, both holding 1150; 1400 lies in frame 7, which does not.
+        // 1050 lies in frames 5, 6, both holding 1150; 1400 in frames 7 (holds 1150) and 8 (1280..1680, does not).
         let w = run(&m, &[], &spikes(160_080, &[(1050, 900), (1150, -32768), (1400, 300)]), 7);
         assert_eq!(w[0].max_energy, 300);
         assert!(w[0].types.iter().all(|t| t.samples_above == 2));
@@ -395,12 +415,6 @@ mod tests {
         let m = model("bad");
         assert!(matches!(SoundDetector::new(m.clone(), &["cat"]), Err(Error::UnknownType(n)) if n == "cat"));
         assert!(matches!(SoundDetector::new(m, &["dogBark", "dogBark"]), Err(Error::Config(_))));
-    }
-
-    #[test]
-    fn unknown_type_errors() {
-        let m = model("unk");
-        assert!(matches!(SoundDetector::new(m, &["cat"]), Err(Error::UnknownType(_))));
     }
 
     #[test]

@@ -41,7 +41,7 @@ impl ChannelNorm {
         if silent {
             match &self.mean {
                 Some(m) => out.push((t, sub(x, m))),
-                // libpryon: a silent frame before stats releases the queue raw (it stays in the stats sum)
+                // libpryon: a silent frame before stats releases the queue raw (the flushed frames still count toward the 100-frame stats)
                 None => {
                     self.flush_raw(out);
                     out.push((t, *x));
