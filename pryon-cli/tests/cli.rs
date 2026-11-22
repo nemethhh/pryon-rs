@@ -54,6 +54,27 @@ fn bench_prints_keys() {
     let _ = std::fs::remove_dir_all(d);
 }
 
+fn key(out: &str, k: &str) -> f64 {
+    let line = out.lines().find_map(|l| l.strip_prefix(&format!("{k}: ")));
+    line.unwrap_or_else(|| panic!("{k}:\n{out}")).parse().unwrap()
+}
+
+#[test]
+fn bench_streams_clip() {
+    let (d, model, _) = setup("stream");
+    // 12 MiB of digital silence: a whole-file buffer would show in max RSS.
+    let clip = d.join("big.raw");
+    std::fs::write(&clip, vec![0u8; 12 << 20]).unwrap();
+    let out = ok(&["bench", "-m", &model, "--chunk", "1601", clip.to_str().unwrap()]);
+    assert_eq!(key(&out, "audio_s"), (6 << 20) as f64 / 16000.0, "{out}");
+    assert_eq!(key(&out, "windows"), ((6 << 20) / 159_680) as f64, "{out}");
+    assert!(key(&out, "max_rss_kib") < 16384.0, "{out}");
+    std::fs::write(&clip, [0u8; 3201]).unwrap();
+    let out = Command::new(BIN).args(["bench", "-m", &model, clip.to_str().unwrap()]).output().unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let _ = std::fs::remove_dir_all(d);
+}
+
 #[test]
 fn rusage_reports_child() {
     let out = Command::new(BIN).args(["rusage", "--", "sh", "-c", "echo hi; exit 3"]).output().unwrap();

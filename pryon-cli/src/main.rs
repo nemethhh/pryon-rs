@@ -1,5 +1,6 @@
 use pryon::{SoundDetector, SoundModel, SoundWindow};
 use pryon_testkit::{synth, write_model_dir, Clip};
+use std::io::Read;
 use std::path::Path;
 use std::process::{Command, ExitCode};
 use std::sync::Arc;
@@ -186,30 +187,62 @@ fn cpu(ru: &libc::rusage) -> f64 {
     secs(ru.ru_utime) + secs(ru.ru_stime)
 }
 
+/// Fills `buf` unless the file ends first; returns the bytes read.
+fn read_full(f: &mut std::fs::File, buf: &mut [u8]) -> std::io::Result<usize> {
+    let mut n = 0;
+    while n < buf.len() {
+        match f.read(&mut buf[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(n)
+}
+
 fn cmd_bench(args: &[String]) -> Res {
     let (o, clip) = run_setup(args, &["-m", "--chunk"])?;
     let t0 = Instant::now();
     let mut det = load(o.model.as_ref().unwrap(), &[])?;
     let load_ms = t0.elapsed().as_secs_f64() * 1e3;
-    let pcm = read_clip(&clip)?;
+    let mut f = rt(&clip, std::fs::File::open(&clip))?;
     let chunk = o.chunk.unwrap_or(800);
-    let mut wins = Vec::new();
+    let mut bytes = vec![0u8; 2 * chunk];
+    let mut pcm = Vec::with_capacity(chunk);
+    let mut samples = 0u64;
+    let (mut wins, mut windows) = (Vec::new(), 0usize);
     let mut worst = 0.0f64;
     let before = cpu(&self_usage());
-    for c in pcm.chunks(chunk) {
+    loop {
+        let n = rt(&clip, read_full(&mut f, &mut bytes))?;
+        if n % 2 != 0 {
+            return Err(Fail::Run(format!("{clip}: odd byte count, not s16le")));
+        }
+        if n == 0 {
+            break;
+        }
+        pcm.clear();
+        pcm.extend(bytes[..n].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])));
+        samples += pcm.len() as u64;
         let t = Instant::now();
-        det.feed(c, &mut wins);
+        det.feed(&pcm, &mut wins);
         worst = worst.max(t.elapsed().as_secs_f64() * 1e6);
+        windows += wins.len();
+        wins.clear();
+        if n < bytes.len() {
+            break;
+        }
     }
     let after = self_usage();
     let cpu_s = cpu(&after) - before;
-    let audio_s = pcm.len() as f64 / 16000.0;
+    let audio_s = samples as f64 / 16000.0;
     println!("audio_s: {audio_s:.3}");
     println!("cpu_s: {cpu_s:.3}");
     println!("cpu_pct_of_core: {:.2}", if audio_s > 0.0 { 100.0 * cpu_s / audio_s } else { 0.0 });
     println!("worst_feed_us: {worst:.0}");
     println!("max_rss_kib: {}", after.ru_maxrss);
-    println!("windows: {}", wins.len());
+    println!("windows: {windows}");
     println!("load_ms: {load_ms:.1}");
     Ok(())
 }
