@@ -18,7 +18,7 @@ pub(crate) use armv7::dequant_rows;
 #[cfg(not(all(pryon_neon, target_arch = "arm")))]
 pub(crate) use portable::dequant_rows;
 
-/// `num::sigmoid` / `num::tanh` over a slice in place, bit for bit.
+/// `num::sigmoid` / `num::tanh` over a slice in place, bit for bit on finite inputs.
 #[cfg(all(pryon_neon, target_arch = "arm"))]
 pub(crate) use armv7::{sigmoid_inplace, tanh_inplace};
 #[cfg(not(all(pryon_neon, target_arch = "arm")))]
