@@ -11,13 +11,12 @@ fn profile_dir() -> PathBuf {
 fn c_example_runs() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let prof = profile_dir();
-    // Only the host cc can build and run the example, so skip cross-target runs
-    // (target/<triple>/<profile>); the target dir root has CACHEDIR.TAG.
-    let target_dir = prof.parent().unwrap();
-    if !target_dir.join("CACHEDIR.TAG").exists() && !target_dir.join(".rustc_info.json").exists() {
-        eprintln!("skipped: not a host-target test run ({})", prof.display());
+    // Only the host cc can build and run the example.
+    if env!("PRYON_FFI_HOST") != env!("PRYON_FFI_TARGET") {
+        eprintln!("skipped: cross-target run ({})", env!("PRYON_FFI_TARGET"));
         return;
     }
+    let target_dir = prof.parent().unwrap();
     // Integration tests only link the rlib; build the cdylib (and keep it fresh).
     let name = prof.file_name().unwrap().to_str().unwrap();
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
