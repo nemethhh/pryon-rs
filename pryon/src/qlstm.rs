@@ -7,16 +7,17 @@ use std::sync::Arc;
 
 const LEVELS: f32 = 129.0;
 
-/// `y = bias + (y + W x)` for one input row, `y` holding `y_old` on entry; `k` is scratch of at least `x.len()`.
+/// `y = bias + (y + W x)` for one input row, `y` holding `y_old` on entry; `k` is scratch of at least `m.stride8`.
 fn qaffine(x: &[f32], m: &QMatrix, bias: &[f32], y: &mut [f32], k: &mut [u8]) {
     let (lo, hi) = x.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &v| (lo.min(v), hi.max(v)));
     let inv = if hi == lo { LEVELS } else { LEVELS / (hi - lo) };
     let off = lo + 1.0 / (inv + inv);
-    let k = &mut k[..x.len()];
-    quantize(x, inv, off, k);
+    let k = &mut k[..m.stride8];
+    quantize(x, inv, off, &mut k[..x.len()]);
+    k[x.len()..].fill(0);
     let sx = neon_sum(x);
     let rinv = 1.0 / inv;
-    for (r, (w, yr)) in m.w.chunks_exact(m.cols).zip(y.iter_mut()).enumerate() {
+    for (r, (w, yr)) in m.w.chunks_exact(m.stride8).zip(y.iter_mut()).enumerate() {
         let mut t = (rinv * dot_i16_u8(w, k) as f32) * m.rs[r];
         t = t + off * m.b[r];
         t = t + sx * m.a[r];
@@ -37,7 +38,7 @@ pub(crate) struct QLstm {
 impl QLstm {
     pub fn new(p: QLstmParams) -> Self {
         let n = p.cell;
-        let k = vec![0; p.input.max(n)];
+        let k = vec![0; p.wx.stride8.max(p.wh.stride8)];
         QLstm { h: vec![0.0; n], c: vec![0.0; n], z: vec![0.0; 4 * n], k, p: Arc::new(p) }
     }
 
@@ -114,7 +115,7 @@ pub(crate) mod tests {
     fn qaffine_equal_rows() {
         let p = trunk();
         let mut y = vec![0f32; 256];
-        let mut k = [0u8; 20];
+        let mut k = [0u8; 24];
         qaffine(&[0.75; 20], &p.wx, &p.bx, &mut y, &mut k);
         assert!(y.iter().all(|v| v.is_finite()));
         assert_eq!(bits(&y[..4]), [0xBE906534, 0xBF6DCC64, 0x3F82C00A, 0xBF11DF08]);

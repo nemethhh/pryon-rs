@@ -21,6 +21,28 @@ Tests that need Amazon models or local clips skip (`skipped: set VAR`) unless se
 - `PRYON_CLIPS_DIR`: local clips; `local_clips` checks every `<name>.raw` against `<name>_out.txt` (DAVS) and
   `<name>_fw_out.txt` (firmware).
 
+## Building for the Echo
+
+armv7 needs NDK r21e (`armv7a-linux-androideabi24-clang`, plus its `libunwind.a`) and the `armv7-linux-androideabi` rustup
+target. `.cargo/config.toml` carries the target flags, but `CARGO_TARGET_*_RUSTFLAGS` replaces them, so the env below
+repeats them (and `--cfg pryon_neon`, which selects the NEON kernel; `target_feature = "neon"` is unstable on arm):
+
+    NDK=/path/to/android-ndk-r21e
+    export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi24-clang
+    export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="-C target-feature=+neon,+d32 -C target-cpu=cortex-a35 --cfg pryon_neon -L native=$NDK/sources/cxx-stl/llvm-libc++/libs/armeabi-v7a"
+    cargo build --release --target armv7-linux-androideabi -p pryon-ffi -p pryon-cli
+
+Tests run on the host under qemu-arm with the Echo rootfs (the `unshare` is required: bionic hangs or crashes
+under bare qemu-arm). `TMPDIR` is needed because Android's default temp dir does not exist on the host;
+`ANDROID_DATA`/`ANDROID_ROOT` only silence bionic's tzdata warnings:
+
+    ROOTFS=/path/to/echo-dot-assist/firmware/donut/rootfs
+    export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUNNER="unshare --user --map-root-user --pid --fork --kill-child qemu-arm -L $ROOTFS"
+    export TMPDIR=/tmp ANDROID_DATA=/data ANDROID_ROOT=/system
+    PRYON_AED_DAVS_DIR=... PRYON_AED_MODEL_DIR=... cargo test -p pryon --target armv7-linux-androideabi
+
+`PRYON_CLIPS_DIR` is slow under qemu; leave it unset there.
+
 ## Oracle fixtures
 
 `pryon/tests/fixtures/oracle/{fw,davs}/<clip>.txt` are libpryon's `aed_test -j` outputs on our own synthetic

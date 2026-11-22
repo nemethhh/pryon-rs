@@ -4,6 +4,9 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(pryon_neon)'] }
+
 [dev-dependencies]
 pryon-testkit = { path = "../pryon-testkit" }
 serde_json = "1"

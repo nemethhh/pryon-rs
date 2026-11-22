@@ -1,2 +1,3 @@
 [target.armv7-linux-androideabi]
-rustflags = ["-C", "target-feature=+neon,+d32", "-C", "target-cpu=cortex-a35"]
+# cfg(target_feature = "neon") is unstable on arm, so `pryon_neon` gates the asm kernel.
+rustflags = ["-C", "target-feature=+neon,+d32", "-C", "target-cpu=cortex-a35", "--cfg", "pryon_neon"]

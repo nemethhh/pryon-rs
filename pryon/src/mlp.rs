@@ -5,7 +5,9 @@ use crate::Error;
 pub struct QMatrix {
     pub rows: usize,
     pub cols: usize,
-    /// int8 weights widened to i16, `rows * cols`, row stride padding dropped.
+    /// `cols` rounded up to a multiple of 8.
+    pub stride8: usize,
+    /// int8 weights widened to i16, `rows * stride8`, each row zero-padded past `cols`.
     pub w: Vec<i16>,
     /// 1/s per row.
     pub rs: Vec<f32>,
@@ -110,12 +112,14 @@ impl<'a> Cur<'a> {
         }
         let Some(total) = rows.checked_mul(stride) else { return fmt_err("length overflow") };
         let raw = self.take(total)?;
-        let mut w = Vec::with_capacity(rows * cols);
+        let stride8 = cols.div_ceil(8) * 8;
+        let mut w = Vec::with_capacity(rows * stride8);
         for row in raw.chunks_exact(stride) {
             w.extend(row[..cols].iter().map(|&x| x as i8 as i16));
+            w.resize(w.len() + stride8 - cols, 0);
         }
         let rs = s.iter().map(|&x| 1.0f32 / x).collect();
-        Ok(QMatrix { rows, cols, w, rs, a, b })
+        Ok(QMatrix { rows, cols, stride8, w, rs, a, b })
     }
 }
 
@@ -191,9 +195,12 @@ mod tests {
             rng.next_u32();
         }
         let draws: Vec<i16> = (0..256 * 20).map(|_| (rng.next_u32() % 255) as i16 - 127).collect();
-        assert_eq!(l0.wx.w[0], draws[0]);
-        assert_eq!(*l0.wx.w.last().unwrap(), *draws.last().unwrap());
-        assert_eq!(l0.wx.w, draws);
+        assert_eq!(l0.wx.stride8, 24);
+        assert_eq!(l0.wx.w.len(), 256 * 24);
+        for (row, want) in l0.wx.w.chunks_exact(24).zip(draws.chunks_exact(20)) {
+            assert_eq!(&row[..20], want);
+            assert!(row[20..].iter().all(|&v| v == 0));
+        }
     }
 
     #[test]

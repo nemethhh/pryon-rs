@@ -113,16 +113,24 @@ mod tests {
     use super::*;
     use crate::qlstm::tests::{fnv, inputs};
     use pryon_testkit::{write_mlp, write_model_dir, TYPE_NAMES};
-    use std::alloc::{GlobalAlloc, Layout, System};
-    use std::cell::Cell;
     use std::path::PathBuf;
 
+    // Android's std keeps thread_local in heap-backed OS TLS, which recurses into this allocator.
+    #[cfg(not(target_os = "android"))]
+    use std::{
+        alloc::{GlobalAlloc, Layout, System},
+        cell::Cell,
+    };
+
+    #[cfg(not(target_os = "android"))]
     struct CountingAlloc;
 
+    #[cfg(not(target_os = "android"))]
     thread_local! {
         static ALLOCS: Cell<usize> = const { Cell::new(0) };
     }
 
+    #[cfg(not(target_os = "android"))]
     unsafe impl GlobalAlloc for CountingAlloc {
         unsafe fn alloc(&self, l: Layout) -> *mut u8 {
             ALLOCS.with(|a| a.set(a.get() + 1));
@@ -133,9 +141,11 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "android"))]
     #[global_allocator]
     static GLOBAL: CountingAlloc = CountingAlloc;
 
+    #[cfg(not(target_os = "android"))]
     fn allocs() -> usize {
         ALLOCS.with(Cell::get)
     }
@@ -164,6 +174,7 @@ mod tests {
         assert_eq!(m.type_names(), TYPE_NAMES);
     }
 
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn net_step_no_alloc_shapes() {
         let m = SoundModel::load(&model_dir("alloc")).unwrap();
