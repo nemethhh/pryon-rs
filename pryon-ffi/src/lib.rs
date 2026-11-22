@@ -58,6 +58,9 @@ fn open_impl(model_dir: *const c_char, types: *const *const c_char, n: c_int) ->
     // SAFETY: non-NULL, NUL-terminated per the API contract.
     let dir = unsafe { CStr::from_ptr(model_dir) }.to_str().map_err(|_| "model_dir is not UTF-8".to_string())?;
     let mut wanted: Vec<&str> = Vec::new();
+    if !types.is_null() && n < 0 {
+        return Err("negative type count".into());
+    }
     if !types.is_null() && n > 0 {
         for i in 0..n as usize {
             // SAFETY: the caller passes n valid pointers.
@@ -70,7 +73,11 @@ fn open_impl(model_dir: *const c_char, types: *const *const c_char, n: c_int) ->
     }
     let model = Arc::new(SoundModel::load(Path::new(dir)).map_err(|e| e.to_string())?);
     let det = SoundDetector::new(model, &wanted).map_err(|e| e.to_string())?;
-    let names: Vec<CString> = det.type_names().iter().map(|s| CString::new(s.as_str()).unwrap_or_default()).collect();
+    let names = det
+        .type_names()
+        .iter()
+        .map(|s| CString::new(s.as_str()).map_err(|_| format!("type name {s:?} contains a NUL byte")))
+        .collect::<Result<Vec<CString>, String>>()?;
     if names.len() > PRYON_SOUND_MAX_TYPES {
         return Err(format!("{} types selected, at most {PRYON_SOUND_MAX_TYPES} supported", names.len()));
     }
@@ -159,7 +166,7 @@ pub unsafe extern "C" fn pryon_sound_type_count(s: *const pryon_sound) -> c_int 
     if s.is_null() {
         return -1;
     }
-    unsafe { (*s).names.len() as c_int }
+    catch_unwind(AssertUnwindSafe(|| unsafe { (*s).names.len() as c_int })).unwrap_or(-1)
 }
 
 /// # Safety
@@ -169,7 +176,10 @@ pub unsafe extern "C" fn pryon_sound_type_name(s: *const pryon_sound, i: c_int) 
     if s.is_null() || i < 0 {
         return std::ptr::null();
     }
-    unsafe { (&(*s).names).get(i as usize).map_or(std::ptr::null(), |c| c.as_ptr()) }
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        (&(*s).names).get(i as usize).map_or(std::ptr::null(), |c| c.as_ptr())
+    }))
+    .unwrap_or(std::ptr::null())
 }
 
 /// # Safety
@@ -197,7 +207,7 @@ pub unsafe extern "C" fn pryon_sound_close(s: *mut pryon_sound) {
 
 #[no_mangle]
 pub extern "C" fn pryon_version() -> *const c_char {
-    concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr().cast()
+    catch_unwind(|| concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr().cast()).unwrap_or(std::ptr::null())
 }
 
 #[cfg(test)]
@@ -350,7 +360,14 @@ mod tests {
         use std::mem::{offset_of, size_of};
         assert_eq!(size_of::<pryon_sound_type_result>(), 12);
         assert_eq!(size_of::<pryon_sound_result>(), 216);
+        assert_eq!(offset_of!(pryon_sound_type_result, score), 0);
+        assert_eq!(offset_of!(pryon_sound_type_result, samples_above), 4);
+        assert_eq!(offset_of!(pryon_sound_type_result, detected), 8);
+        assert_eq!(offset_of!(pryon_sound_type_result, near_miss), 9);
+        assert_eq!(offset_of!(pryon_sound_result, index), 0);
+        assert_eq!(offset_of!(pryon_sound_result, end_sample), 8);
         assert_eq!(offset_of!(pryon_sound_result, max_energy), 16);
+        assert_eq!(offset_of!(pryon_sound_result, n), 20);
         assert_eq!(offset_of!(pryon_sound_result, r#type), 24);
     }
 

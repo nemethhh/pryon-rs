@@ -4,10 +4,18 @@
 
 #include "pryon.h"
 
+#define OFF(t, f, v) _Static_assert(offsetof(struct t, f) == (v), #t "." #f " offset")
+OFF(pryon_sound_type_result, score, 0);
+OFF(pryon_sound_type_result, samples_above, 4);
+OFF(pryon_sound_type_result, detected, 8);
+OFF(pryon_sound_type_result, near_miss, 9);
+OFF(pryon_sound_result, index, 0);
+OFF(pryon_sound_result, end_sample, 8);
+OFF(pryon_sound_result, max_energy, 16);
+OFF(pryon_sound_result, n, 20);
+OFF(pryon_sound_result, type, 24);
 _Static_assert(sizeof(struct pryon_sound_type_result) == 12, "type_result size");
 _Static_assert(sizeof(struct pryon_sound_result) == 216, "result size");
-_Static_assert(offsetof(struct pryon_sound_result, max_energy) == 16, "max_energy offset");
-_Static_assert(offsetof(struct pryon_sound_result, type) == 24, "type offset");
 
 int main(int argc, char **argv) {
     if (argc != 3) {

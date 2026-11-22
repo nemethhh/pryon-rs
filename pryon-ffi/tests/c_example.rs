@@ -11,14 +11,25 @@ fn profile_dir() -> PathBuf {
 fn c_example_runs() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let prof = profile_dir();
-    // Integration tests only link the rlib; build the cdylib (and keep it fresh).
-    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    let mut c = Command::new(cargo);
-    c.args(["build", "-q", "-p", "pryon-ffi", "--lib"]).current_dir(&root);
-    if prof.file_name().unwrap() == "release" {
-        c.arg("--release");
+    // Only the host cc can build and run the example, so skip cross-target runs
+    // (target/<triple>/<profile>); the target dir root has CACHEDIR.TAG.
+    let target_dir = prof.parent().unwrap();
+    if !target_dir.join("CACHEDIR.TAG").exists() && !target_dir.join(".rustc_info.json").exists() {
+        eprintln!("skipped: not a host-target test run ({})", prof.display());
+        return;
     }
-    assert!(c.status().unwrap().success(), "cargo build failed");
+    // Integration tests only link the rlib; build the cdylib (and keep it fresh).
+    let name = prof.file_name().unwrap().to_str().unwrap();
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    let st = Command::new(cargo)
+        .args(["build", "-q", "-p", "pryon-ffi", "--lib", "--manifest-path"])
+        .arg(root.join("Cargo.toml"))
+        .arg("--target-dir")
+        .arg(target_dir)
+        .args(["--profile", if name == "debug" { "dev" } else { name }])
+        .status()
+        .unwrap();
+    assert!(st.success(), "cargo build failed");
     let work = std::env::temp_dir().join(format!("pryon-c-example-{}", std::process::id()));
     let model = work.join("model");
     std::fs::create_dir_all(&model).unwrap();

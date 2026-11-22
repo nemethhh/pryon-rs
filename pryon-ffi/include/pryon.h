@@ -67,7 +67,7 @@ typedef struct pryon_sound pryon_sound;
 
 /*
  * Opens the model directory. types NULL or n 0 selects every type of the model, in
- * AED.json order; otherwise the n named types (unknown or duplicate name is an error).
+ * AED.json order; otherwise (types non-NULL, n > 0) the n named types (unknown or duplicate name is an error).
  * More than PRYON_SOUND_MAX_TYPES types is an error. Returns NULL on error and, if err
  * is non-NULL and errlen > 0, writes a NUL-terminated message truncated to errlen-1 bytes.
  */
@@ -77,7 +77,8 @@ pryon_sound *pryon_sound_open(const char *model_dir, const char *const *types, i
 /*
  * Feeds n samples of 16 kHz mono s16 PCM. Writes up to max completed window results to
  * out and returns how many; results beyond max stay queued and come first on the next
- * call (n 0 drains). Returns -1 on error (NULL argument, negative max).
+ * call (n 0 drains). Returns -1 on error: s NULL, pcm NULL with n > 0, out NULL with
+ * max > 0, or negative max.
  */
 int pryon_sound_feed(pryon_sound *s, const int16_t *pcm, size_t n,
                      struct pryon_sound_result *out, int max);
