@@ -104,7 +104,7 @@ impl Spotter {
     pub fn feed(&mut self, pcm: &[i16], out: &mut Vec<Detection>) {
         let first = out.len();
         let orchestra = &mut self.orchestra;
-        self.pipeline.push(pcm, &mut |s: &StepOut| orchestra.step(s, out));
+        self.pipeline.push_frames(pcm, &mut |f, s| orchestra.tick(f, s, out));
         for d in &mut out[first..] {
             d.begin_sample += self.base;
             d.end_sample += self.base;

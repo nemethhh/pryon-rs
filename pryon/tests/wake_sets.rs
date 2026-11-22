@@ -118,7 +118,7 @@ fn loads_synthetic_davs() {
     let a = spotter(&s, "ALEXA", false);
     assert_eq!(a.scorer, "ww_alexa");
     assert_eq!(a.lock, 132);
-    assert_eq!(a.thresholds.probabilistic, Some((0.5, 0.001, 50)));
+    assert_eq!(a.thresholds.probabilistic, Some((0.5, 0.001)));
     assert_eq!((a.thresholds.min_accept, a.thresholds.max_accept), (Some(0.85), Some(0.93)));
     assert!(matches!(a.classifier, ClassifierSpec::MovingAverageMaxPool { window: 1, trim_tail: 0 }));
     assert_eq!(spotter(&s, "ALEXA", true).components[0].component, "ww_vrf_scores");
@@ -372,7 +372,7 @@ fn real_sets_load() {
         let a = spotter(&s, "ALEXA", false);
         let t = &a.thresholds;
         assert_eq!((t.accept, t.min_accept, t.max_accept, t.notify), (0.921, Some(0.845), Some(0.929), Some(0.278)));
-        assert_eq!(t.probabilistic, Some((0.527, 0.001, 50)));
+        assert_eq!(t.probabilistic, Some((0.527, 0.001)));
         assert_eq!(a.lock, 132);
         assert_eq!(spotter(&s, "ALEXA", true).thresholds.accept, 0.898);
         let stop = &spotter(&s, "STOP", false).classifier;
@@ -389,27 +389,22 @@ fn real_sets_load() {
 }
 
 #[test]
-fn de_sets_refused() {
+fn de_sets_served_or_refused() {
     let Some(root) = env_dir("PRYON_WAKE_SETS_DIR") else { return };
-    let expect = [
-        (
-            "alexa-de-DE",
-            "BDPGeneratedFiles/kw.cfg.json",
-            "field keyword-orchestra.keyword-spotters[0].spotter.probabilistic-accept-lock-period",
-        ),
-        ("amazon-de-DE", "pryon.config", "key scorer.initialize.publish_frame_count"),
-    ];
-    for (set, file, what) in expect {
-        let dir = root.join(set);
-        if !dir.join("pryon.manifest").is_file() {
-            println!("skipped: {set} not extracted under PRYON_WAKE_SETS_DIR");
-            continue;
-        }
-        let (f, w) = unsupported(load_set(&dir));
-        println!("{set}: {}: unsupported {w}", f.display());
-        assert_eq!(f, dir.join(file), "{set}");
-        assert_eq!(w, what, "{set}");
+    // alexa-de-DE only differed by the spotter-level probabilistic-accept-lock-period libpryon reads (Task 11)
+    let de = root.join("alexa-de-DE");
+    if de.join("pryon.manifest").is_file() {
+        load_set(&de).unwrap();
     }
+    let dir = root.join("amazon-de-DE");
+    if !dir.join("pryon.manifest").is_file() {
+        println!("skipped: amazon-de-DE not extracted under PRYON_WAKE_SETS_DIR");
+        return;
+    }
+    let (f, w) = unsupported(load_set(&dir));
+    println!("amazon-de-DE: {}: unsupported {w}", f.display());
+    assert_eq!(f, dir.join("pryon.config"));
+    assert_eq!(w, "key scorer.initialize.publish_frame_count");
 }
 
 #[test]
@@ -454,7 +449,7 @@ fn cross_file_checks_named() {
         (kw, r#""scorer-index": 1"#, r#""scorer-index": 9"#, "index 9"),
         (kw, r#""name": "ww_det_scores""#, r#""name": "ww_det""#, "ww_det is not an output of scorer ww_alexa"),
         (kw, r#""exponential-decay", "decay-rate": 0.6"#, r#""median", "decay-rate": 0.6"#, "classifier.type = median"),
-        (kw, r#""probabilistic-accept-lock-period": 50, "#, "", "probabilistic-accept-* given partially"),
+        (kw, r#""probabilistic-accept-probability": 0.001, "#, "", "probabilistic-accept-* given partially"),
         (dec, r#""scorer.num_dnn_outputs": 4"#, r#""scorer.num_dnn_outputs": 5"#, "num_dnn_outputs = 5"),
         (dec, r#""scorer.initialize.frame_count": 1,
       "scorer.feat.dimensions": 16,
@@ -470,5 +465,65 @@ fn cross_file_checks_named() {
         edit(&d.join(file), from, to);
         let (_, what) = unsupported(load_set(&d));
         assert!(what.contains(want), "case {i}: {what}");
+    }
+}
+
+#[test]
+fn spotter_defaults_from_libpryon() {
+    let d = davs("defaults");
+    let kw = d.join("BDPGeneratedFiles/kw.cfg.json");
+    // first occurrence: the ALEXA primary
+    edit(&kw, r#""moving-average-max-pool", "window-size": 1 }"#, r#""moving-average-max-pool" }"#);
+    edit(&kw, r#""keyword-feature-window-length": 100, "lock-period": 132"#, r#""keyword-feature-window-length": 100"#);
+    let s = load_set(&d).unwrap();
+    let a = spotter(&s, "ALEXA", false);
+    assert!(matches!(a.classifier, ClassifierSpec::MovingAverageMaxPool { window: 2, trim_tail: 0 }));
+    assert_eq!((a.lock, a.notify_lock, a.prob_lock), (25, 25, 25));
+    let v = spotter(&s, "ALEXA", true);
+    assert_eq!((v.lock, v.notify_lock, v.prob_lock), (100, 100, 100));
+}
+
+#[test]
+fn spotter_lock_periods() {
+    let d = davs("locks");
+    let kw = d.join("BDPGeneratedFiles/kw.cfg.json");
+    let at = r#""lock-period": 132 } },"#;
+    edit(&kw, at, r#""lock-period": 132, "notify-lock-period": 40, "probabilistic-accept-lock-period": 60 } },"#);
+    let s = load_set(&d).unwrap();
+    let a = spotter(&s, "ALEXA", false);
+    assert_eq!((a.lock, a.notify_lock, a.prob_lock), (132, 40, 60));
+    let d = davs("locks-over");
+    let kw = d.join("BDPGeneratedFiles/kw.cfg.json");
+    edit(&kw, at, r#""lock-period": 132, "notify-lock-period": 133 } },"#);
+    assert!(message(load_set(&d)).contains("notify-lock-period"));
+}
+
+#[test]
+fn verifier_without_primary_refused() {
+    let d = davs("orphan-verifier");
+    let kw = d.join("BDPGeneratedFiles/kw.cfg.json");
+    // drop the ALEXA primary, keep its verifier
+    let s = std::fs::read_to_string(&kw).unwrap();
+    let from = s.find(r#"{ "name": "ALEXA", "classifier""#).unwrap();
+    let end = r#""lock-period": 132 } },"#;
+    let to = s[from..].find(end).unwrap() + from + end.len();
+    std::fs::write(&kw, format!("{}{}", &s[..from], &s[to..])).unwrap();
+    let (_, what) = unsupported(load_set(&d));
+    assert!(what.contains("auxiliary spotter ALEXA without a primary"), "{what}");
+}
+
+#[test]
+fn verifier_of_unserved_primary_refused() {
+    use pryon::wake::SpotterModel;
+    let d = davs("aggregate-verifier");
+    let kw = d.join("BDPGeneratedFiles/kw.cfg.json");
+    // the verifier now belongs to HEY_DISNEY, whose aggregating primary is not served
+    let v = r#""name": "ALEXA", "scorers": [ "ww_alexa" ],
+      "spotter": { "spotter-type""#;
+    edit(&kw, v, &v.replace("ALEXA", "HEY_DISNEY"));
+    match SpotterModel::load(&d) {
+        Err(Error::Unsupported { what, .. }) => assert!(what.contains("HEY_DISNEY"), "{what}"),
+        Err(e) => panic!("expected Unsupported, got {e}"),
+        Ok(_) => panic!("loaded"),
     }
 }

@@ -1,7 +1,5 @@
-//! Keyword orchestra: per-step decoder outputs to Accept / AcceptAuxiliary / NearMiss detections.
-//!
-//! Rules v0 are pypryon's (decoder.py for single-graph sets, rules.py for DAVS) driven by the kw.cfg fields; Task 11
-//! replaces the fitted parts with libpryon's.
+//! Keyword orchestra: libpryon's single-stage keyword spotters (keyword_spotter.cpp,
+//! keyword_single_stage_spotter.cpp) driven by the kw.cfg fields, one tick per front-end frame.
 
 mod classifier;
 
@@ -9,81 +7,124 @@ use super::kwcfg::{ClassifierSpec, SpotterSpec};
 use super::pipeline::{LoadedSet, StepOut};
 use super::{Detection, DetectionKind};
 use crate::Error;
-use classifier::{Classifier, Column};
+use classifier::{Column, Smoother};
 use std::path::Path;
 
 /// Samples per LFBE frame (pinned 10 ms shift at 16 kHz).
-const FRAME_SAMPLES: i64 = 160;
-// fitted: pypryon
-const START_CYCLE: u64 = 5;
-// fitted: pypryon
-const SE_START_COLUMN: usize = 1;
-// fitted: pypryon
-const NEAR_MISS_WINDOW_STEPS: u64 = 8;
+const FRAME_SAMPLES: u64 = 160;
+/// Frame shift in milliseconds (pinned).
+const FRAME_MS: u32 = 10;
+/// libpryon's preroll the keyword start may reach back to (predicted_index_calculator.cpp).
+const PREROLL_MS: f32 = 500.0;
+/// Lowest start-alignment score libpryon accepts as valid (predicted_index_calculator.cpp).
+const START_FLOOR: f32 = -0.25;
 
-/// One spotter's score source and thresholds.
-#[derive(Debug)]
-struct Rule {
-    col: Column,
-    classifier: Classifier,
+/// Active thresholds after libpryon's clamps (keyword_spotter_thresholds.cpp, 0x9c2468).
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Thr {
     accept: f32,
-    notify: Option<f32>,
-    /// (property index, equals, accept).
-    overrides: Vec<(usize, i32, f32)>,
+    prob: f32,
+    notify: f32,
 }
 
-impl Rule {
-    fn threshold(&self, props: &[(String, i32)]) -> f32 {
-        self.overrides.iter().find(|&&(p, eq, _)| props[p].1 == eq).map_or(self.accept, |o| o.2)
-    }
-
-    /// Step score and the step its window starts at (DAVS).
-    fn score_davs(&mut self, v: &[&[f32]], t: u64) -> (f32, i64) {
-        match &mut self.classifier {
-            Classifier::Decay { rate, state } => {
-                *state = *rate * *state + (1.0 - *rate) * self.col.max(v);
-                (*state, t as i64)
-            }
-            Classifier::MaxPool { window, trim_tail } => {
-                let s = self.col.moving_average_max(v, t, *trim_tail, *window);
-                let lane = self.col.argmax_lane(v) as i64;
-                let age = (t as i64 - lane).rem_euclid(self.col.lanes as i64);
-                (s, t as i64 - age)
-            }
+impl Thr {
+    /// An absent probabilistic or notify threshold is FLT_MAX, then clamped below the accept threshold.
+    fn new(accept: f32, prob: Option<f32>, notify: Option<f32>) -> Thr {
+        let mut prob = prob.unwrap_or(f32::MAX);
+        if prob > accept {
+            prob = accept;
         }
+        // the escalate threshold (not served) defaults to FLT_MAX and is clamped to `prob`, then bounds notify
+        let mut notify = notify.unwrap_or(f32::MAX);
+        if notify > prob {
+            notify = prob;
+        }
+        Thr { accept, prob, notify }
     }
 }
 
-/// Near-miss candidate: (start step, peak score, peak step, begin frame).
-type Run = (u64, f32, u64, i64);
+/// libpryon's spotter states (keyword_spotter.cpp) with their deadline frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum State {
+    Idle,
+    /// Tracking the peak since the notify threshold was crossed on a rising score (sDelayedNotification).
+    Notify(u64),
+    /// Above the probabilistic threshold (sDelayedProbabilisticAccept); always ends in a near miss here.
+    Prob(u64),
+    /// After its own accept.
+    Locked(u64),
+    /// Locked by its primary or verifier's accept; not scored.
+    Held(u64),
+}
 
-/// pypryon's rule set per layout.
-// fitted: pypryon
-#[derive(Debug)]
-enum Flavor {
-    /// Single-graph (firmware) rules; begin from the start/end component's ring.
-    SingleGraph { se: Column, trim_tail: usize },
-    /// DAVS rules with an optional verifier; `pending` is a near miss waiting for its emission frame.
-    Davs { aux: Option<Rule>, pending: Option<(f32, i64, i64)> },
+/// Score and keyword start frame of a candidate detection.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Cand {
+    score: f32,
+    start: u64,
 }
 
 #[derive(Debug)]
-struct Keyword {
-    index: usize,
-    rule: Rule,
-    flavor: Flavor,
-    lock: i64,
-    kw_window: i64,
-    /// Frames since reset; nothing accepts at or before it.
-    lock_until: i64,
-    run: Option<Run>,
+struct Spot {
+    keyword: usize,
+    aux: bool,
+    col: Column,
+    /// The keyword-start column of the start/end component.
+    se: Column,
+    smoother: Smoother,
+    thr: Thr,
+    /// (property index, equals, thresholds).
+    overrides: Vec<(usize, i32, Thr)>,
+    lock: u64,
+    notify_lock: u64,
+    prob_lock: u64,
+    kw_window: u32,
+    /// Largest start-alignment score taken as is.
+    start_cap: f32,
+    state: State,
+    cand: Cand,
+    prev: f32,
+    /// The verifier of a primary, the primary of a verifier.
+    sibling: Option<usize>,
+}
+
+/// What a scored frame does (keyword_spotter.cpp transition, 0x9b62e0).
+enum Action {
+    Accept,
+    Prob,
+    Notify,
+}
+
+impl Spot {
+    fn active(&self, props: &[(String, i32)]) -> Thr {
+        self.overrides.iter().find(|&&(p, eq, _)| props[p].1 == eq).map_or(self.thr, |o| o.2)
+    }
+
+    /// Keyword start frame for a step ending at frame `f` (predicted_index_calculator.cpp, 0x9dee6c).
+    fn start(&self, s: f32, f: u64) -> u64 {
+        let s = if s >= START_FLOOR && self.start_cap >= s {
+            s
+        } else {
+            let a = if s > START_FLOOR { s } else { START_FLOOR };
+            if a < self.start_cap { a } else { self.start_cap }
+        };
+        let n = self.kw_window as f32;
+        let p = s * n;
+        let start = (p - n) as i64 + f as i64 + 1;
+        if start <= 0 { 1 } else { start as u64 }
+    }
+
+    fn reset(&mut self) {
+        self.state = State::Idle;
+        self.prev = -f32::MAX;
+        self.smoother.reset();
+    }
 }
 
 pub(crate) struct Orchestra {
-    keywords: Vec<Keyword>,
+    /// kw.cfg order: libpryon runs its spotters in that order every frame.
+    spots: Vec<Spot>,
     props: Vec<(String, i32)>,
-    /// LFBE frames per step.
-    fps: i64,
 }
 
 /// Served keywords: words.shrunk.txt order, each with a primary spotter, once.
@@ -115,39 +156,30 @@ impl Orchestra {
                 }
             }
         }
-        let stage = |s: &SpotterSpec| {
-            spec.stages.iter().position(|st| st.name == s.scorer).ok_or_else(|| {
-                unsupported(dir, format!("spotter {} reads scorer {}, which is not a stage", s.name, s.scorer))
-            })
-        };
         let column = |s: &SpotterSpec, comp: &str, class: usize| {
-            let st = stage(s)?;
+            let st = spec.stages.iter().position(|st| st.name == s.scorer).ok_or_else(|| {
+                unsupported(dir, format!("spotter {} reads scorer {}, which is not a stage", s.name, s.scorer))
+            })?;
             Column::new(&set.components, &format!("{}/{comp}", s.scorer), class, &spec.stages[st].graph)
         };
-        // every component any spotter names must have a layout the rules can index
+        let mut spots: Vec<Spot> = Vec::new();
         for s in &spec.spotters {
-            for c in &s.components {
-                column(s, &c.component, c.class)?;
-                if let Some(se) = &c.start_end {
-                    column(s, se, c.start_index.max(c.end_index))?;
-                }
-            }
-        }
-        let rule = |s: &SpotterSpec, single: bool| -> Result<Option<Rule>, Error> {
             let what = |w: String| unsupported(dir, format!("spotter {}: {w}", s.name));
-            let classifier = match (&s.classifier, single) {
-                (ClassifierSpec::WeightedGeometricAverage { .. }, false) => return Ok(None),
-                (&ClassifierSpec::MovingAverageMaxPool { window, trim_tail }, true) => {
-                    Classifier::MaxPool { window, trim_tail }
+            let Some(keyword) = names.iter().position(|n| n == &s.name) else {
+                return Err(what("auxiliary spotter of a keyword without a primary".into()));
+            };
+            let smoother = match s.classifier {
+                // KeywordMultiWordSpotter: not served yet; its verifier would be orphaned
+                ClassifierSpec::WeightedGeometricAverage { .. } => {
+                    if spec.spotters.iter().any(|a| a.auxiliary && a.name == s.name) {
+                        return Err(what("verifier of an aggregating primary (not implemented)".into()));
+                    }
+                    continue;
                 }
-                (&ClassifierSpec::MovingAverageMaxPool { window: 1, trim_tail: 0 }, false) => {
-                    Classifier::MaxPool { window: 1, trim_tail: 0 }
+                ClassifierSpec::MovingAverageMaxPool { window, trim_tail } => {
+                    Smoother::MaxPool { window, trim: trim_tail }
                 }
-                (&ClassifierSpec::ExponentialDecay { rate }, false) => Classifier::Decay { rate, state: 0.0 },
-                (c, _) => {
-                    let layout = if single { "single-graph" } else { "DAVS" };
-                    return Err(what(format!("classifier {c:?} on a {layout} set (not implemented)")));
-                }
+                ClassifierSpec::ExponentialDecay { rate } => Smoother::Decay { rate, state: 0.0 },
             };
             let [c] = &s.components[..] else {
                 return Err(what(format!("{} word components with a single-component classifier", s.components.len())));
@@ -156,74 +188,70 @@ impl Orchestra {
                 return Err(what("posterior-smoothers on a single-component classifier (not implemented)".into()));
             }
             let col = column(s, &c.component, c.class)?;
-            if let Classifier::MaxPool { window, trim_tail } = classifier {
-                if window == 0 || trim_tail >= col.lanes || window > col.lanes - trim_tail {
-                    return Err(what(format!("window-size {window}, trim-tail {trim_tail} over {} lanes", col.lanes)));
+            let Some(se_name) = &c.start_end else {
+                return Err(what("no keyword-start-end-component".into()));
+            };
+            let se = column(s, se_name, c.start_index)?;
+            if se.lanes != col.lanes {
+                return Err(what("start/end lanes differ from score lanes".into()));
+            }
+            match smoother {
+                Smoother::MaxPool { window, trim } if trim >= col.lanes || window > col.lanes - trim => {
+                    return Err(what(format!("window-size {window}, trim-tail {trim} over {} lanes", col.lanes)));
                 }
+                Smoother::Decay { .. } if col.lanes != 1 => {
+                    return Err(what(format!("exponential-decay over {} lanes (libpryon takes one score)", col.lanes)));
+                }
+                _ => {}
             }
             let t = &s.thresholds;
+            let prob = t.probabilistic.map(|p| p.0);
             let overrides = t
                 .overrides
                 .iter()
-                .map(|o| (props.iter().position(|(n, _)| n == &o.prop).unwrap(), o.equals, o.accept))
+                .map(|o| {
+                    let p = props.iter().position(|(n, _)| n == &o.prop).unwrap();
+                    (p, o.equals, Thr::new(o.accept, prob, t.notify))
+                })
                 .collect();
-            Ok(Some(Rule { col, classifier, accept: t.accept, notify: t.notify, overrides }))
-        };
-        let mut keywords = Vec::new();
-        for (index, name) in names.iter().enumerate() {
-            let find = |aux: bool| spec.spotters.iter().filter(move |s| &s.name == name && s.auxiliary == aux);
-            let (Some(p), None) = (find(false).next(), find(false).nth(1)) else {
-                return Err(unsupported(dir, format!("keyword {name}: more than one primary spotter")));
-            };
-            let aux = find(true).next();
-            if find(true).nth(1).is_some() {
-                return Err(unsupported(dir, format!("keyword {name}: more than one auxiliary spotter")));
-            }
-            // fitted: pypryon
-            let single = stage(p)? == 0;
-            let Some(r) = rule(p, single)? else { continue };
-            let flavor = if single {
-                if aux.is_some() {
-                    return Err(unsupported(dir, format!("keyword {name}: verifier on a single-graph set")));
-                }
-                let c = &p.components[0];
-                let Some(se) = &c.start_end else {
-                    return Err(unsupported(dir, format!("spotter {name}: no keyword-start-end-component")));
-                };
-                let se = column(p, se, SE_START_COLUMN)?;
-                if se.lanes != r.col.lanes {
-                    return Err(unsupported(dir, format!("spotter {name}: start/end lanes differ from score lanes")));
-                }
-                let Classifier::MaxPool { trim_tail, .. } = r.classifier else { unreachable!() };
-                Flavor::SingleGraph { se, trim_tail }
-            } else {
-                let aux = match aux {
-                    Some(a) => Some(rule(a, false)?.ok_or_else(|| {
-                        unsupported(dir, format!("keyword {name}: verifier with an aggregating classifier"))
-                    })?),
-                    None => None,
-                };
-                Flavor::Davs { aux, pending: None }
-            };
-            let lock = i64::from(p.lock);
-            let kw_window = i64::from(p.kw_window);
-            keywords.push(Keyword { index, rule: r, flavor, lock, kw_window, lock_until: -1, run: None });
+            let cap = PREROLL_MS / (FRAME_MS * s.kw_window) as f32;
+            spots.push(Spot {
+                keyword,
+                aux: s.auxiliary,
+                col,
+                se,
+                smoother,
+                thr: Thr::new(t.accept, prob, t.notify),
+                overrides,
+                lock: s.lock.into(),
+                notify_lock: s.notify_lock.into(),
+                prob_lock: s.prob_lock.into(),
+                kw_window: s.kw_window,
+                start_cap: if cap > 1.0 { 1.0 } else { cap },
+                state: State::Idle,
+                cand: Cand { score: 0.0, start: 1 },
+                prev: -f32::MAX,
+                sibling: None,
+            });
         }
-        let fps = spec.stages[0].frames_per_step as i64;
-        Ok(Orchestra { keywords, props, fps })
+        for i in 0..spots.len() {
+            if spots[i].aux {
+                let p = spots.iter().position(|p| !p.aux && p.keyword == spots[i].keyword);
+                let Some(p) = p else {
+                    let n = &names[spots[i].keyword];
+                    let what = format!("spotter {n}: verifier of a keyword without a served primary");
+                    return Err(unsupported(dir, what));
+                };
+                spots[i].sibling = Some(p);
+                spots[p].sibling = Some(i);
+            }
+        }
+        Ok(Orchestra { spots, props })
     }
 
     pub fn reset(&mut self) {
-        for k in &mut self.keywords {
-            k.lock_until = -1;
-            k.run = None;
-            k.rule.classifier.reset();
-            if let Flavor::Davs { aux, pending } = &mut k.flavor {
-                *pending = None;
-                if let Some(a) = aux {
-                    a.classifier.reset();
-                }
-            }
+        for s in &mut self.spots {
+            s.reset();
         }
     }
 
@@ -234,114 +262,89 @@ impl Orchestra {
         }
     }
 
-    /// Detections completed by this step; samples count from the pipeline's reset.
-    pub fn step(&mut self, s: &StepOut, out: &mut Vec<Detection>) {
-        let at = At { t: s.step, end: s.frames as i64, fps: self.fps, props: &self.props };
-        for k in &mut self.keywords {
-            match k.flavor {
-                Flavor::SingleGraph { .. } => k.step_single(s.values, &at, out),
-                Flavor::Davs { .. } => k.step_davs(s.values, &at, out),
+    /// One front-end frame (`f` frames since reset), scored when it completes a step; appends its detections.
+    pub fn tick(&mut self, f: u64, step: Option<&StepOut>, out: &mut Vec<Detection>) {
+        for i in 0..self.spots.len() {
+            self.deadline(i, f, out);
+            if let Some(s) = step {
+                self.score(i, f, s, out);
             }
+        }
+    }
+
+    /// State update at the start of the frame (keyword_spotter.cpp, 0x9b5488).
+    fn deadline(&mut self, i: usize, f: u64, out: &mut Vec<Detection>) {
+        let sp = &mut self.spots[i];
+        match sp.state {
+            State::Notify(d) | State::Prob(d) if d == f => {
+                // a verifier's near miss is dropped by libpryon's result builder ("Unexpected detection event type")
+                if !sp.aux {
+                    out.push(detection(sp.keyword, DetectionKind::NearMiss, sp.cand, f));
+                }
+                sp.state = State::Idle;
+            }
+            State::Locked(d) | State::Held(d) if d == f => sp.state = State::Idle,
+            _ => {}
+        }
+    }
+
+    /// keyword_single_stage_spotter.cpp (0x9b362c) and the action it returns (keyword_spotter.cpp, 0x9b5248).
+    fn score(&mut self, i: usize, f: u64, step: &StepOut, out: &mut Vec<Detection>) {
+        let thr = self.spots[i].active(&self.props);
+        let sp = &mut self.spots[i];
+        if let State::Held(_) = sp.state {
+            return;
+        }
+        let (s, at) = sp.smoother.score(&sp.col, step.values, step.step);
+        let cur = Cand { score: s, start: sp.start(sp.se.at(step.values, step.step, at), f) };
+        let action = match sp.state {
+            State::Idle if thr.accept <= s => Some(Action::Accept),
+            State::Idle if thr.prob <= s => Some(Action::Prob),
+            State::Idle if thr.notify <= s => Some(Action::Notify),
+            State::Notify(_) if thr.accept <= s => Some(Action::Accept),
+            State::Notify(_) if thr.prob <= s => Some(Action::Prob),
+            State::Prob(_) if thr.accept <= s => Some(Action::Accept),
+            _ => None,
+        };
+        let rising = s - sp.prev > 0.0;
+        sp.prev = s;
+        if let State::Notify(_) = sp.state {
+            if s > sp.cand.score {
+                sp.cand = cur;
+                sp.state = State::Notify(f + sp.notify_lock);
+            }
+        }
+        match action {
+            Some(Action::Accept) => {
+                let kind = if sp.aux { DetectionKind::AcceptAuxiliary } else { DetectionKind::Accept };
+                out.push(detection(sp.keyword, kind, cur, f));
+                let until = f + sp.lock;
+                sp.state = State::Locked(until);
+                if let Some(j) = sp.sibling {
+                    self.spots[j].state = State::Held(until);
+                }
+            }
+            Some(Action::Prob) => {
+                sp.cand = cur;
+                sp.state = State::Prob(f + sp.prob_lock);
+            }
+            Some(Action::Notify) if rising => {
+                sp.cand = cur;
+                sp.state = State::Notify(f + sp.notify_lock);
+            }
+            _ => {}
         }
     }
 }
 
-/// Where a step lands: its index, the frames since reset at its end, frames per step, client properties.
-#[derive(Clone, Copy)]
-struct At<'a> {
-    t: u64,
-    end: i64,
-    fps: i64,
-    props: &'a [(String, i32)],
-}
-
-fn detection(keyword: usize, kind: DetectionKind, score: f32, begin: i64, end: i64) -> Detection {
+fn detection(keyword: usize, kind: DetectionKind, c: Cand, f: u64) -> Detection {
     Detection {
         keyword,
         kind,
-        score,
-        begin_sample: (begin.max(0) * FRAME_SAMPLES) as u64,
-        end_sample: (end * FRAME_SAMPLES) as u64,
+        score: c.score,
+        begin_sample: c.start * FRAME_SAMPLES,
+        end_sample: f * FRAME_SAMPLES,
         afe: None,
-    }
-}
-
-impl Keyword {
-    /// pypryon decoder.py `Orchestra._step`; frames throughout.
-    fn step_single(&mut self, v: &[&[f32]], at: &At, out: &mut Vec<Detection>) {
-        let At { t, end, fps, props } = *at;
-        let Flavor::SingleGraph { se, trim_tail } = self.flavor else { unreachable!() };
-        if t < START_CYCLE {
-            return;
-        }
-        let Classifier::MaxPool { window, .. } = self.rule.classifier else { unreachable!() };
-        let s = self.rule.col.moving_average_max(v, t, trim_tail, window);
-        let begin = || fps * (t as i64 - se.argmax_age(v, t, trim_tail) as i64 + 1) + 1;
-        if end > self.lock_until && s >= self.rule.threshold(props) {
-            out.push(detection(self.index, DetectionKind::Accept, s, begin(), end));
-            self.lock_until = end + self.lock;
-            self.run = None;
-            return;
-        }
-        if self.rule.notify.is_some_and(|n| s >= n) && end > self.lock_until {
-            if self.run.is_none_or(|r| s > r.1) {
-                self.run = Some((t, s, t, begin()));
-            }
-        } else if let Some((_, peak, peak_t, b)) = self.run {
-            let nm_end = fps * (peak_t as i64 + 1) + self.kw_window;
-            if nm_end <= end {
-                out.push(detection(self.index, DetectionKind::NearMiss, peak, b, nm_end));
-                self.run = None;
-            }
-        }
-    }
-
-    /// pypryon rules.py `DavsOrchestra._step_keyword`; frames throughout.
-    fn step_davs(&mut self, v: &[&[f32]], at: &At, out: &mut Vec<Detection>) {
-        let At { t, end, fps, props } = *at;
-        let Flavor::Davs { aux, pending } = &mut self.flavor else { unreachable!() };
-        let (score, start) = self.rule.score_davs(v, t);
-        let aux_score = aux.as_mut().map(|a| a.score_davs(v, t));
-        if let Some((s, b, nm_end)) = *pending {
-            if end >= nm_end {
-                out.push(detection(self.index, DetectionKind::NearMiss, s, b, nm_end));
-                *pending = None;
-            }
-        }
-        if end > self.lock_until {
-            // fitted: pypryon (the verifier only when the primary does not accept)
-            let fired = if score >= self.rule.threshold(props) {
-                Some((DetectionKind::Accept, score, start))
-            } else {
-                match (aux.as_ref(), aux_score) {
-                    (Some(a), Some((s, st))) if s >= a.threshold(props) => {
-                        Some((DetectionKind::AcceptAuxiliary, s, st))
-                    }
-                    _ => None,
-                }
-            };
-            if let Some((kind, s, st)) = fired {
-                out.push(detection(self.index, kind, s, st * fps, end));
-                self.lock_until = end + self.lock;
-                self.run = None;
-                *pending = None;
-                return;
-            }
-        }
-        let Some(notify) = self.rule.notify else { return };
-        if let Some((run_start, peak, _, _)) = &mut self.run {
-            let run_start = *run_start;
-            if score > *peak {
-                self.run = Some((run_start, score, t, start * fps));
-            }
-            if t + 1 >= run_start + NEAR_MISS_WINDOW_STEPS {
-                let (_, peak, peak_t, b) = self.run.take().unwrap();
-                // fitted: pypryon (emitted a lock period after the peak step's end)
-                *pending = Some((peak, b, fps * (peak_t as i64 + 1) + self.lock));
-            }
-        } else if pending.is_none() && end > self.lock_until && score >= notify {
-            self.run = Some((t, score, t, start * fps));
-        }
     }
 }
 
@@ -349,76 +352,185 @@ impl Keyword {
 mod tests {
     use super::*;
 
-    /// A DAVS keyword over one `[1, lanes, 2]` output with lane values set per step.
-    fn davs_kw(lanes: usize, accept: f32, notify: Option<f32>, lock: i64) -> Keyword {
-        let col = Column { comp: 0, lanes, classes: 2, class: 1 };
-        let classifier = Classifier::MaxPool { window: 1, trim_tail: 0 };
-        let rule = Rule { col, classifier, accept, notify, overrides: vec![] };
-        let flavor = Flavor::Davs { aux: None, pending: None };
-        Keyword { index: 0, rule, flavor, lock, kw_window: 100, lock_until: -1, run: None }
-    }
+    const FPS: u64 = 8;
+    const LANES: usize = 4;
 
-    fn feed_davs(k: &mut Keyword, scores: &[f32], lanes: usize) -> Vec<Detection> {
-        let mut out = Vec::new();
-        for (t, &s) in scores.iter().enumerate() {
-            let mut v = vec![0.0f32; lanes * 2];
-            v[(t % lanes) * 2 + 1] = s;
-            let vals: [&[f32]; 1] = [&v];
-            k.step_davs(&vals, &At { t: t as u64, end: 8 * (t as i64 + 1), fps: 8, props: &[] }, &mut out);
+    /// A spotter over one `[1, LANES, 2]` score output (component 0) and its `[1, LANES, 2]` start/end output
+    /// (component 1, start column 0); window 1, no trim.
+    fn spot(keyword: usize, aux: bool, accept: f32, prob: Option<f32>, notify: Option<f32>, lock: u64) -> Spot {
+        Spot {
+            keyword,
+            aux,
+            col: Column { comp: 0, lanes: LANES, classes: 2, class: 1 },
+            se: Column { comp: 1, lanes: LANES, classes: 2, class: 0 },
+            smoother: Smoother::MaxPool { window: 1, trim: 0 },
+            thr: Thr::new(accept, prob, notify),
+            overrides: vec![],
+            lock,
+            notify_lock: lock,
+            prob_lock: lock,
+            kw_window: 10,
+            start_cap: 1.0,
+            state: State::Idle,
+            cand: Cand { score: 0.0, start: 1 },
+            prev: -f32::MAX,
+            sibling: None,
         }
-        out
     }
 
-    #[test]
-    fn davs_accept_lock_and_begin() {
-        let mut k = davs_kw(4, 0.9, None, 20);
-        let out = feed_davs(&mut k, &[0.1, 0.95, 0.95, 0.95, 0.1, 0.1], 4);
-        // step 1 accepts (window starts at step 1); lock 20 frames from frame 16 holds through frame 36
-        assert_eq!(out.len(), 1);
-        assert_eq!((out[0].kind, out[0].begin_sample, out[0].end_sample), (DetectionKind::Accept, 8 * 160, 16 * 160));
-        let mut k = davs_kw(4, 0.9, None, 20);
-        let out = feed_davs(&mut k, &[0.1, 0.95, 0.1, 0.1, 0.1, 0.95], 4);
-        assert_eq!(out.iter().map(|d| d.end_sample / 160).collect::<Vec<_>>(), [16, 48]);
-    }
-
-    #[test]
-    fn davs_near_miss_window() {
-        let mut k = davs_kw(16, 0.9, Some(0.3), 10);
-        let mut s = vec![0.0f32; 20];
-        s[2] = 0.4;
-        s[5] = 0.6;
-        s[10] = 0.8;
-        let out = feed_davs(&mut k, &s, 16);
-        let got: Vec<_> = out.iter().map(|d| (d.kind, d.score, d.begin_sample / 160, d.end_sample / 160)).collect();
-        // run 1 (steps 2..=9, peak 5) is emitted at step 10, which starts run 2; end = (peak+1)*8 + lock
-        let nm = DetectionKind::NearMiss;
-        assert_eq!(got, [(nm, 0.6, 5 * 8, 58), (nm, 0.8, 10 * 8, 98)]);
-    }
-
-    #[test]
-    fn single_graph_near_miss_after_feature_window() {
-        let lanes = 25;
-        let col = Column { comp: 0, lanes, classes: 2, class: 1 };
-        let se = Column { comp: 1, lanes, classes: 2, class: SE_START_COLUMN };
-        let classifier = Classifier::MaxPool { window: 1, trim_tail: 0 };
-        let rule = Rule { col, classifier, accept: 0.9, notify: Some(0.5), overrides: vec![] };
-        let flavor = Flavor::SingleGraph { se, trim_tail: 0 };
-        let mut k = Keyword { index: 1, rule, flavor, lock: 100, kw_window: 30, lock_until: -1, run: None };
+    /// Per step, every spotter's score (all lanes alike) and start-alignment score; ticks every frame.
+    fn run(o: &mut Orchestra, steps: &[(f32, f32)], frames: u64) -> Vec<(DetectionKind, usize, f32, u64, u64)> {
         let mut out = Vec::new();
-        for t in 0..20u64 {
-            let mut v = vec![0.0f32; lanes * 2];
-            let s = match t { 3 => 0.99, 6 => 0.6, 7 => 0.7, _ => 0.0 };
-            v[(t as usize % lanes) * 2 + 1] = s;
-            // se start peaks on the lane of age 2
-            let mut e = vec![0.0f32; lanes * 2];
-            e[col.lane_of_age(t, 2) * 2 + SE_START_COLUMN] = 1.0;
+        for f in 1..=frames {
+            let st = if f % FPS == 0 { Some(f / FPS - 1) } else { None };
+            let (s, a) = st.and_then(|t| steps.get(t as usize).copied()).unwrap_or((0.0, 0.0));
+            let v: Vec<f32> = (0..LANES).flat_map(|_| [0.0, s]).collect();
+            let e: Vec<f32> = (0..LANES).flat_map(|_| [a, 1.0]).collect();
             let vals: [&[f32]; 2] = [&v, &e];
-            k.step_single(&vals, &At { t, end: 6 * (t as i64 + 1), fps: 6, props: &[] }, &mut out);
+            let so = st.map(|t| StepOut { step: t, frames: f, values: &vals });
+            o.tick(f, so.as_ref(), &mut out);
         }
-        // step 3 is before START_CYCLE; the run peaks at step 7 and is emitted at 6*8 + 30 = 78 frames
-        assert_eq!(out.len(), 1, "{out:?}");
-        let d = &out[0];
-        assert_eq!((d.keyword, d.kind, d.score), (1, DetectionKind::NearMiss, 0.7));
-        assert_eq!((d.begin_sample, d.end_sample), ((6 * 6 + 1) * 160, 78 * 160));
+        out.iter().map(|d| (d.kind, d.keyword, d.score, d.begin_sample / 160, d.end_sample / 160)).collect()
+    }
+
+    fn orch(spots: Vec<Spot>) -> Orchestra {
+        let mut o = Orchestra { spots, props: vec![] };
+        let pairs: Vec<(usize, usize)> = (0..o.spots.len())
+            .filter(|&i| o.spots[i].aux)
+            .map(|i| (i, o.spots.iter().position(|p| !p.aux && p.keyword == o.spots[i].keyword).unwrap()))
+            .collect();
+        for (a, p) in pairs {
+            o.spots[a].sibling = Some(p);
+            o.spots[p].sibling = Some(a);
+        }
+        o
+    }
+
+    use DetectionKind::{Accept, AcceptAuxiliary, NearMiss};
+
+    #[test]
+    fn begin_from_start_end_component() {
+        let mut s = spot(0, false, 0.9, None, None, 100);
+        (s.kw_window, s.start_cap) = (100, 0.5);
+        // start = f + 1 + trunc(100 * a - 100), a clamped to [-0.25, 500 ms / (10 ms * 100)]
+        assert_eq!(s.start(0.3, 200), 131);
+        assert_eq!(s.start(0.9, 200), 151, "above the preroll cap");
+        assert_eq!(s.start(-0.7, 200), 76, "below the floor");
+        assert_eq!(s.start(0.3, 40), 1, "before the stream start");
+        assert_eq!(s.start(0.305, 200), 132, "truncated toward zero");
+        let mut o = orch(vec![s]);
+        let mut steps = vec![(0.1, 0.0); 12];
+        steps[11] = (0.95, 0.3);
+        assert_eq!(run(&mut o, &steps, 96), [(Accept, 0, 0.95, 96 + 1 - 70, 96)]);
+    }
+
+    #[test]
+    fn lock_units_frames() {
+        // lock 16 frames = 2 steps: the deadline frame itself may accept again
+        let mut o = orch(vec![spot(0, false, 0.9, None, None, 16)]);
+        let got: Vec<u64> = run(&mut o, &[(0.95, 0.0); 6], 48).iter().map(|e| e.4).collect();
+        assert_eq!(got, [8, 24, 40]);
+        let mut o = orch(vec![spot(0, false, 0.9, None, None, 17)]);
+        let got: Vec<u64> = run(&mut o, &[(0.95, 0.0); 6], 48).iter().map(|e| e.4).collect();
+        assert_eq!(got, [8, 32]);
+    }
+
+    #[test]
+    fn near_miss_window_from_notify_lock_period() {
+        let mut o = orch(vec![spot(0, false, 0.9, None, Some(0.5), 20)]);
+        // rises over notify at step 1 (frame 16), peaks at step 3 (frame 32): emitted at 32 + 20
+        let got = run(&mut o, &[(0.1, 0.0), (0.6, 0.0), (0.55, 0.0), (0.7, 0.4), (0.6, 0.0), (0.1, 0.0)], 80);
+        assert_eq!(got, [(NearMiss, 0, 0.7, 32 + 1 - 6, 52)]);
+    }
+
+    #[test]
+    fn near_miss_needs_a_rising_score() {
+        let mut o = orch(vec![spot(0, false, 0.9, None, Some(0.5), 20)]);
+        // a score already above notify when the previous run ends starts no new one until it rises
+        let got: Vec<u64> = run(&mut o, &[(0.6, 0.0); 8], 64).iter().map(|e| e.4).collect();
+        assert_eq!(got, [28]);
+        let mut o = orch(vec![spot(0, false, 0.9, None, Some(0.5), 20)]);
+        let mut steps = [(0.6, 0.0); 8];
+        steps[4] = (0.61, 0.0);
+        let got: Vec<u64> = run(&mut o, &steps, 64).iter().map(|e| e.4).collect();
+        assert_eq!(got, [28, 60]);
+    }
+
+    #[test]
+    fn near_miss_from_probabilistic_threshold() {
+        let mut o = orch(vec![spot(0, false, 0.9, Some(0.5), Some(0.3), 20)]);
+        // over the probabilistic threshold: the entry candidate, emitted a probabilistic lock period later
+        let got = run(&mut o, &[(0.6, 0.0), (0.8, 0.0), (0.1, 0.0), (0.1, 0.0), (0.1, 0.0)], 40);
+        assert_eq!(got, [(NearMiss, 0, 0.6, 1, 28)]);
+    }
+
+    #[test]
+    fn accept_cancels_pending_near_miss() {
+        let mut o = orch(vec![spot(0, false, 0.9, None, Some(0.5), 20)]);
+        let got = run(&mut o, &[(0.6, 0.0), (0.95, 0.0), (0.1, 0.0), (0.1, 0.0), (0.1, 0.0)], 40);
+        assert_eq!(got, [(Accept, 0, 0.95, 16 + 1 - 10, 16)]);
+    }
+
+    #[test]
+    fn verifier_same_step_precedence() {
+        // primary listed first wins a shared crossing and holds the verifier for its own lock period
+        let mut o = orch(vec![spot(0, false, 0.9, None, None, 40), spot(0, true, 0.9, None, None, 16)]);
+        let got: Vec<_> = run(&mut o, &[(0.95, 0.0); 8], 64).iter().map(|e| (e.0, e.4)).collect();
+        assert_eq!(got, [(Accept, 8), (Accept, 48)]);
+        // a verifier listed first wins and holds the primary for the verifier's lock period
+        let mut o = orch(vec![spot(0, true, 0.9, None, None, 16), spot(0, false, 0.9, None, None, 40)]);
+        let got: Vec<_> = run(&mut o, &[(0.95, 0.0); 8], 64).iter().map(|e| (e.0, e.4)).collect();
+        assert_eq!(got, [(AcceptAuxiliary, 8), (AcceptAuxiliary, 24), (AcceptAuxiliary, 40), (AcceptAuxiliary, 56)]);
+    }
+
+    #[test]
+    fn verifier_near_miss_not_emitted() {
+        let mut o = orch(vec![spot(0, false, 0.9, None, None, 20), spot(0, true, 0.9, None, Some(0.5), 20)]);
+        assert_eq!(run(&mut o, &[(0.6, 0.0), (0.1, 0.0), (0.1, 0.0), (0.1, 0.0)], 40), []);
+    }
+
+    #[test]
+    fn notify_absent_means_no_near_miss() {
+        let mut o = orch(vec![spot(0, false, 0.9, None, None, 20)]);
+        assert_eq!(run(&mut o, &[(0.6, 0.0), (0.89, 0.0), (0.1, 0.0), (0.1, 0.0)], 60), []);
+    }
+
+    #[test]
+    fn thresholds_clamped_to_accept() {
+        assert_eq!(Thr::new(0.9, Some(0.95), Some(0.97)), Thr { accept: 0.9, prob: 0.9, notify: 0.9 });
+        assert_eq!(Thr::new(0.7, Some(0.5), Some(0.3)), Thr { accept: 0.7, prob: 0.5, notify: 0.3 });
+        assert_eq!(Thr::new(0.4, Some(0.5), Some(0.45)), Thr { accept: 0.4, prob: 0.4, notify: 0.4 });
+    }
+
+    #[test]
+    fn min_max_accept_do_not_bound_overrides() {
+        // min/max-accept-threshold only bound a client sensitivity setting, which the API does not have
+        let mut s = spot(0, false, 0.9, None, None, 100);
+        s.overrides = vec![(0, 1, Thr::new(0.5, None, None))];
+        let mut o = Orchestra { spots: vec![s], props: vec![("AlarmState".into(), 0)] };
+        o.set_property("AlarmState", 1);
+        assert_eq!(run(&mut o, &[(0.6, 0.0)], 8).len(), 1);
+    }
+
+    #[test]
+    fn deadline_between_steps() {
+        let mut o = orch(vec![spot(0, false, 0.9, None, Some(0.5), 13)]);
+        // near miss due at frame 8 + 13 = 21, between steps; the stream stops at frame 21
+        let got = run(&mut o, &[(0.6, 0.0), (0.1, 0.0), (0.1, 0.0)], 21);
+        assert_eq!(got.iter().map(|e| e.4).collect::<Vec<_>>(), [21]);
+    }
+
+    #[test]
+    fn held_spotter_not_scored() {
+        // a decay verifier held by its primary does not update its state
+        let mut p = spot(0, false, 0.5, None, None, 16);
+        let mut v = spot(0, true, 0.9, None, None, 16);
+        v.col = Column { comp: 0, lanes: 1, classes: 2, class: 1 };
+        v.se = Column { comp: 1, lanes: 1, classes: 2, class: 0 };
+        v.smoother = Smoother::Decay { rate: 0.5, state: 0.0 };
+        p.thr = Thr::new(0.5, None, None);
+        let mut o = orch(vec![p, v]);
+        run(&mut o, &[(0.95, 0.0), (0.1, 0.0)], 16);
+        assert_eq!(o.spots[1].smoother, Smoother::Decay { rate: 0.5, state: 0.0 });
     }
 }

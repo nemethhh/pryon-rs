@@ -373,3 +373,82 @@ fn oracle_corpus_pypryon_level() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
+
+/// One synthetic set with kw.cfg edits (`(from, to, all occurrences)`), as `local/probe11.sh` wrote it, against
+/// libpryon's events on `Clip::Noise` (-x 1). Only ALEXA is compared: STOP and HEY_DISNEY follow the op.cfg machine.
+fn synth_variant(name: &str, fw: bool, force: f32, edits: &[(&str, &str, bool)]) {
+    let d = TempDir::new(&format!("variant-{name}"));
+    let o = WakeSetOpts { seed: 1, force_score: Some(force) };
+    if fw { write_fw_set(&d, &o) } else { write_davs_set(&d, &o) }
+    let kw = if fw { d.join("kw.cfg.json") } else { d.join("BDPGeneratedFiles/kw.cfg.json") };
+    let mut text = std::fs::read_to_string(&kw).unwrap();
+    for &(from, to, all) in edits {
+        assert!(text.contains(from), "{name}: no {from}");
+        text = if all { text.replace(from, to) } else { text.replacen(from, to, 1) };
+    }
+    std::fs::write(&kw, text).unwrap();
+    let m = Arc::new(SpotterModel::load(&d).unwrap());
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/fixtures/wake/synth-variants/{name}.txt"));
+    let fixture = std::fs::read_to_string(&path).unwrap();
+    let oracle: Vec<OracleEvent> = parse_wake(&fixture).unwrap().into_iter().filter(|e| e.keyword == "ALEXA").collect();
+    let pcm = synth(Clip::Noise);
+    let pcm = &pcm[..pushed(&fixture).unwrap().min(pcm.len())];
+    let rust: Vec<Ev> = spot(&m, pcm, 1600).into_iter().filter(|e| e.keyword == "ALEXA").collect();
+    let mut diffs = Vec::new();
+    let t = compare(&oracle, &rust, &thresholds(&d), &mut diffs);
+    println!("{name}: {}", t.line());
+    assert!(t.clean() && t.matched == oracle.len(), "{name}:\n{}", diffs.join("\n"));
+}
+
+#[test]
+fn synth_variant_fw_notify_rising_only() {
+    synth_variant("fw_f08", true, 0.8, &[]);
+}
+
+#[test]
+fn synth_variant_fw_notify_lock_period() {
+    let lock = (r#""lock-period": 100 } },"#, r#""lock-period": 100, "notify-lock-period": 40 } },"#, false);
+    synth_variant("fw_nlock40", true, 0.8, &[lock]);
+}
+
+#[test]
+fn synth_variant_fw_trim_tail_0_window_1() {
+    let c = (r#""trim-tail": 8, "window-size": 3"#, r#""trim-tail": 0, "window-size": 1"#, true);
+    synth_variant("fw_trim0_w1", true, 0.99, &[c]);
+}
+
+#[test]
+fn synth_variant_fw_lock_50() {
+    synth_variant("fw_lock50", true, 0.99, &[(r#""lock-period": 100"#, r#""lock-period": 50"#, true)]);
+}
+
+#[test]
+fn synth_variant_davs_probabilistic_near_miss() {
+    synth_variant("davs_f08", false, 0.8, &[]);
+}
+
+#[test]
+fn synth_variant_davs_notify_rising_only() {
+    let p = (r#""probabilistic-accept-threshold": 0.5"#, r#""probabilistic-accept-threshold": 0.95"#, true);
+    synth_variant("davs_f08_noprob", false, 0.8, &[p]);
+}
+
+#[test]
+fn synth_variant_davs_notify_removed() {
+    let n = (
+        r#""notify-threshold": 0.3, "probabilistic-accept-threshold": 0.5"#,
+        r#""probabilistic-accept-threshold": 0.95"#,
+        true,
+    );
+    synth_variant("davs_nonotify", false, 0.8, &[n]);
+}
+
+#[test]
+fn synth_variant_davs_verifier_accepts() {
+    synth_variant("davs_f091", false, 0.91, &[]);
+}
+
+#[test]
+fn synth_variant_davs_lock_50() {
+    synth_variant("davs_lock50", false, 0.99, &[(r#""lock-period": 132"#, r#""lock-period": 50"#, true)]);
+}

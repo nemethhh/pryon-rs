@@ -1,0 +1,7 @@
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-0: {KWS} Skipping Federated Learning; The detection frame index (6) must be greater than the feature window length (100)
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-0: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 0 Preroll frame index (wrt cms): 0 Preroll sample index (wrt result audio): 0
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-0: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-0: {KWS} segmentation_score=-inf,classifier_score=0.8,active_threshold=0.7,detection_type=NearMiss
+RESULT decoder=dec keyword=ALEXA type=0 begin=160 end=7360 (0.01s..0.46s) meta=944
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"NearMiss","kwClassificationScore":0.8,"kwActiveThreshold":0.7,"kwSampleStartIndex":160,"kwSampleEndIndex":3520,"kwSampleDetectionIndex":7360,"activeKeywords":["ALEXA"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pushed 400000 samples (25.0s), 1 callbacks

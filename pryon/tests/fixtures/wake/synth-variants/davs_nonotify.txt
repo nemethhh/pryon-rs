@@ -1,0 +1,4 @@
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-0: Scorer "ww_stop" is already activated
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-0: {KWS} Skipping Federated Learning; The detection frame index (8) must be greater than the feature window length (100)
+pryon[2] ERROR: DecoderID=dec: recognition_id=dec-0: {KWS} Unexpected detection event type NearMiss is emitted from DETECTION_AUXILIARY spotter
+pushed 400000 samples (25.0s), 0 callbacks

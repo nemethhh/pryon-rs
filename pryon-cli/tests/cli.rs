@@ -114,7 +114,7 @@ fn wake_prints_events() {
     let (_d, set, clip) = wake_setup("wake", "0.99");
     let out = ok(&["wake", "-m", &set, &clip]);
     let first = out.lines().next().unwrap_or_default();
-    assert!(first.starts_with("EVENT keyword=ALEXA kind=Accept score=0.990000 begin=0 end=1280"), "{out}");
+    assert!(first.starts_with("EVENT keyword=ALEXA kind=Accept score=0.990000 begin=160 end=1280"), "{out}");
     assert!(out.lines().all(|l| l.starts_with("EVENT keyword=")), "{out}");
     assert_eq!(ok(&["wake", "-m", &set, "--chunk", "777", &clip]), out);
     let bits = ok(&["wake", "-m", &set, "--bits", &clip]);
@@ -138,7 +138,7 @@ fn wake_property_and_reset() {
     let end: u64 = first_accept.rsplit("end=").next().unwrap().parse().unwrap();
     assert!(end > 200000, "{late}");
     let reset = ok(&["wake", "-m", &set, "-p", "AlarmState=1", "--reset-at", "100000", &clip]);
-    assert!(reset.lines().any(|l| l.contains("ALEXA kind=Accept score=0.800000 begin=100000 end=101280")), "{reset}");
+    assert!(reset.lines().any(|l| l.contains("ALEXA kind=Accept score=0.800000 begin=100160 end=101280")), "{reset}");
     let bad = Command::new(BIN).args(["wake", "-m", &set, "-p", "AlarmState", &clip]).output().unwrap();
     assert_eq!(bad.status.code(), Some(2));
 }

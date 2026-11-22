@@ -220,6 +220,16 @@ impl Pipeline {
 
     /// Feeds 16 kHz mono PCM; calls `f` once per completed step.
     pub fn push(&mut self, pcm: &[i16], f: &mut dyn FnMut(&StepOut)) {
+        self.push_frames(pcm, &mut |_, s| {
+            if let Some(s) = s {
+                f(s)
+            }
+        });
+    }
+
+    /// Like [`Pipeline::push`], but calls `f` for every front-end frame: (frames since reset, the step it
+    /// completes).
+    pub fn push_frames(&mut self, pcm: &[i16], f: &mut dyn FnMut(u64, Option<&StepOut>)) {
         let bins = self.set.spec.fe.bins;
         let (fps, input) = (self.set.spec.stages[0].frames_per_step, self.set.wiring[0].input);
         for chunk in pcm.chunks(HOP) {
@@ -233,12 +243,14 @@ impl Pipeline {
                 if self.pending == fps {
                     self.pending = 0;
                     self.run_step(f);
+                } else {
+                    f(self.frames, None);
                 }
             }
         }
     }
 
-    fn run_step(&mut self, f: &mut dyn FnMut(&StepOut)) {
+    fn run_step(&mut self, f: &mut dyn FnMut(u64, Option<&StepOut>)) {
         self.ring();
         for (s, w) in self.set.wiring.iter().enumerate() {
             if let Some((p, o)) = w.source {
@@ -259,7 +271,7 @@ impl Pipeline {
         for (v, c) in values.iter_mut().zip(comps) {
             *v = self.sessions[c.stage].output(c.output);
         }
-        f(&StepOut { step: self.step, frames: self.frames, values: &values[..comps.len()] });
+        f(self.frames, Some(&StepOut { step: self.step, frames: self.frames, values: &values[..comps.len()] }));
         self.step += 1;
     }
 
@@ -401,6 +413,20 @@ mod tests {
             assert_eq!(allocs(), before, "fw {fw}: push allocated");
             assert!(steps > 90);
         }
+    }
+
+    #[test]
+    fn push_frames_ticks_every_frame() {
+        let (_d, set) = set(true, "ticks");
+        let pcm = &synth(Clip::Noise)[..samples(20)];
+        let mut ticks = Vec::new();
+        let mut p = Pipeline::new(&set);
+        for c in pcm.chunks(333) {
+            p.push_frames(c, &mut |f, s| ticks.push((f, s.map(|s| (s.step, s.frames)))));
+        }
+        let want: Vec<(u64, Option<(u64, u64)>)> =
+            (1..=20).map(|f| (f, (f % 6 == 0).then(|| (f / 6 - 1, f)))).collect();
+        assert_eq!(ticks, want);
     }
 
     #[test]

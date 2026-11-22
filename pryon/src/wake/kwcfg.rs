@@ -36,8 +36,8 @@ pub struct Thresholds {
     pub notify: Option<f32>,
     pub min_accept: Option<f32>,
     pub max_accept: Option<f32>,
-    /// (threshold, probability, lock period); parsed, not reproduced.
-    pub probabilistic: Option<(f32, f32, u32)>,
+    /// (threshold, probability); the probabilistic accept itself is not reproduced.
+    pub probabilistic: Option<(f32, f32)>,
     pub overrides: Vec<Override>,
 }
 
@@ -52,7 +52,10 @@ pub struct SpotterSpec {
     pub smoothers: Vec<f32>,
     pub thresholds: Thresholds,
     pub kw_window: u32,
+    /// Frames.
     pub lock: u32,
+    pub notify_lock: u32,
+    pub prob_lock: u32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -306,11 +309,11 @@ fn classifier(d: &Doc, c: &Obj, components: usize) -> Result<ClassifierSpec, Err
     match d.str(c, "type")? {
         "moving-average-max-pool" => {
             check(&["type", "window-size", "trim-tail"])?;
-            let window: usize = d.int(c, "window-size")?;
+            // libpryon's defaults (keyword_score_smoother.cpp, 0x9b0e48)
+            let window: usize = d.opt_int(c, "window-size")?.unwrap_or(2);
             if window == 0 {
                 return Err(d.unsup(format!("{} = 0", c.at("window-size"))));
             }
-            // fitted: pypryon (absent in the DAVS sets; window-1 max over all lanes matched the oracle)
             let trim_tail = d.opt_int(c, "trim-tail")?.unwrap_or(0);
             single(ClassifierSpec::MovingAverageMaxPool { window, trim_tail })
         }
@@ -350,13 +353,12 @@ const THRESHOLD_KEYS: &[&str] = &[
 ];
 
 fn thresholds(d: &Doc, t: &Obj) -> Result<Thresholds, Error> {
-    let probabilistic = match (
-        d.opt_f32(t, "probabilistic-accept-threshold")?,
-        d.opt_f32(t, "probabilistic-accept-probability")?,
-        d.opt_int::<u32>(t, "probabilistic-accept-lock-period")?,
-    ) {
-        (Some(a), Some(b), Some(c)) => Some((a, b, c)),
-        (None, None, None) => None,
+    // libpryon reads the lock period at spotter level only; this one is ignored (keyword_spotter_config.cpp)
+    d.opt_int::<u32>(t, "probabilistic-accept-lock-period")?;
+    let prob = (d.opt_f32(t, "probabilistic-accept-threshold")?, d.opt_f32(t, "probabilistic-accept-probability")?);
+    let probabilistic = match prob {
+        (Some(a), Some(b)) => Some((a, b)),
+        (None, None) => None,
         _ => return Err(d.unsup(format!("{}.probabilistic-accept-* given partially", t.path))),
     };
     let mut overrides = Vec::new();
@@ -389,6 +391,8 @@ const SPOTTER_KEYS: &[&str] = &[
     "word-component-array",
     "keyword-feature-window-length",
     "lock-period",
+    "notify-lock-period",
+    "probabilistic-accept-lock-period",
     "spotter-type",
     "posterior-smoothers",
     "is-local-command",
@@ -434,6 +438,20 @@ fn spotter(d: &Doc, e: &Obj, single: Option<&str>) -> Result<SpotterSpec, Error>
         (Some(_), Some(_)) => return Err(d.unsup(format!("{} in a single-scorer set", e.at("scorers")))),
         (None, None) => return Err(d.bad(format!("missing {}", e.at("scorers")))),
     };
+    // libpryon's defaults (keyword_spotter_config.cpp, 0x9b7460); a threshold-level lock period is not read
+    let lock = d.opt_int(&s, "lock-period")?.unwrap_or(25);
+    let sub_lock = |key: &str| -> Result<u32, Error> {
+        let v = d.opt_int(&s, key)?.unwrap_or(lock);
+        if v > lock {
+            return Err(d.bad(format!("{} = {v} exceeds lock-period {lock}", s.at(key))));
+        }
+        Ok(v)
+    };
+    let (notify_lock, prob_lock) = (sub_lock("notify-lock-period")?, sub_lock("probabilistic-accept-lock-period")?);
+    let kw_window = d.int(&s, "keyword-feature-window-length")?;
+    if kw_window == 0 {
+        return Err(d.unsup(format!("{} = 0", s.at("keyword-feature-window-length"))));
+    }
     Ok(SpotterSpec {
         name: d.str(e, "name")?.to_string(),
         auxiliary: s.get("spotter-type").is_some(),
@@ -442,8 +460,10 @@ fn spotter(d: &Doc, e: &Obj, single: Option<&str>) -> Result<SpotterSpec, Error>
         components,
         smoothers,
         thresholds: thresholds(d, &d.sub(&s, "classification-thresholds", THRESHOLD_KEYS)?)?,
-        kw_window: d.int(&s, "keyword-feature-window-length")?,
-        lock: d.int(&s, "lock-period")?,
+        kw_window,
+        lock,
+        notify_lock,
+        prob_lock,
     })
 }
 
