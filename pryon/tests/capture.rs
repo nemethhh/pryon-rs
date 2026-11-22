@@ -8,6 +8,9 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+/// Clips per set (local/capture/capture_all.sh).
+const CLIPS: usize = 4;
+
 struct Captured {
     set: Arc<LoadedSet>,
     clips: Vec<PathBuf>,
@@ -38,10 +41,18 @@ fn captured() -> Option<Vec<Captured>> {
         let mut clips: Vec<PathBuf> = std::fs::read_dir(&top)
             .unwrap_or_else(|e| panic!("{}: {e} (run local/capture/capture_all.sh)", top.display()))
             .map(|e| e.unwrap().path())
-            .filter(|p| p.join("capture.json").is_file())
+            .filter(|p| p.is_dir())
             .collect();
         clips.sort();
-        assert!(!clips.is_empty(), "{}: no captures", top.display());
+        let unfinished: Vec<String> =
+            clips.iter().filter(|p| !p.join("capture.json").is_file()).map(|p| name(p)).collect();
+        assert!(unfinished.is_empty(), "{}: captures without capture.json: {unfinished:?}", top.display());
+        let names: Vec<String> = clips.iter().map(|p| name(p)).collect();
+        let what = "an accept, a near miss, silence and music";
+        assert_eq!(clips.len(), CLIPS, "{}: want {what}, have {names:?}", top.display());
+        for st in &set.spec.stages {
+            assert_eq!(st.inputs.len(), 1, "stage {}: {} inputs; the tests feed one", st.name, st.inputs.len());
+        }
         out.push(Captured { set, clips });
     }
     Some(out)
@@ -52,25 +63,61 @@ struct Step {
     meta: Map<String, Value>,
 }
 
+/// A tensor as the tracer recorded it.
+enum Saved {
+    Values(Vec<f32>),
+    /// Recorded without data: libpryon held it as integers (shape arithmetic).
+    Unsaved,
+    Absent,
+}
+
 impl Step {
-    /// The tensor's values; `None` when libpryon held it in a type the tracer does not save (integers).
-    fn tensor(&self, name: &str) -> Option<Vec<f32>> {
-        let file = self.meta.get(name)?.get("file")?.as_str()?;
+    fn saved(&self, name: &str) -> Saved {
+        let Some(entry) = self.meta.get(name) else { return Saved::Absent };
+        let Some(file) = entry.get("file").and_then(Value::as_str) else { return Saved::Unsaved };
         let b = std::fs::read(self.dir.join(file)).unwrap();
-        Some(b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+        Saved::Values(b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+    }
+
+    /// The values of a tensor that must have been saved (stage inputs, state).
+    fn values(&self, name: &str) -> Vec<f32> {
+        match self.saved(name) {
+            Saved::Values(v) => v,
+            Saved::Unsaved => panic!("{}: {name} has no saved values", self.dir.display()),
+            Saved::Absent => panic!("{}: {name} not captured", self.dir.display()),
+        }
+    }
+
+    /// Saved values when there are any (graph constants and integer tensors have none).
+    fn opt(&self, name: &str) -> Option<Vec<f32>> {
+        match self.saved(name) {
+            Saved::Values(v) => Some(v),
+            _ => None,
+        }
     }
 }
 
-/// Captured steps 0, 1, … of a stage, up to the first one missing.
+/// The complete captured steps 0, 1, … of a stage: at least one, all marked complete, except a last one the
+/// tracer recorded in capture.json as cut short by pryon_test's exit (skipped with a note).
 fn steps(clip: &Path, stage: &str) -> Vec<Step> {
-    (0..)
-        .map(|t| clip.join(stage).join(format!("{t:05}")))
-        .map_while(|dir| {
-            let text = std::fs::read_to_string(dir.join("shape.json")).ok()?;
-            let Value::Object(meta) = serde_json::from_str(&text).unwrap() else { panic!("{}", dir.display()) };
-            Some(Step { dir, meta })
-        })
-        .collect()
+    let cap: Value = serde_json::from_str(&std::fs::read_to_string(clip.join("capture.json")).unwrap()).unwrap();
+    let cut = cap["stages"][stage]["incomplete_step"].as_u64();
+    let mut out = Vec::new();
+    for t in 0.. {
+        let dir = clip.join(stage).join(format!("{t:05}"));
+        let Ok(text) = std::fs::read_to_string(dir.join("shape.json")) else { break };
+        let v: Value = serde_json::from_str(&text).unwrap();
+        let Some(Value::Object(meta)) = v.get("tensors").cloned() else { panic!("{}: no tensors", dir.display()) };
+        if v["complete"] != Value::Bool(true) {
+            let last = !clip.join(stage).join(format!("{:05}", t + 1)).exists();
+            assert!(last && cut == Some(t), "{}: step incomplete (graph run not finished)", dir.display());
+            println!("{} {stage}: step {t} cut short by the process exit, skipped", name(clip));
+            break;
+        }
+        out.push(Step { dir, meta });
+    }
+    assert!(!out.is_empty(), "{}: no complete {stage} steps", clip.display());
+    out
 }
 
 fn pcm(clip: &Path) -> Vec<i16> {
@@ -115,7 +162,7 @@ fn capture_lfbe_bits() {
     let mut bad = Vec::new();
     for c in &caps {
         let st = &c.set.spec.stages[0];
-        let StageInput::Audio(input) = &st.inputs[0] else { panic!("stage 0 has no audio input") };
+        let [StageInput::Audio(input)] = &st.inputs[..] else { panic!("stage 0 has no single audio input") };
         let (fps, bins) = (st.frames_per_step, c.set.spec.fe.bins);
         for clip in &c.clips {
             let mut fe = pryon::lfbe::Lfbe::with_spec(c.set.spec.fe);
@@ -124,12 +171,12 @@ fn capture_lfbe_bits() {
                 fe.push_flat(chunk, &mut frames);
             }
             let steps = steps(clip, &st.name);
-            assert!(!steps.is_empty(), "{}: no {} steps", clip.display(), st.name);
             let mut differ = 0;
             for (t, s) in steps.iter().enumerate() {
-                let got = s.tensor(input).unwrap_or_else(|| panic!("{}: step {t} has no {input}", clip.display()));
+                let got = s.values(input);
                 let want = frames.get(t * fps * bins..(t + 1) * fps * bins);
                 let want = want.unwrap_or_else(|| panic!("{}: step {t} beyond the engine's frames", clip.display()));
+                assert_eq!(got.len(), want.len(), "{} step {t}: {input} values", clip.display());
                 let (n, u, at) = diff(&got, want);
                 if n > 0 {
                     differ += 1;
@@ -146,10 +193,7 @@ fn capture_lfbe_bits() {
     assert!(bad.is_empty(), "LFBE frames differ:\n{}", bad.join("\n"));
 }
 
-/// The state every stage starts from (LSTM lanes, recurrent buffers) equals libpryon's step-0 state. libpryon leaves
-/// a recurrent buffer whose graph stores no value (the firmware set's data-less placeholders, with
-/// `recurrent_state_initialization` false) uninitialized: heap contents that change with the install path. The
-/// engine zero-fills those; they are reported, not compared.
+/// Step-0 state equals libpryon's, except unprimed recurrent buffers: libpryon leaves those as uninitialized heap.
 #[test]
 fn capture_initial_state() {
     let Some(caps) = captured() else { return };
@@ -158,11 +202,10 @@ fn capture_initial_state() {
         let p = Pipeline::new(&c.set);
         for (s, st) in c.set.spec.stages.iter().enumerate() {
             for clip in &c.clips {
-                let step0 = steps(clip, &st.name).into_iter().next();
-                let step0 = step0.unwrap_or_else(|| panic!("{}: no {} step 0", clip.display(), st.name));
+                let step0 = steps(clip, &st.name).into_iter().next().unwrap();
                 for (input, _) in st.lstm.iter().chain(&st.recurrent) {
                     let ours = p.input(s, input).unwrap();
-                    let got = step0.tensor(input).unwrap_or_else(|| panic!("{}: no {input}", clip.display()));
+                    let got = step0.values(input);
                     assert_eq!(got.len(), ours.len(), "{} {input}", st.name);
                     let (n, u, _) = diff(&got, ours);
                     let what = format!("{} {} {input}", st.name, name(clip));
@@ -203,8 +246,10 @@ struct StageReport {
     steps: usize,
     tensors: usize,
     equal: usize,
-    /// Tensors the engine traces but the tracer did not save (counted per step).
-    unmatched: BTreeMap<String, usize>,
+    /// Traced by the engine, recorded by the tracer without data (libpryon integers), counted per step.
+    unsaved: BTreeMap<String, usize>,
+    /// Traced by the engine but absent from a complete captured step: a capture fault, fails the test.
+    missing: BTreeMap<String, usize>,
     /// Per diverging tensor: (op, node, max ulp).
     worst: BTreeMap<String, (String, usize, u32)>,
     roots: BTreeMap<String, Root>,
@@ -231,10 +276,7 @@ fn node_table(clip: &Path, stage: &str) -> HashMap<String, (usize, String, Vec<S
     out
 }
 
-/// Every stage, fed libpryon's captured inputs and state of each step, reproduces every captured node output bit
-/// for bit. On failure the message is the divergence report: per stage the first diverging node in graph order
-/// (output differs, inputs bit-equal) with its op type, first step and max ulp, then every such node and every
-/// diverging tensor.
+/// Fed libpryon's inputs and state per step, every node output is bit-equal; the failure message is the report.
 #[test]
 fn capture_nodes_bits() {
     let Some(caps) = captured() else { return };
@@ -244,9 +286,10 @@ fn capture_nodes_bits() {
         let set = &c.set;
         for (s, st) in set.spec.stages.iter().enumerate() {
             let mut inputs: Vec<&str> = st.lstm.iter().chain(&st.recurrent).map(|(i, _)| i.as_str()).collect();
-            inputs.push(match &st.inputs[0] {
-                StageInput::Audio(n) => n,
-                StageInput::Artifact { input, .. } => input,
+            inputs.push(match &st.inputs[..] {
+                [StageInput::Audio(n)] => n,
+                [StageInput::Artifact { input, .. }] => input,
+                _ => panic!("stage {}: {} inputs; the test feeds one", st.name, st.inputs.len()),
             });
             let mut r = StageReport::default();
             for clip in &c.clips {
@@ -255,14 +298,16 @@ fn capture_nodes_bits() {
                 for (t, step) in steps(clip, &st.name).iter().enumerate() {
                     for input in &inputs {
                         let i = set.graphs[s].input_index(input).unwrap();
-                        let v = step.tensor(input).unwrap_or_else(|| panic!("{}: no {input}", step.dir.display()));
+                        let v = step.values(input);
+                        assert_eq!(v.len(), sess.input(i).len(), "{}: {input} values", step.dir.display());
                         sess.input_mut(i).copy_from_slice(&v);
                     }
                     let mut differ: HashSet<String> = HashSet::new();
                     sess.run_traced(&mut |tensor, _dims, ours| {
-                        let Some(got) = step.tensor(tensor) else {
-                            *r.unmatched.entry(tensor.to_string()).or_default() += 1;
-                            return;
+                        let got = match step.saved(tensor) {
+                            Saved::Values(v) => v,
+                            Saved::Unsaved => return *r.unsaved.entry(tensor.to_string()).or_default() += 1,
+                            Saved::Absent => return *r.missing.entry(tensor.to_string()).or_default() += 1,
                         };
                         assert_eq!(got.len(), ours.len(), "{} {tensor}: values", step.dir.display());
                         r.tensors += 1;
@@ -286,7 +331,7 @@ fn capture_nodes_bits() {
                             return;
                         }
                         let finite =
-                            ins.iter().all(|x| step.tensor(x).is_none_or(|v| v.iter().all(|y| y.is_finite())));
+                            ins.iter().all(|x| step.opt(x).is_none_or(|v| v.iter().all(|y| y.is_finite())));
                         let root = r.roots.entry(tensor.to_string()).or_insert_with(|| Root {
                             op: op.clone(),
                             node: *node,
@@ -306,7 +351,8 @@ fn capture_nodes_bits() {
                     r.steps += 1;
                 }
             }
-            diverged |= !r.worst.is_empty();
+            assert!(r.steps > 0 && r.tensors > 0, "stage {}: nothing compared ({} steps)", st.name, r.steps);
+            diverged |= !r.worst.is_empty() || !r.missing.is_empty();
             report += &stage_report(set, &st.name, c.clips.len(), &r);
         }
     }
@@ -328,7 +374,12 @@ fn stage_report(set: &LoadedSet, stage: &str, clips: usize, r: &StageReport) -> 
     roots.sort_by_key(|(t, x)| (x.node, t.as_str()));
     let first = |finite: bool| roots.iter().find(|(_, x)| !finite || x.finite_steps > 0);
     match (first(true), first(false)) {
-        (_, None) => o += "   no divergence\n",
+        (_, None) if r.worst.is_empty() && r.missing.is_empty() => o += "   no divergence\n",
+        (_, None) if r.worst.is_empty() => o += "   no divergence among the compared tensors; some are MISSING\n",
+        (_, None) => {
+            o += "   no node diverges on bit-equal inputs; every diverging tensor is downstream of a value the \
+                   engine does not trace\n"
+        }
         (f, Some((t, x))) => {
             if let Some((t, x)) = f {
                 let (clip, step) = x.finite_first.clone().unwrap();
@@ -364,19 +415,24 @@ fn stage_report(set: &LoadedSet, stage: &str, clips: usize, r: &StageReport) -> 
                     x.finite_max_abs
                 );
             }
-            let mut worst: Vec<(&String, &(String, usize, u32))> = r.worst.iter().collect();
-            worst.sort_by_key(|(t, w)| (w.1, t.as_str()));
-            o += &format!("   diverging tensors ({}), max ulp:\n", worst.len());
-            for (t, (op, node, u)) in worst {
-                o += &format!("     node {node:3} {op:<18} {t}: {}\n", ulp(*u));
-            }
+        }
+    }
+    if !r.worst.is_empty() {
+        let mut worst: Vec<(&String, &(String, usize, u32))> = r.worst.iter().collect();
+        worst.sort_by_key(|(t, w)| (w.1, t.as_str()));
+        o += &format!("   diverging tensors ({}), max ulp:\n", worst.len());
+        for (t, (op, node, u)) in worst {
+            o += &format!("     node {node:3} {op:<18} {t}: {}\n", ulp(*u));
         }
     }
     let ops: Vec<String> = r.ops.iter().map(|(op, (n, e))| format!("{op} {e}/{n}")).collect();
     o += &format!("   bit-equal outputs from bit-equal inputs, by op: {}\n", ops.join(", "));
-    if !r.unmatched.is_empty() {
-        let names: Vec<&str> = r.unmatched.keys().map(String::as_str).collect();
-        o += &format!("   traced by the engine, not saved by the tracer: {}\n", names.join(", "));
+    let list = |m: &BTreeMap<String, usize>| m.keys().map(String::as_str).collect::<Vec<_>>().join(", ");
+    if !r.unsaved.is_empty() {
+        o += &format!("   traced by the engine, held as integers by libpryon (not compared): {}\n", list(&r.unsaved));
+    }
+    if !r.missing.is_empty() {
+        o += &format!("   MISSING from the captures (traced by the engine): {}\n", list(&r.missing));
     }
     o
 }
