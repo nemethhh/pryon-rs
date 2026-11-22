@@ -3,6 +3,7 @@
 //! Third-party: `msun_logf` ports FreeBSD msun e_logf.c (Sun, permissive); the FFT operation order follows
 //! Ne10 (BSD-3-Clause); the window/power/mel stages follow Kaldi (Apache-2.0). See THIRD_PARTY_NOTICES.md.
 use crate::lfbe_tables::{NE_SU, NE_TW, POVEY};
+use crate::num::sdot_vfp;
 
 pub const BINS: usize = 20;
 const FL: usize = 400;
@@ -10,25 +11,6 @@ const HOP: usize = 160;
 const N: usize = 512;
 const TW81: f32 = 0.70710678;
 const TW81N: f32 = -0.70710678;
-
-/// OpenBLAS ARMv7 sdot_vfp order: two accumulators over blocks of four, remainder into the first.
-pub(crate) fn sdot(a: &[f32], b: &[f32]) -> f32 {
-    let n = a.len().min(b.len());
-    let (mut s0, mut s1) = (0f32, 0f32);
-    let mut i = 0;
-    while i + 4 <= n {
-        s0 += a[i] * b[i];
-        s1 += a[i + 1] * b[i + 1];
-        s0 += a[i + 2] * b[i + 2];
-        s1 += a[i + 3] * b[i + 3];
-        i += 4;
-    }
-    while i < n {
-        s0 += a[i] * b[i];
-        i += 1;
-    }
-    s0 + s1
-}
 
 /// FreeBSD msun `__ieee754_logf`, including its non-finite and subnormal handling (no libm).
 pub(crate) fn msun_logf(x: f32) -> f32 {
@@ -535,7 +517,7 @@ impl Lfbe {
             w[i] = self.buf[pos + i] as f32;
         }
         let ones = [1f32; FL];
-        let mean = -sdot(&w[..FL], &ones) / FL as f32;
+        let mean = -sdot_vfp(&w[..FL], &ones) / FL as f32;
         for v in &mut w[..FL] {
             *v += mean;
         }
@@ -558,7 +540,7 @@ impl Lfbe {
         w[N / 2] = last_e;
         let mut out = [0f32; BINS];
         for (b, o) in out.iter_mut().enumerate() {
-            let e = sdot(&self.wts[b][..self.size[b]], &w[self.first[b]..self.first[b] + self.size[b]]);
+            let e = sdot_vfp(&self.wts[b][..self.size[b]], &w[self.first[b]..self.first[b] + self.size[b]]);
             *o = msun_logf(if e < 1.0 { 1.0 } else { e });
         }
         out

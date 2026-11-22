@@ -34,3 +34,9 @@ The ported `msun_logf` in `pryon/src/lfbe.rs` retains this notice:
 
 The ARMv7 `sdot` accumulation order was observed in the shipped library and independently expressed in `pryon/src/lfbe.rs`.
 No OpenBLAS source is included in this code. This is attribution for the algorithm/order studied.
+
+## Julien Pommier neon_mathfun / sse_mathfun
+
+`exp_ps` in `pryon/src/num.rs` reimplements the `exp_ps` polynomial of Julien Pommier's neon_mathfun / sse_mathfun,
+Copyright (C) 2011 Julien Pommier, under the zlib licence reproduced in
+[licenses/neon_mathfun-zlib.txt](licenses/neon_mathfun-zlib.txt).
