@@ -49,6 +49,10 @@ dependencies = [
 [[package]]
 name = "pryon-ffi"
 version = "0.1.0"
+dependencies = [
+ "pryon",
+ "pryon-testkit",
+]
 
 [[package]]
 name = "pryon-testkit"
