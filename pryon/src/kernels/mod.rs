@@ -10,6 +10,14 @@ pub(crate) use armv7::dot_rows;
 #[cfg(not(all(pryon_neon, target_arch = "arm")))]
 pub(crate) use portable::dot_rows;
 
+/// `y[r] = bias[r] + (y[r] + ((rinv * acc[r]) * rs[r] + off * b[r] + sx * a[r]))` for `s = [rinv, off, sx]`, each
+/// operation rounded in that order. NEON flushes subnormals as libpryon's NEON dequant does; the scalar twin agrees
+/// whenever no intermediate is subnormal.
+#[cfg(all(pryon_neon, target_arch = "arm"))]
+pub(crate) use armv7::dequant_rows;
+#[cfg(not(all(pryon_neon, target_arch = "arm")))]
+pub(crate) use portable::dequant_rows;
+
 /// `num::sigmoid` / `num::tanh` over a slice in place, bit for bit.
 #[cfg(all(pryon_neon, target_arch = "arm"))]
 pub(crate) use armv7::{sigmoid_inplace, tanh_inplace};
@@ -122,6 +130,26 @@ mod tests {
             port(&mut b);
             for ((&i, &p), &q) in x.iter().zip(&a).zip(&b) {
                 assert_eq!(p.to_bits(), q.to_bits(), "{name}({i:e} = {:#010x})", i.to_bits());
+            }
+        }
+    }
+
+    #[cfg(all(pryon_neon, target_arch = "arm"))]
+    #[test]
+    fn dequant_asm_equals_portable() {
+        let mut next = xorshift(0x1b87_3593);
+        let mut unit = move || (next() >> 8) as f32 / (1 << 23) as f32 - 1.0;
+        for n in [1, 4, 7, 24, 256, 384] {
+            for _ in 0..200 {
+                let acc: Vec<i32> = (0..n).map(|_| (unit() * 3.2e6) as i32).collect();
+                let s = [unit().abs() * 0.05 + 1e-4, unit() * 4.0, unit() * 60.0];
+                let mut v = |scale: f32| (0..n).map(|_| unit() * scale).collect::<Vec<f32>>();
+                let (rs, b, a, bias, y) = (v(0.02), v(300.0), v(0.5), v(2.0), v(8.0));
+                let (mut ya, mut yb) = (y.clone(), y);
+                super::dequant_rows(&acc, s, &rs, &b, &a, &bias, &mut ya);
+                super::portable::dequant_rows(&acc, s, &rs, &b, &a, &bias, &mut yb);
+                let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
+                assert_eq!(bits(&ya), bits(&yb), "n={n} s={s:?}");
             }
         }
     }

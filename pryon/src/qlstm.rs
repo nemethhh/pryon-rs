@@ -1,6 +1,6 @@
 //! Dynamic-quant int8 transformer (QAffine) and the LSTM cell built on it.
 
-use crate::kernels::{dot_rows, sigmoid_inplace, tanh_inplace};
+use crate::kernels::{dequant_rows, dot_rows, sigmoid_inplace, tanh_inplace};
 use crate::mlp::{QLstmParams, QMatrix};
 use crate::num::{neon_sum, quantize};
 use std::sync::Arc;
@@ -20,12 +20,7 @@ fn qaffine(x: &[f32], m: &QMatrix, bias: &[f32], y: &mut [f32], k: &mut [u8], ac
     let rinv = 1.0 / inv;
     let acc = &mut acc[..m.padded_rows()];
     dot_rows(&m.w, m.stride8, k, acc);
-    for (r, (&d, yr)) in acc.iter().zip(y.iter_mut()).enumerate() {
-        let mut t = (rinv * d as f32) * m.rs[r];
-        t = t + off * m.b[r];
-        t = t + sx * m.a[r];
-        *yr = bias[r] + (*yr + t);
-    }
+    dequant_rows(acc, [rinv, off, sx], &m.rs, &m.b, &m.a, bias, &mut y[..m.rows]);
 }
 
 /// One LSTM layer: weights shared, state (h, c) and scratch owned, so clones are cheap per-detector copies.

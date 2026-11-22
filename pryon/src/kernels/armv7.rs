@@ -156,3 +156,53 @@ pub(crate) fn tanh_inplace(x: &mut [f32]) {
     }
     x[n..].iter_mut().for_each(|v| *v = crate::num::tanh(*v));
 }
+
+pub(crate) fn dequant_rows(acc: &[i32], s: [f32; 3], rs: &[f32], b: &[f32], a: &[f32], bias: &[f32], y: &mut [f32]) {
+    let n = y.len();
+    assert!(acc.len() >= n && rs.len() >= n && b.len() >= n && a.len() >= n && bias.len() >= n);
+    let n4 = n & !3;
+    if n4 > 0 {
+        let k = [s[0], s[1], s[2], 0.0];
+        // SAFETY: reads n4 elements of acc, rs, b, a, bias and y, writes n4 of y (all asserted >= n).
+        unsafe {
+            asm!(
+                "vld1.32 {{d4-d5}}, [{k}]",
+                "2:",
+                "vld1.32 {{d0-d1}}, [{acc}]!",
+                "vld1.32 {{d2-d3}}, [{rs}]!",
+                "vcvt.f32.s32 q0, q0",
+                "vld1.32 {{d16-d17}}, [{b}]!",
+                "vmul.f32 q0, q0, d4[0]",
+                "vld1.32 {{d18-d19}}, [{a}]!",
+                "vmul.f32 q8, q8, d4[1]",
+                "vmul.f32 q0, q0, q1",
+                "vmul.f32 q9, q9, d5[0]",
+                "vld1.32 {{d20-d21}}, [{y}]",
+                "vadd.f32 q0, q0, q8",
+                "vld1.32 {{d22-d23}}, [{bias}]!",
+                "vadd.f32 q0, q0, q9",
+                "vadd.f32 q0, q10, q0",
+                "vadd.f32 q0, q11, q0",
+                "vst1.32 {{d0-d1}}, [{y}]!",
+                "subs {n}, {n}, #4",
+                "bne 2b",
+                k = in(reg) k.as_ptr(),
+                acc = inout(reg) acc.as_ptr() => _,
+                rs = inout(reg) rs.as_ptr() => _,
+                b = inout(reg) b.as_ptr() => _,
+                a = inout(reg) a.as_ptr() => _,
+                bias = inout(reg) bias.as_ptr() => _,
+                y = inout(reg) y.as_mut_ptr() => _,
+                n = inout(reg) n4 => _,
+                out("q0") _, out("q1") _, out("q2") _, out("q8") _, out("q9") _, out("q10") _, out("q11") _,
+                options(nostack),
+            );
+        }
+    }
+    for r in n4..n {
+        let mut t = (s[0] * acc[r] as f32) * rs[r];
+        t = t + s[1] * b[r];
+        t = t + s[2] * a[r];
+        y[r] = bias[r] + (y[r] + t);
+    }
+}
