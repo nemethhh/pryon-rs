@@ -6,6 +6,7 @@ use crate::lfbe_tables::{NE_SU, NE_TW, POVEY};
 use crate::num::sdot_vfp;
 
 pub const BINS: usize = 20;
+const MAX_BINS: usize = 128;
 const FL: usize = 400;
 const HOP: usize = 160;
 const N: usize = 512;
@@ -482,6 +483,8 @@ impl Lfbe {
 
     pub fn with_spec(spec: LfbeSpec) -> Lfbe {
         let bins = spec.bins;
+        debug_assert!((1..=MAX_BINS).contains(&bins));
+        debug_assert!(0.0 <= spec.low_hz && spec.low_hz < spec.high_hz && spec.high_hz <= 8000.0);
         let mut first = vec![0usize; bins];
         let mut size = vec![0usize; bins];
         let mut wts = vec![0f32; bins * 256];
@@ -524,25 +527,27 @@ impl Lfbe {
         self.bins
     }
 
-    /// Appends `bins()` values per completed frame.
-    pub fn push_flat(&mut self, pcm: &[i16], out: &mut Vec<f32>) {
+    fn push_with(&mut self, pcm: &[i16], mut emit: impl FnMut(&[f32])) {
         self.buf.extend_from_slice(pcm);
         let mut pos = 0;
+        let mut frame = [0f32; MAX_BINS];
         while self.buf.len() - pos >= FL {
-            let at = out.len();
-            out.resize(at + self.bins, 0.0);
-            self.frame(pos, &mut out[at..]);
+            self.frame(pos, &mut frame[..self.bins]);
+            emit(&frame[..self.bins]);
             pos += HOP;
         }
         self.buf.drain(..pos);
     }
 
+    /// Appends `bins()` values per completed frame.
+    pub fn push_flat(&mut self, pcm: &[i16], out: &mut Vec<f32>) {
+        self.push_with(pcm, |f| out.extend_from_slice(f));
+    }
+
     /// AED shape only.
     pub fn push(&mut self, pcm: &[i16], out: &mut Vec<[f32; BINS]>) {
         debug_assert_eq!(self.bins, BINS);
-        let mut flat = Vec::new();
-        self.push_flat(pcm, &mut flat);
-        out.extend(flat.chunks_exact(BINS).map(|c| <[f32; BINS]>::try_from(c).unwrap()));
+        self.push_with(pcm, |f| out.push(<[f32; BINS]>::try_from(f).unwrap()));
     }
 
     fn frame(&mut self, pos: usize, out: &mut [f32]) {
