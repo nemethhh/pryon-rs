@@ -1,4 +1,4 @@
-use pryon::lfbe::{Lfbe, BINS};
+use pryon::lfbe::{Lfbe, LfbeSpec, BINS};
 
 fn pcm(name: &str) -> Vec<i16> {
     let p = format!("{}/tests/fixtures/lfbe/{name}.raw", env!("CARGO_MANIFEST_DIR"));
@@ -61,4 +61,52 @@ fn zero_frame_is_zero() {
     let frames = run(&[0i16; 400], 400);
     assert_eq!(frames.len(), 1);
     assert!(frames[0].iter().all(|v| *v == 0.0));
+}
+
+fn fixture64(name: &str, ext: &str) -> Vec<u8> {
+    std::fs::read(format!("{}/tests/fixtures/lfbe64/{name}.{ext}", env!("CARGO_MANIFEST_DIR"))).unwrap()
+}
+
+fn pcm64(name: &str) -> Vec<i16> {
+    fixture64(name, "raw").chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect()
+}
+
+fn run64(x: &[i16], chunk: usize) -> Vec<f32> {
+    let mut l = Lfbe::with_spec(LfbeSpec::WAKE);
+    let mut out = Vec::new();
+    for c in x.chunks(chunk) {
+        l.push_flat(c, &mut out);
+    }
+    out
+}
+
+#[test]
+fn lfbe64_matches_c_reference() {
+    for name in ["noise", "extremes", "gap49"] {
+        let got = run64(&pcm64(name), 48000);
+        let want: Vec<u32> =
+            fixture64(name, "f32").chunks_exact(4).map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        assert_eq!(want.len(), 298 * 64, "{name}");
+        assert_eq!(got.len(), want.len(), "{name}");
+        for (i, (g, w)) in got.iter().zip(&want).enumerate() {
+            assert_eq!(g.to_bits(), *w, "{name} frame {} bin {}", i / 64, i % 64);
+        }
+    }
+}
+
+#[test]
+fn chunked_push_flat_equal() {
+    let x = pcm64("noise");
+    let whole = run64(&x, x.len());
+    for chunk in [1, 159, 401] {
+        let got = run64(&x, chunk);
+        assert!(got.iter().map(|v| v.to_bits()).eq(whole.iter().map(|v| v.to_bits())), "chunk {chunk}");
+    }
+}
+
+#[test]
+fn lfbe64_extremes() {
+    let got = run64(&vec![-32768i16; 400], 400);
+    assert_eq!(got.len(), 64);
+    assert!(got.iter().all(|v| v.is_finite()));
 }

@@ -1,4 +1,4 @@
-//! Streaming LFBE front end (20 mel bins, 100-6000 Hz), bit-identical to the C reference.
+//! Streaming LFBE front end (AED 20 bins 100-6000 Hz, wake 64 bins 80-7200 Hz), bit-identical to the C reference.
 //!
 //! Third-party: `msun_logf` ports FreeBSD msun e_logf.c (Sun, permissive); the FFT operation order follows
 //! Ne10 (BSD-3-Clause); the window/power/mel stages follow Kaldi (Apache-2.0). See THIRD_PARTY_NOTICES.md.
@@ -444,11 +444,25 @@ fn mel_scale(f: f32) -> f32 {
     1127.0 * msun_logf(1.0 + f / 700.0)
 }
 
+/// Front-end shape: mel bin count and range, taken from the model config.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct LfbeSpec {
+    pub bins: usize,
+    pub low_hz: f32,
+    pub high_hz: f32,
+}
+
+impl LfbeSpec {
+    pub const AED: LfbeSpec = LfbeSpec { bins: 20, low_hz: 100.0, high_hz: 6000.0 };
+    pub const WAKE: LfbeSpec = LfbeSpec { bins: 64, low_hz: 80.0, high_hz: 7200.0 };
+}
+
 pub struct Lfbe {
     fft: FftTables,
-    first: [usize; BINS],
-    size: [usize; BINS],
-    wts: Box<[[f32; 256]; BINS]>,
+    bins: usize,
+    first: Vec<usize>,
+    size: Vec<usize>,
+    wts: Vec<f32>,
     buf: Vec<i16>,
     w: [f32; N],
     ta: [f32; N],
@@ -463,14 +477,19 @@ impl Default for Lfbe {
 
 impl Lfbe {
     pub fn new() -> Lfbe {
-        let mut first = [0usize; BINS];
-        let mut size = [0usize; BINS];
-        let mut wts = Box::new([[0f32; 256]; BINS]);
+        Self::with_spec(LfbeSpec::AED)
+    }
+
+    pub fn with_spec(spec: LfbeSpec) -> Lfbe {
+        let bins = spec.bins;
+        let mut first = vec![0usize; bins];
+        let mut size = vec![0usize; bins];
+        let mut wts = vec![0f32; bins * 256];
         let bw = 16000.0f32 / N as f32;
-        let mlo = mel_scale(100.0);
-        let mhi = mel_scale(6000.0);
-        let delta = (mhi - mlo) / (BINS + 1) as f32;
-        for b in 0..BINS {
+        let mlo = mel_scale(spec.low_hz);
+        let mhi = mel_scale(spec.high_hz);
+        let delta = (mhi - mlo) / (bins + 1) as f32;
+        for b in 0..bins {
             let l = mlo + b as f32 * delta;
             let c = mlo + (b + 1) as f32 * delta;
             let r = mlo + (b + 2) as f32 * delta;
@@ -480,7 +499,7 @@ impl Lfbe {
                 let mel = mel_scale(bw * i as f32);
                 if mel > l && mel < r {
                     let f = *f0.get_or_insert(i);
-                    wts[b][i - f] = if mel <= c { (mel - l) / (c - l) } else { (r - mel) / (r - c) };
+                    wts[b * 256 + i - f] = if mel <= c { (mel - l) / (c - l) } else { (r - mel) / (r - c) };
                     li = i;
                 }
             }
@@ -490,6 +509,7 @@ impl Lfbe {
         }
         Lfbe {
             fft: FftTables::new(),
+            bins,
             first,
             size,
             wts,
@@ -500,18 +520,32 @@ impl Lfbe {
         }
     }
 
-    pub fn push(&mut self, pcm: &[i16], out: &mut Vec<[f32; BINS]>) {
+    pub fn bins(&self) -> usize {
+        self.bins
+    }
+
+    /// Appends `bins()` values per completed frame.
+    pub fn push_flat(&mut self, pcm: &[i16], out: &mut Vec<f32>) {
         self.buf.extend_from_slice(pcm);
         let mut pos = 0;
         while self.buf.len() - pos >= FL {
-            let frame = self.frame(pos);
-            out.push(frame);
+            let at = out.len();
+            out.resize(at + self.bins, 0.0);
+            self.frame(pos, &mut out[at..]);
             pos += HOP;
         }
         self.buf.drain(..pos);
     }
 
-    fn frame(&mut self, pos: usize) -> [f32; BINS] {
+    /// AED shape only.
+    pub fn push(&mut self, pcm: &[i16], out: &mut Vec<[f32; BINS]>) {
+        debug_assert_eq!(self.bins, BINS);
+        let mut flat = Vec::new();
+        self.push_flat(pcm, &mut flat);
+        out.extend(flat.chunks_exact(BINS).map(|c| <[f32; BINS]>::try_from(c).unwrap()));
+    }
+
+    fn frame(&mut self, pos: usize, out: &mut [f32]) {
         let w = &mut self.w;
         for i in 0..FL {
             w[i] = self.buf[pos + i] as f32;
@@ -538,11 +572,10 @@ impl Lfbe {
         }
         w[0] = first_e;
         w[N / 2] = last_e;
-        let mut out = [0f32; BINS];
         for (b, o) in out.iter_mut().enumerate() {
-            let e = sdot_vfp(&self.wts[b][..self.size[b]], &w[self.first[b]..self.first[b] + self.size[b]]);
+            let (f, n) = (self.first[b], self.size[b]);
+            let e = sdot_vfp(&self.wts[b * 256..b * 256 + n], &w[f..f + n]);
             *o = msun_logf(if e < 1.0 { 1.0 } else { e });
         }
-        out
     }
 }
