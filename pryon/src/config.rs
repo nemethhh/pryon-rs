@@ -102,7 +102,7 @@ fn parse_type(e: &Json) -> Result<TypeConfig, Error> {
 // Numbers keep their source text so f32/int parsing happens once, at the use site.
 enum Json {
     Null,
-    Bool(bool),
+    Bool,
     Num(String),
     Str(String),
     Arr(Vec<Json>),
@@ -167,8 +167,8 @@ impl Parser<'_> {
             Some(b'{') => self.nested(Self::object),
             Some(b'[') => self.nested(Self::array),
             Some(b'"') => Ok(Json::Str(self.string()?)),
-            Some(b't') => self.lit("true", Json::Bool(true)),
-            Some(b'f') => self.lit("false", Json::Bool(false)),
+            Some(b't') => self.lit("true", Json::Bool),
+            Some(b'f') => self.lit("false", Json::Bool),
             Some(b'n') => self.lit("null", Json::Null),
             Some(_) => self.number(),
         }
