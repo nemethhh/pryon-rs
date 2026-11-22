@@ -7,6 +7,8 @@ use std::process::{Command, ExitCode};
 use std::sync::Arc;
 use std::time::Instant;
 
+mod validate;
+
 const USAGE: &str = "usage:
   pryon-cli run -m DIR [-t a,b] [--bits] CLIP.raw
   pryon-cli synth NAME OUT.raw
@@ -17,7 +19,9 @@ const USAGE: &str = "usage:
   pryon-cli wake -m SET [-p NAME=VALUE[@SAMPLE]]... [--reset-at SAMPLE]... [--chunk N] [--bits] CLIP.raw
   pryon-cli bench-wake -m SET [--chunk N] CLIP.raw
   pryon-cli bench -m DIR [--chunk N] [--speed X] CLIP.raw
-  pryon-cli rusage -- CMD ARGS...";
+  pryon-cli rusage -- CMD ARGS...
+  pryon-cli validate [--oracle-rootfs DIR --pryon-test PATH] [--cache DIR] [--exact] [--records DIR]
+      [--speed X] [--jobs N] [-p NAME=VALUE[@SAMPLE]]... MODEL CLIPS...";
 
 enum Fail {
     Usage(String),
@@ -64,6 +68,16 @@ fn dispatch(args: &[String]) -> Result<ExitCode, Fail> {
         "bench-wake" => cmd_bench_wake(rest)?,
         "bench" => cmd_bench(rest)?,
         "rusage" => return cmd_rusage(rest),
+        "validate" => {
+            return match validate::run(rest) {
+                Err((true, m)) => Err(Fail::Usage(m)),
+                Err((false, m)) => {
+                    eprintln!("{m}");
+                    Ok(ExitCode::from(2))
+                }
+                Ok(c) => Ok(c),
+            };
+        }
         _ => return usage(format!("unknown command {cmd}")),
     }
     Ok(ExitCode::SUCCESS)

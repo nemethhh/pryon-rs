@@ -1,5 +1,6 @@
 //! Deterministic, integer-only synthetic clips (16 kHz mono s16).
 
+pub mod compare;
 pub mod onnx;
 pub mod oracle;
 pub mod wakeset;
@@ -70,6 +71,11 @@ fn noise_sample(rng: &mut Rng, amp: i32) -> i16 {
 fn noise(seed: u64, n: usize, amp: i32) -> Vec<i16> {
     let mut rng = Rng(seed);
     (0..n).map(|_| noise_sample(&mut rng, amp)).collect()
+}
+
+/// FNV-1a-64.
+pub fn fnv1a64(bytes: &[u8]) -> u64 {
+    bytes.iter().fold(0xcbf2_9ce4_8422_2325, |h, &b| (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3))
 }
 
 pub fn synth(clip: Clip) -> Vec<i16> {

@@ -1,6 +1,7 @@
 //! Wake Spotter API and parity with libpryon's wake events (committed fixtures on synthetic clips, env-gated corpus).
 
 use pryon::wake::{load_set, Detection, DetectionKind, Spotter, SpotterModel, SpotterOptions};
+use pryon_testkit::compare::{compare as compare_events, pushed, Diff, Ev, Limits, Tally};
 use pryon_testkit::oracle::{parse_wake, OracleEvent, OracleKind};
 use pryon_testkit::wakeset::{write_davs_set, write_fw_set, WakeSetOpts};
 use pryon_testkit::{synth, Clip, TempDir};
@@ -112,16 +113,6 @@ fn keywords_once_each() {
     assert_eq!(fw.checksum(), load_set(&_f).unwrap().checksum);
 }
 
-/// One event from either engine, in the oracle's terms.
-#[derive(Clone, Debug)]
-struct Ev {
-    keyword: String,
-    kind: OracleKind,
-    score: f32,
-    begin: u64,
-    end: u64,
-}
-
 fn kind_of(k: DetectionKind) -> OracleKind {
     match k {
         DetectionKind::Accept => OracleKind::Accept,
@@ -138,18 +129,6 @@ fn from_rust(keywords: &[String], d: &[Detection]) -> Vec<Ev> {
             score: d.score,
             begin: d.begin_sample,
             end: d.end_sample,
-        })
-        .collect()
-}
-
-fn from_oracle(o: &[OracleEvent]) -> Vec<Ev> {
-    o.iter()
-        .map(|e| Ev {
-            keyword: e.keyword.clone(),
-            kind: e.kind,
-            score: e.score.parse().unwrap(),
-            begin: e.begin,
-            end: e.end,
         })
         .collect()
 }
@@ -177,169 +156,21 @@ fn from_event_lines(text: &str) -> Vec<Ev> {
         .collect()
 }
 
-/// Oracle and engine events are paired per keyword by nearest end sample within this distance.
-const PAIR_WINDOW: u64 = 16000;
-/// Not emitted until Task 12.
-const UNSERVED: &[&str] = &["HEY_DISNEY"];
-/// The oracle reports STOP only while awake (op.cfg), the rules emit it always.
-const AWAKE_ONLY: &str = "STOP";
-
-#[derive(Default, Clone)]
-struct Tally {
-    clips: usize,
-    oracle: usize,
-    engine: usize,
-    dropped: usize,
-    matched: usize,
-    differing: usize,
-    oracle_only: usize,
-    engine_only: usize,
-    /// Near misses among the one-sided events.
-    oracle_only_nm: usize,
-    engine_only_nm: usize,
-    awake_only: usize,
-    kind_eq: usize,
-    begin_eq: usize,
-    end_eq: usize,
-    score_ok: usize,
-    accepts: usize,
-    accepts_paired: usize,
-    score_d: Vec<f32>,
-}
-
-impl Tally {
-    fn add(&mut self, o: &Tally) {
-        let n = |a: &mut usize, b: usize| *a += b;
-        n(&mut self.clips, o.clips);
-        n(&mut self.oracle, o.oracle);
-        n(&mut self.engine, o.engine);
-        n(&mut self.dropped, o.dropped);
-        n(&mut self.matched, o.matched);
-        n(&mut self.differing, o.differing);
-        n(&mut self.oracle_only, o.oracle_only);
-        n(&mut self.engine_only, o.engine_only);
-        n(&mut self.oracle_only_nm, o.oracle_only_nm);
-        n(&mut self.engine_only_nm, o.engine_only_nm);
-        n(&mut self.awake_only, o.awake_only);
-        n(&mut self.kind_eq, o.kind_eq);
-        n(&mut self.begin_eq, o.begin_eq);
-        n(&mut self.end_eq, o.end_eq);
-        n(&mut self.score_ok, o.score_ok);
-        n(&mut self.accepts, o.accepts);
-        n(&mut self.accepts_paired, o.accepts_paired);
-        self.score_d.extend_from_slice(&o.score_d);
-    }
-
-    fn clean(&self) -> bool {
-        self.differing == 0 && self.oracle_only == 0 && self.engine_only == 0
-    }
-
-    fn line(&self) -> String {
-        let mut d = self.score_d.clone();
-        d.sort_by(f32::total_cmp);
-        let q = |p: f32| if d.is_empty() { 0.0 } else { d[((d.len() - 1) as f32 * p) as usize] };
-        format!(
-            "clips {} | oracle {} (+{} dropped) engine {} | matched {} differing {} oracle-only {} ({} NM) \
-             engine-only {} ({} NM, +{} {AWAKE_ONLY} while oracle asleep) | paired: kind {} begin {} end {} \
-             score {} | oracle accepts {} paired {} | score |d| median {:.2e} p90 {:.2e} max {:.2e}",
-            self.clips,
-            self.oracle,
-            self.dropped,
-            self.engine,
-            self.matched,
-            self.differing,
-            self.oracle_only,
-            self.oracle_only_nm,
-            self.engine_only,
-            self.engine_only_nm,
-            self.awake_only,
-            self.kind_eq,
-            self.begin_eq,
-            self.end_eq,
-            self.score_ok,
-            self.accepts,
-            self.accepts_paired,
-            q(0.5),
-            q(0.9),
-            q(1.0),
-        )
-    }
-}
-
-/// Thresholds a score is compared against, per keyword (primary and verifier accept and notify, overrides).
-fn thresholds(dir: &Path) -> BTreeMap<String, Vec<f32>> {
-    let mut m: BTreeMap<String, Vec<f32>> = BTreeMap::new();
+/// Thresholds a score is compared against, per keyword.
+fn thresholds(dir: &Path) -> Limits {
+    let mut l = Limits::default();
     for s in load_set(dir).unwrap().spotters {
-        let t = m.entry(s.name.clone()).or_default();
-        t.push(s.thresholds.accept);
-        t.extend(s.thresholds.notify);
-        t.extend(s.thresholds.overrides.iter().map(|o| o.accept));
+        let t = &s.thresholds;
+        let ov: Vec<f32> = t.overrides.iter().map(|o| o.accept).collect();
+        l.add(&s.name, t.accept, t.notify, &ov, t.probabilistic.map(|p| p.0));
     }
-    m
+    l
 }
 
-/// Exact 6-decimal equality when every threshold is more than 1e-2 away, else within 1e-3.
-fn score_ok(oracle: &Ev, printed_threshold: Option<f32>, engine: f32, thr: &[f32]) -> bool {
-    let margin = thr.iter().chain(&printed_threshold).map(|t| (oracle.score - t).abs()).fold(f32::INFINITY, f32::min);
-    if margin > 1e-2 {
-        format!("{:.6}", oracle.score) == format!("{:.6}", engine)
-    } else {
-        (oracle.score - engine).abs() <= 1e-3
-    }
-}
-
-fn compare(oracle: &[OracleEvent], engine: &[Ev], thr: &BTreeMap<String, Vec<f32>>, diffs: &mut Vec<String>) -> Tally {
-    let mut t = Tally { clips: 1, ..Tally::default() };
-    let printed: Vec<Option<f32>> = oracle.iter().map(|e| e.threshold.parse().ok()).collect();
-    let all = from_oracle(oracle);
-    let served = |e: &&Ev| !UNSERVED.contains(&e.keyword.as_str());
-    let kept: Vec<(usize, &Ev)> = all.iter().enumerate().filter(|(_, e)| served(e)).collect();
-    t.dropped = all.len() - kept.len();
-    t.oracle = kept.len();
-    t.engine = engine.len();
-    let mut used = vec![false; engine.len()];
-    for &(i, o) in &kept {
-        if o.kind != OracleKind::NearMiss {
-            t.accepts += 1;
-        }
-        let best = engine
-            .iter()
-            .enumerate()
-            .filter(|(j, e)| !used[*j] && e.keyword == o.keyword && e.end.abs_diff(o.end) <= PAIR_WINDOW)
-            .min_by_key(|(_, e)| e.end.abs_diff(o.end));
-        let Some((j, e)) = best else {
-            t.oracle_only += 1;
-            t.oracle_only_nm += usize::from(o.kind == OracleKind::NearMiss);
-            diffs.push(format!("oracle-only {o:?}"));
-            continue;
-        };
-        used[j] = true;
-        if o.kind != OracleKind::NearMiss {
-            t.accepts_paired += 1;
-        }
-        let none = Vec::new();
-        let ok_score = score_ok(o, printed[i], e.score, thr.get(&o.keyword).unwrap_or(&none));
-        t.kind_eq += usize::from(o.kind == e.kind);
-        t.begin_eq += usize::from(o.begin == e.begin);
-        t.end_eq += usize::from(o.end == e.end);
-        t.score_ok += usize::from(ok_score);
-        t.score_d.push((o.score - e.score).abs());
-        if o.kind == e.kind && o.begin == e.begin && o.end == e.end && ok_score {
-            t.matched += 1;
-        } else {
-            t.differing += 1;
-            diffs.push(format!("differing oracle {o:?} engine {e:?}"));
-        }
-    }
-    for (j, e) in engine.iter().enumerate().filter(|(j, _)| !used[*j]) {
-        if e.keyword == AWAKE_ONLY {
-            t.awake_only += 1;
-        } else {
-            t.engine_only += 1;
-            t.engine_only_nm += usize::from(e.kind == OracleKind::NearMiss);
-            diffs.push(format!("engine-only {e:?} (#{j})"));
-        }
-    }
+fn compare(oracle: &[OracleEvent], engine: &[Ev], thr: &Limits, diffs: &mut Vec<String>) -> Tally {
+    let (mut d, mut prob): (Vec<Diff>, Vec<Ev>) = (Vec::new(), Vec::new());
+    let t = compare_events(oracle, engine, thr, false, &mut d, &mut prob);
+    diffs.extend(d.iter().map(Diff::to_string));
     t
 }
 
@@ -407,12 +238,6 @@ oracle_synth_tests! {
 fn read_clip(p: &Path) -> Vec<i16> {
     let b = std::fs::read(p).unwrap();
     b.chunks_exact(2).map(|x| i16::from_le_bytes([x[0], x[1]])).collect()
-}
-
-/// Samples pryon_test fed (`pushed N samples`); it stops early when libpryon restarts its decoder.
-fn pushed(text: &str) -> Option<usize> {
-    let l = text.lines().find_map(|l| l.strip_prefix("pushed "))?;
-    l.split(' ').next()?.parse().ok()
 }
 
 /// Corpus clips grouped by directory: (group, clip stem, path).

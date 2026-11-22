@@ -82,6 +82,16 @@ link it with the native libraries rustc lists for the target
 - `bench -m MODEL [--chunk N] [--speed X] CLIP.raw`: CPU per second of audio, worst single feed, peak memory;
   `--speed 1` feeds in real time
 - `rusage -- CMD ...`: run a command and report its CPU time and peak memory (to measure libpryon the same way)
+- `validate [--oracle-rootfs DIR --pryon-test PATH] [--cache DIR] [--exact] [--records DIR] [--speed X] [--jobs N]
+  [-p NAME=VALUE[@SAMPLE]]... MODEL CLIPS...`: run libpryon (`pryon_test` under qemu-arm; `PRYON_ORACLE_ROOTFS` and
+  `PRYON_PRYON_TEST` stand in for the two flags) and the wake engine on the same `.raw` or 16 kHz mono `.wav` clips
+  (files or directories) and print every difference as `DIFF <clip> <keyword> oracle=<event|-> rust=<event|->`, then
+  a summary per keyword. Exit 0 clean, 1 differences, 2 usage or oracle errors. The oracle runs in real time
+  (`--speed 1`, the default) because libpryon's results depend on feed timing at higher speeds, `--jobs` clips at a
+  time. `--cache` keeps oracle outputs as `<set checksum>/<clip fnv>.txt` (properties and a non-default speed are
+  part of the key). On a clean `--exact` run (scores compared as 6-decimal strings) it writes
+  `validated/<checksum>.<KEYWORD>.rec` for each keyword the oracle accepted at least once: the set, the keyword,
+  the clip count and digest, accept and near-miss counts, date and pryon-rs commit.
 - `synth NAME OUT.raw`, `synth-model DIR`: synthetic test clips and a random-weight model in the real format
 
 Clips are raw 16 kHz mono s16le.

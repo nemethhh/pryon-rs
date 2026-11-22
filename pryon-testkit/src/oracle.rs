@@ -96,7 +96,21 @@ impl OracleEnv {
 
     /// Runs `pryon_test` on a 16 kHz s16le `.raw`; `manifest` is a path inside the rootfs. Returns stdout then stderr.
     pub fn run_wake(&self, manifest: &Path, clip: &Path, cmds: &[OracleCmd]) -> std::io::Result<String> {
-        use std::process::Command;
+        self.run_wake_at(manifest, clip, cmds, 1000.0, None)
+    }
+
+    /// As `run_wake` at feed speed `speed` (`-x`); a run still going after `timeout` is killed and is an error.
+    pub fn run_wake_at(
+        &self,
+        manifest: &Path,
+        clip: &Path,
+        cmds: &[OracleCmd],
+        speed: f64,
+        timeout: Option<std::time::Duration>,
+    ) -> std::io::Result<String> {
+        use std::io::Read;
+        use std::process::{Command, Stdio};
+        use std::time::Instant;
         let mut cmd = Command::new("unshare");
         // The PID namespace is for bionic's 16-bit mutex owner ids; -x 1000 keeps the backlog under libpryon's drop limit.
         cmd.args(["--user", "--map-root-user", "--pid", "--fork", "--kill-child", "qemu-arm", "-L"])
@@ -104,22 +118,44 @@ impl OracleEnv {
             .arg(&self.pryon_test)
             .arg("-m")
             .arg(manifest)
-            .args(["-x", "1000"]);
+            .arg("-x")
+            .arg(speed.to_string());
         for c in cmds {
             match c {
                 OracleCmd::Property { at, name, value } => cmd.arg("-P").arg(format!("{at}:{name}={value}")),
                 OracleCmd::SessionEnd { at } => cmd.arg("-E").arg(at.to_string()),
             };
         }
-        let out = cmd.arg(clip).output()?;
+        let mut child = cmd.arg(clip).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+        let drain = |mut r: Box<dyn Read + Send>| {
+            std::thread::spawn(move || {
+                let mut b = Vec::new();
+                let _ = r.read_to_end(&mut b);
+                b
+            })
+        };
+        let (so, se) = (drain(Box::new(child.stdout.take().unwrap())), drain(Box::new(child.stderr.take().unwrap())));
+        let t0 = Instant::now();
+        let status = loop {
+            if let Some(s) = child.try_wait()? {
+                break s;
+            }
+            if timeout.is_some_and(|t| t0.elapsed() > t) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("pryon_test timed out after {:?}", timeout.unwrap())));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+        let (stdout, stderr) = (so.join().unwrap_or_default(), se.join().unwrap_or_default());
         // 3 is "no callbacks".
-        if !matches!(out.status.code(), Some(0 | 3)) {
-            let err = String::from_utf8_lossy(&out.stderr);
+        if !matches!(status.code(), Some(0 | 3)) {
+            let err = String::from_utf8_lossy(&stderr);
             let tail: Vec<&str> = err.lines().rev().take(15).collect();
             let tail: Vec<&str> = tail.into_iter().rev().collect();
-            return Err(std::io::Error::other(format!("pryon_test exited {:?}: {}", out.status.code(), tail.join("\n"))));
+            return Err(std::io::Error::other(format!("pryon_test exited {:?}: {}", status.code(), tail.join("\n"))));
         }
-        Ok(format!("{}\n{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)))
+        Ok(format!("{}\n{}", String::from_utf8_lossy(&stdout), String::from_utf8_lossy(&stderr)))
     }
 }
 
