@@ -286,11 +286,8 @@ impl Parser<'_> {
 mod tests {
     use super::*;
 
-    fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("pryon-config-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn tmp(tag: &str) -> pryon_testkit::TempDir {
+        pryon_testkit::TempDir::new(&format!("config-{tag}"))
     }
 
     #[test]
@@ -309,7 +306,6 @@ mod tests {
         assert_eq!(c.types[1].near_miss, 0.4);
         assert_eq!(c.types[1].energy_min_samples, 1);
         assert_eq!(c.mlp_path, d.join("model_gcmvn.cpu.v1.q.mlp"));
-        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
@@ -319,7 +315,6 @@ mod tests {
             pryon_testkit::write_model_dir(&d, 1, 0.8);
             std::fs::remove_file(d.join(f)).unwrap();
             assert!(SoundConfig::load(&d).is_err(), "{f}");
-            std::fs::remove_dir_all(&d).unwrap();
         }
     }
 
@@ -330,7 +325,6 @@ mod tests {
         let j = std::fs::read(d.join("AED.json")).unwrap();
         std::fs::write(d.join("AED.json"), &j[..j.len() / 2]).unwrap();
         assert!(matches!(SoundConfig::load(&d), Err(Error::Config(_))));
-        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
@@ -343,7 +337,6 @@ mod tests {
         let c = SoundConfig::load(&d).unwrap();
         assert_eq!(c.mlp_path, d.join("model_gcmvn.cpu.v1.q.mlp"));
         assert_eq!(c.window_ms, 9980);
-        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]
@@ -353,7 +346,6 @@ mod tests {
         let c = std::fs::read_to_string(d.join("pryon.config")).unwrap();
         std::fs::write(d.join("pryon.config"), c.replace("9980", "5000")).unwrap();
         assert!(matches!(SoundConfig::load(&d), Err(Error::Config(_))));
-        std::fs::remove_dir_all(&d).unwrap();
     }
 
     #[test]

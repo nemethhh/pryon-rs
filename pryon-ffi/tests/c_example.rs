@@ -29,7 +29,7 @@ fn c_example_runs() {
         .status()
         .unwrap();
     assert!(st.success(), "cargo build failed");
-    let work = std::env::temp_dir().join(format!("pryon-c-example-{}", std::process::id()));
+    let work = pryon_testkit::TempDir::new("c-example");
     let model = work.join("model");
     std::fs::create_dir_all(&model).unwrap();
     pryon_testkit::write_model_dir(&model, 7, 0.5);
@@ -65,5 +65,4 @@ fn c_example_runs() {
     assert_eq!(lines.len(), 2, "{stdout}");
     assert!(lines[0].starts_with("window 0 end 159680 "), "{}", lines[0]);
     assert!(lines[1].starts_with("window 1 end 319360 "), "{}", lines[1]);
-    let _ = std::fs::remove_dir_all(&work);
 }

@@ -232,13 +232,10 @@ impl SoundDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pryon_testkit::{synth, write_model_dir, Clip, Rng, TYPE_NAMES};
-    use std::path::PathBuf;
+    use pryon_testkit::{synth, write_model_dir, Clip, Rng, TempDir, TYPE_NAMES};
 
     fn model(tag: &str) -> Arc<SoundModel> {
-        let d: PathBuf = std::env::temp_dir().join(format!("pryon-det-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+        let d = TempDir::new(&format!("det-{tag}"));
         write_model_dir(&d, 1, 0.0);
         Arc::new(SoundModel::load(&d).unwrap())
     }

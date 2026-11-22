@@ -112,8 +112,7 @@ impl Net {
 mod tests {
     use super::*;
     use crate::qlstm::tests::{fnv, inputs};
-    use pryon_testkit::{write_mlp, write_model_dir, TYPE_NAMES};
-    use std::path::PathBuf;
+    use pryon_testkit::{write_mlp, write_model_dir, TempDir, TYPE_NAMES};
 
     // Android's std keeps thread_local in heap-backed OS TLS, which recurses into this allocator.
     #[cfg(not(target_os = "android"))]
@@ -150,10 +149,8 @@ mod tests {
         ALLOCS.with(Cell::get)
     }
 
-    fn model_dir(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("pryon-model-{tag}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&d);
-        std::fs::create_dir_all(&d).unwrap();
+    fn model_dir(tag: &str) -> TempDir {
+        let d = TempDir::new(&format!("model-{tag}"));
         write_model_dir(&d, 1, 0.8);
         d
     }

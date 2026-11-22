@@ -1,13 +1,10 @@
-use std::path::PathBuf;
+use pryon_testkit::TempDir;
 use std::process::Command;
 
 const BIN: &str = env!("CARGO_BIN_EXE_pryon-cli");
 
-fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("pryon-cli-{tag}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&d);
-    std::fs::create_dir_all(&d).unwrap();
-    d
+fn scratch(tag: &str) -> TempDir {
+    TempDir::new(&format!("cli-{tag}"))
 }
 
 fn ok(args: &[&str]) -> String {
@@ -16,7 +13,7 @@ fn ok(args: &[&str]) -> String {
     String::from_utf8(out.stdout).unwrap()
 }
 
-fn setup(tag: &str) -> (PathBuf, String, String) {
+fn setup(tag: &str) -> (TempDir, String, String) {
     let d = scratch(tag);
     let model = d.join("model");
     let clip = d.join("noise.raw");
@@ -27,7 +24,7 @@ fn setup(tag: &str) -> (PathBuf, String, String) {
 
 #[test]
 fn run_prints_windows() {
-    let (d, model, clip) = setup("run");
+    let (_d, model, clip) = setup("run");
     let out = ok(&["run", "-m", &model, &clip]);
     for header in ["window 1 end=9.98s", "window 2 end=19.96s"] {
         let i = out.find(header).unwrap_or_else(|| panic!("missing {header}:\n{out}"));
@@ -41,17 +38,15 @@ fn run_prints_windows() {
     let line = bits.lines().find(|l| l.starts_with("  ") && !l.starts_with("  energy")).unwrap();
     let last = line.split_whitespace().last().unwrap();
     assert!(last.len() == 8 && u32::from_str_radix(last, 16).is_ok(), "{line}");
-    let _ = std::fs::remove_dir_all(d);
 }
 
 #[test]
 fn bench_prints_keys() {
-    let (d, model, clip) = setup("bench");
+    let (_d, model, clip) = setup("bench");
     let out = ok(&["bench", "-m", &model, "--chunk", "1600", &clip]);
     for k in ["audio_s", "cpu_s", "cpu_pct_of_core", "worst_feed_us", "max_rss_kib", "windows", "load_ms"] {
         assert!(out.lines().any(|l| l.starts_with(&format!("{k}: "))), "{k}:\n{out}");
     }
-    let _ = std::fs::remove_dir_all(d);
 }
 
 fn key(out: &str, k: &str) -> f64 {
@@ -72,12 +67,11 @@ fn bench_streams_clip() {
     std::fs::write(&clip, [0u8; 3201]).unwrap();
     let out = Command::new(BIN).args(["bench", "-m", &model, clip.to_str().unwrap()]).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
-    let _ = std::fs::remove_dir_all(d);
 }
 
 #[test]
 fn bench_speed_paces_feeds() {
-    let (d, model, clip) = setup("speed");
+    let (_d, model, clip) = setup("speed");
     // 25 s of audio at 40x real time: at least half a second of wall time.
     let t = std::time::Instant::now();
     let out = ok(&["bench", "-m", &model, "--speed", "40", &clip]);
@@ -85,7 +79,6 @@ fn bench_speed_paces_feeds() {
     assert_eq!(key(&out, "windows"), 2.0, "{out}");
     let bad = Command::new(BIN).args(["bench", "-m", &model, "--speed", "0", &clip]).output().unwrap();
     assert_eq!(bad.status.code(), Some(2));
-    let _ = std::fs::remove_dir_all(d);
 }
 
 #[test]
@@ -105,5 +98,4 @@ fn usage_errors_exit_2() {
     std::fs::write(&clip, [1u8, 2, 3]).unwrap();
     let out = Command::new(BIN).args(["run", "-m", "/nonexistent", clip.to_str().unwrap()]).output().unwrap();
     assert_eq!(out.status.code(), Some(1));
-    let _ = std::fs::remove_dir_all(d);
 }

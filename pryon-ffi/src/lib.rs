@@ -213,39 +213,17 @@ pub extern "C" fn pryon_version() -> *const c_char {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use pryon_testkit::{synth, Clip};
+    use pryon_testkit::{synth, Clip, TempDir};
     use std::ffi::CStr;
     use std::ptr;
 
-    fn model_dir() -> tempdir::Dir {
-        let d = tempdir::Dir::new();
-        pryon_testkit::write_model_dir(d.path(), 7, 0.5);
+    fn model_dir() -> TempDir {
+        let d = TempDir::new("ffi");
+        pryon_testkit::write_model_dir(&d, 7, 0.5);
         d
     }
 
-    mod tempdir {
-        use std::path::{Path, PathBuf};
-        pub struct Dir(PathBuf);
-        impl Dir {
-            pub fn new() -> Dir {
-                use std::sync::atomic::{AtomicU32, Ordering};
-                static N: AtomicU32 = AtomicU32::new(0);
-                let p = std::env::temp_dir().join(format!("pryon-ffi-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
-                std::fs::create_dir_all(&p).unwrap();
-                Dir(p)
-            }
-            pub fn path(&self) -> &Path {
-                &self.0
-            }
-        }
-        impl Drop for Dir {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-    }
-
-    fn open(dir: &tempdir::Dir) -> *mut pryon_sound {
+    fn open(dir: &TempDir) -> *mut pryon_sound {
         let path = std::ffi::CString::new(dir.path().to_str().unwrap()).unwrap();
         let mut err = [0 as c_char; 256];
         let s = unsafe { pryon_sound_open(path.as_ptr(), ptr::null(), 0, err.as_mut_ptr(), err.len()) };
