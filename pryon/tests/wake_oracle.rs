@@ -260,8 +260,8 @@ fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> 
     out.into_inner().unwrap().into_iter().map(Option::unwrap).collect()
 }
 
-/// Firmware oracle's unscored frames after (re)start; path-dependent (174 for another copy), so not reproduced.
-const FW_GATE_FRAMES: u64 = 168;
+/// Largest firmware gate observed (168 or 174 frames, by install path); the engine does not reproduce it.
+const FW_GATE_MAX_FRAMES: u64 = 174;
 
 /// Known begin differences: 317 truncates a frame earlier; the firmware ones follow >= 1e-3 score differences.
 const BEGIN_EXCEPTIONS: &[(&str, &str)] = &[
@@ -270,6 +270,10 @@ const BEGIN_EXCEPTIONS: &[(&str, &str)] = &[
     ("fw", "tts_stop/amy-medium-alexa-gap0600-stop"),
     ("fw", "tts_stop/lessac-medium-alexa-gap0600-stop"),
 ];
+
+/// Paired firmware events that still differ because of the gate: the oracle's spotter starts fresh at the gate end
+/// (accept at SE + 168 frames), the engine's carries the gate-era state and accepts one cycle later.
+const GATE_PAIR_EXCEPTIONS: &[(&str, &str)] = &[("-e 8000", "alexa_real/picovoice_real_alexa_real_015")];
 
 /// A `pryon-cli validate` pass: clip-sample commands and the corpus groups it ran on (`local/task12/final.sh`).
 struct Pass {
@@ -292,12 +296,42 @@ const PASSES: &[Pass] = &[
     Pass { name: "-e 28000", props: &[], ends: &[28000], groups: &["tts_stop", "tts_disney"] },
 ];
 
-/// Every validate pass against its cached oracle outputs, `<corpus>/../validate-v2/<checksum>/<key>.txt`: kind, begin
-/// and end equal, nothing one-sided. Firmware skips the gate (+ a lock period) after a session end and everything
-/// after the oracle's first restart, where the gate-hidden accepts make the restart points part.
+/// Engine events and restart samples, feeding as `spot_cmds` does.
+fn spot_restarts(m: &Arc<SpotterModel>, pcm: &[i16], cmds: &[Cmd]) -> (Vec<Ev>, Vec<u64>) {
+    let at = |c: &Cmd| match *c {
+        Cmd::Prop(s, ..) | Cmd::End(s) => s as usize,
+    };
+    let mut cmds: Vec<&Cmd> = cmds.iter().collect();
+    cmds.sort_by_key(|c| at(c));
+    let mut sp = Spotter::new(m.clone(), SpotterOptions::default()).unwrap();
+    let (mut out, mut restarts, mut pos, mut next) = (Vec::new(), Vec::new(), 0usize, 0usize);
+    loop {
+        while next < cmds.len() && at(cmds[next]) <= pos {
+            match *cmds[next] {
+                Cmd::Prop(_, n, v) => sp.set_property(n, v),
+                Cmd::End(_) => sp.reset(&mut out),
+            }
+            next += 1;
+        }
+        if pos == pcm.len() {
+            break;
+        }
+        let end = (pos + 1600).min(cmds.get(next).map_or(pcm.len(), |c| at(c).min(pcm.len())));
+        let before = sp.origin();
+        sp.feed(&pcm[pos..end], &mut out);
+        if sp.origin() != before {
+            restarts.push(sp.origin());
+        }
+        pos = end;
+    }
+    (from_rust(m.keywords(), &out), restarts)
+}
+
+/// A regression net over every validate pass; the firmware oracle's unreproduced gate is the only allowance.
 #[test]
 fn oracle_corpus_validate_cache() {
     let Some(root) = env_dir("PRYON_WAKE_CORPUS") else { return };
+    let partial_ok = std::env::var_os("PRYON_CORPUS_PARTIAL").is_some();
     let sets: Vec<(&str, PathBuf)> = ["fw", "alexa"].iter().filter_map(|s| real_set(s).map(|d| (*s, d))).collect();
     let clips = corpus(&root);
     assert!(!clips.is_empty(), "{}: no <group>/<clip>.raw", root.display());
@@ -310,6 +344,7 @@ fn oracle_corpus_validate_cache() {
         let thr = thresholds(dir);
         let sum = m.checksum().to_string();
         let lock = load_set(dir).unwrap().spotters.iter().map(|s| u64::from(s.lock)).max().unwrap_or(0);
+        let window = (FW_GATE_MAX_FRAMES + lock) * 160;
         for pass in PASSES {
             let mut oracle_cmds: Vec<OracleCmd> = Vec::new();
             let mut cmds: Vec<Cmd> = Vec::new();
@@ -330,42 +365,81 @@ fn oracle_corpus_validate_cache() {
                 let Ok(text) = std::fs::read_to_string(&cached) else { return None };
                 assert_eq!(pushed(&text), Some(pcm.len()), "{}: oracle not fed the whole clip", cached.display());
                 let mut oracle = parse_wake(&text).unwrap_or_else(|e| panic!("{}: {e}", cached.display()));
-                let mut rust = spot_cmds(&m, &pcm, &cmds);
-                let mut skipped = 0;
+                let (mut rust, engine_restarts) = spot_restarts(&m, &pcm, &cmds);
+                let oracle_restarts: Vec<u64> = text
+                    .lines()
+                    .filter_map(|l| l.strip_prefix("restart: new decoder fed from sample ")?.trim().parse().ok())
+                    .collect();
+                // from the first restart the engines place differently on, nothing lines up any more
+                let agree = oracle_restarts.iter().zip(&engine_restarts).take_while(|(a, b)| a == b).count();
+                let cut = match (oracle_restarts.get(agree), engine_restarts.get(agree)) {
+                    (None, None) => u64::MAX,
+                    (a, b) => (*a.unwrap_or(&u64::MAX)).min(*b.unwrap_or(&u64::MAX)),
+                };
+                let n = oracle.len() + rust.len();
+                oracle.retain(|e| e.end < cut);
+                rust.retain(|e| e.end < cut);
+                let after_cut = n - oracle.len() - rust.len();
+                let mut starts: Vec<u64> = cmds.iter().filter_map(|c| if let Cmd::End(s) = *c { Some(s) } else { None }).collect();
+                starts.extend_from_slice(&oracle_restarts[..agree]);
+                // engine events inside the gate itself have no oracle counterpart to pair with (it is not scoring)
+                let gate = FW_GATE_MAX_FRAMES * 160;
+                let n = rust.len();
                 if *name == "fw" {
-                    let gate = (FW_GATE_FRAMES + lock) * 160;
-                    let first_restart = text.lines().find_map(|l| l.strip_prefix("restart: new decoder fed from sample "));
-                    let first_restart = first_restart.and_then(|s| s.trim().parse::<u64>().ok()).unwrap_or(u64::MAX);
-                    let keep = |end: u64| end < first_restart && !cmds.iter().any(|c| matches!(*c, Cmd::End(s) if end >= s && end <= s + gate));
-                    let n = oracle.len() + rust.len();
-                    oracle.retain(|e| keep(e.end));
-                    rust.retain(|e| keep(e.end));
-                    skipped = n - oracle.len() - rust.len();
+                    rust.retain(|e| !starts.iter().any(|&s| e.end > s && e.end < s + gate));
                 }
+                let in_gate = n - rust.len();
                 for e in &mut oracle {
                     (e.begin, e.end) = (e.begin.saturating_sub(lead), e.end.saturating_sub(lead));
                 }
                 for e in &mut rust {
                     (e.begin, e.end) = (e.begin.saturating_sub(lead), e.end.saturating_sub(lead));
                 }
-                let mut diffs = Vec::new();
-                let t = compare(&oracle, &rust, &thr, &mut diffs);
-                Some((format!("{group}/{clip}"), t, diffs, skipped))
+                let mut diffs: Vec<Diff> = Vec::new();
+                let t = compare_events(&oracle, &rust, &thr, false, &mut diffs);
+                let gated = |end: u64| starts.iter().any(|&s| end + lead >= s && end + lead <= s + window);
+                let mut exempt = 0;
+                let mut bad = Vec::new();
+                for d in &diffs {
+                    match (&d.oracle, &d.engine) {
+                        (Some(o), Some(e)) if o.kind == e.kind && o.end == e.end && o.begin == e.begin => {}
+                        (Some(_), Some(_)) => bad.push(d.to_string()),
+                        (Some(x), None) | (None, Some(x)) if *name == "fw" && gated(x.end) => exempt += 1,
+                        _ => bad.push(d.to_string()),
+                    }
+                }
+                Some((format!("{group}/{clip}"), t, bad, [exempt, in_gate, after_cut]))
             });
             let missing = results.iter().filter(|r| r.is_none()).count();
-            let mut total = Tally::default();
-            let mut skipped = 0;
-            for (clip, t, diffs, s) in results.into_iter().flatten() {
+            assert!(missing < chosen.len(), "{name} [{}]: nothing cached", pass.name);
+            if missing > 0 && !partial_ok {
+                failures.push(format!("{name} [{}]: {missing} of {} clips uncached (PRYON_CORPUS_PARTIAL=1 allows)", pass.name, chosen.len()));
+            }
+            let (mut total, mut skip) = (Tally::default(), [0usize; 3]);
+            for (clip, t, bad, s) in results.into_iter().flatten() {
                 total.add(&t);
-                skipped += s;
-                let begin_ok = t.begin_eq == t.kind_eq || BEGIN_EXCEPTIONS.contains(&(*name, clip.as_str()));
-                let n = t.oracle;
-                if t.oracle_only + t.engine_only > 0 || t.kind_eq != n || t.end_eq != n || !begin_ok {
-                    failures.push(format!("{name} [{}] {clip}:\n  {}", pass.name, diffs.join("\n  ")));
+                for (a, b) in skip.iter_mut().zip(s) {
+                    *a += b;
+                }
+                let begin_only = bad.iter().all(|d| {
+                    let both = !d.contains("oracle=-") && !d.contains("rust=-");
+                    both && BEGIN_EXCEPTIONS.contains(&(*name, clip.as_str()))
+                });
+                let gate_pair = *name == "fw" && GATE_PAIR_EXCEPTIONS.contains(&(pass.name, clip.as_str()));
+                if !bad.is_empty() && !begin_only && !gate_pair {
+                    failures.push(format!("{name} [{}] {clip}:\n  {}", pass.name, bad.join("\n  ")));
                 }
             }
-            println!("{name} [{}] ({missing} uncached, {skipped} firmware events not compared): {}", pass.name, total.line());
-            assert!(missing < chosen.len(), "{name} [{}]: nothing cached", pass.name);
+            println!(
+                "{name} [{}]: compared {} events; exempt: {} one-sided in a gate window, {} engine events inside the \
+                 gate, {} after a diverging restart; {missing} clips uncached | {}",
+                pass.name,
+                total.oracle + total.engine - skip[0],
+                skip[0],
+                skip[1],
+                skip[2],
+                total.line()
+            );
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));

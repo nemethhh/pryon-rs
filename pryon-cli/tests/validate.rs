@@ -197,7 +197,6 @@ fn short_oracle_feed_is_an_error() {
 
 #[test]
 fn scratch_removed_when_the_oracle_set_fails() {
-    use std::os::unix::fs::PermissionsExt;
     let f = Fixture::new("scratch");
     // with a checksum file the loader reads only what the set uses; deterministic_set reads every kw.cfg.json
     let manifest = f.set.join("pryon.manifest");
@@ -206,8 +205,7 @@ fn scratch_removed_when_the_oracle_set_fails() {
     std::fs::write(f.set.join("checksum.txt"), "scratch-test").unwrap();
     let bad = f.set.join("unused/kw.cfg.json");
     std::fs::create_dir_all(bad.parent().unwrap()).unwrap();
-    std::fs::write(&bad, "{}").unwrap();
-    std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o000)).unwrap();
+    std::fs::write(&bad, [0xff, 0xfe, 0x00]).unwrap();
     let tmp = f.dir.join("tmp");
     std::fs::create_dir_all(&tmp).unwrap();
     let (cache, records) = (f.dir.join("cache"), f.dir.join("records"));
@@ -220,7 +218,6 @@ fn scratch_removed_when_the_oracle_set_fails() {
         .env_remove("PRYON_PRYON_TEST")
         .output()
         .unwrap();
-    std::fs::set_permissions(&bad, std::fs::Permissions::from_mode(0o644)).unwrap();
     assert_eq!(o.status.code(), Some(2), "{}", text(&o));
     assert!(text(&o).contains("oracle set"), "{}", text(&o));
     assert_eq!(std::fs::read_dir(&tmp).unwrap().count(), 0, "scratch left behind");

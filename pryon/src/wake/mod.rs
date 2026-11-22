@@ -122,6 +122,12 @@ impl Spotter {
         }
     }
 
+    /// Stream sample of the current frame 0 (moves on a reset or a decoder restart).
+    #[doc(hidden)]
+    pub fn origin(&self) -> u64 {
+        self.orchestra.origin()
+    }
+
     /// Sets a client property that kw.cfg threshold overrides test, as libpryon does: from the first 10 ms frame
     /// that starts after the samples fed so far. Unknown names are ignored.
     pub fn set_property(&mut self, name: &str, value: i32) {

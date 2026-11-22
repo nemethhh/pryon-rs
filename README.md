@@ -91,11 +91,11 @@ link it with the native libraries rustc lists for the target
   time. Both engines get each clip between `--lead-ms` (default 2500) and `--tail-ms` (default 1000) of digital
   silence: the firmware oracle scores nothing in its first ~1.7 s, and libpryon reports an accept only ~120 ms after
   the keyword ends, so not at the very end of a clip; events are printed in clip samples. That firmware gate
-  (168 frames with the shipped model path, 174 with another; the same at any feed speed and host load) restarts
-  with every session end and decoder restart, and the engine does not reproduce it, its length not being a property
-  of the set: on the firmware set, events within the gate and a lock period after an `-e` differ, and after the
-  first restart of a clip the restart points (and with them the events) part, because the gate hides accepts the
-  engine counts toward the trigger. `-p` sets a client
+  restarts with every session end and decoder restart; it is the same at any feed speed and host load, but its
+  length depends on the install path of the model (168 and 174 frames observed for copies of the same files), so it
+  is not a property of the set and the engine does not reproduce it: on the firmware set, events in the gate after
+  an `-e` or a restart (and a lock period after it) differ, and once a gate-hidden accept moves the engine's restart
+  point, the events after it part too. `-p` sets a client
   property and `-e` ends the session (`Spotter::reset`, libpryon's `PryonDecoder_SessionEnd`) before the given clip
   sample, in both engines. libpryon's probabilistic accept (a random accept of a near miss, drawn from a
   clock-seeded generator) is switched off for the oracle only: it runs a copy of the set whose
