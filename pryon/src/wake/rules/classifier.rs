@@ -106,6 +106,122 @@ impl Smoother {
     }
 }
 
+/// One entry of a word component's score history.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Entry {
+    pub frame: u64,
+    pub score: f32,
+    /// Keyword start frame predicted on that frame.
+    pub start: u64,
+}
+
+/// libpryon's ScoreMaxTracker (score_max_tracker.cpp; used by 0x9afa78): the scores of the last `cap` frames in a
+/// ring of `cap` entries, with the index of their maximum.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Tracker {
+    ring: Vec<Entry>,
+    head: usize,
+    len: usize,
+    max: usize,
+}
+
+impl Tracker {
+    pub fn new(cap: usize) -> Tracker {
+        Tracker { ring: vec![Entry { frame: 0, score: 0.0, start: 0 }; cap], head: 0, len: 0, max: 0 }
+    }
+
+    fn at(&self, i: usize) -> &Entry {
+        &self.ring[(self.head + i) % self.ring.len()]
+    }
+
+    pub fn push(&mut self, e: Entry) {
+        let cap = self.ring.len();
+        // compared with the maximum before anything leaves the window
+        let takes_over = self.len == 0 || self.at(self.max).score <= e.score;
+        let full = self.len == cap;
+        let tail = (self.head + self.len) % cap;
+        self.ring[tail] = e;
+        if full {
+            self.head = (self.head + 1) % cap;
+        } else {
+            self.len += 1;
+        }
+        let oldest = (e.frame + 1).saturating_sub(cap as u64);
+        let mut gone = 0;
+        while gone < self.len && self.at(gone).frame < oldest {
+            gone += 1;
+        }
+        self.head = (self.head + gone) % cap;
+        self.len -= gone;
+        let shift = gone + usize::from(full);
+        if takes_over {
+            self.max = self.len - 1;
+        } else if shift > 0 {
+            if self.max >= shift {
+                self.max -= shift;
+            } else {
+                // first maximum (strict <), oldest first
+                self.max = 0;
+                for i in 1..self.len {
+                    if self.at(self.max).score < self.at(i).score {
+                        self.max = i;
+                    }
+                }
+            }
+        }
+    }
+
+    /// The maximum entry; `None` before the first push.
+    pub fn max(&self) -> Option<Entry> {
+        (self.len > 0).then(|| *self.at(self.max))
+    }
+
+    pub fn reset(&mut self) {
+        (self.head, self.len, self.max) = (0, 0, 0);
+    }
+}
+
+/// powf(x, y) for the exponents where bionic's powf (FreeBSD msun e_powf.c, Android 7.1) takes an exact special
+/// case: y = 0, 1, 2 and 0.5 (sqrtf for x >= +0). `None` for any other exponent.
+pub(crate) fn powf_exact(x: f32, y: f32) -> Option<f32> {
+    match y {
+        _ if y == 0.0 => Some(1.0),
+        _ if x == 1.0 => Some(1.0),
+        1.0 => Some(x),
+        2.0 => Some(x * x),
+        0.5 if x.to_bits() >> 31 == 0 => Some(x.sqrt()),
+        _ => None,
+    }
+}
+
+/// One word component of a multi-word spotter (0x9afa78): its class score through an exponential decay, then the
+/// maximum over its history.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Word {
+    pub col: Column,
+    pub se: Column,
+    pub weight: f32,
+    pub decay: Smoother,
+    pub track: Tracker,
+}
+
+/// WeightedGeometricAverageAggregator::score (0x9ab474): prod(powf(s_i, w_i)) from 1.0, then powf(prod, 1 / sum(w_i))
+/// with the weights summed from 0.0.
+pub(crate) fn aggregate(scores: &[f32], weights: &[f32]) -> f32 {
+    let (mut prod, mut sum) = (1.0f32, 0.0f32);
+    for (&s, &w) in scores.iter().zip(weights) {
+        prod *= powf_exact(s, w).expect("weights checked at load");
+        sum += w;
+    }
+    powf_exact(prod, 1.0 / sum).expect("weights checked at load")
+}
+
+/// Whether [`aggregate`] can run `weights` with exact powf special cases only.
+pub(crate) fn weights_exact(weights: &[f32]) -> bool {
+    let sum = weights.iter().fold(0.0f32, |a, &w| a + w);
+    weights.iter().all(|&w| powf_exact(0.5, w).is_some()) && sum > 0.0 && powf_exact(0.5, 1.0 / sum).is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,6 +296,88 @@ mod tests {
         let s = m.score(&c, &vals, 3).0;
         assert_eq!(s, 1.0 / 3.0);
         assert_ne!(s, (e + e + 1.0) / 3.0);
+    }
+
+    fn e(frame: u64, score: f32) -> Entry {
+        Entry { frame, score, start: frame * 10 }
+    }
+
+    #[test]
+    fn aggregator_values() {
+        // a 20-frame history fed every 8 frames keeps three entries: frames >= f - 19
+        let mut t = Tracker::new(20);
+        assert_eq!(t.max(), None);
+        let seq = [(8, 0.5), (16, 0.7), (24, 0.6), (32, 0.4), (40, 0.1), (48, 0.6), (56, 0.6), (64, 0.3)];
+        let want = [(8, 0.5), (16, 0.7), (16, 0.7), (16, 0.7), (24, 0.6), (48, 0.6), (56, 0.6), (56, 0.6)];
+        for (&(f, s), &(wf, ws)) in seq.iter().zip(&want) {
+            t.push(e(f, s));
+            assert_eq!(t.max(), Some(e(wf, ws)), "after frame {f}");
+        }
+        // a new score equal to the maximum takes over; a rescan keeps the oldest of equal maxima
+        let mut t = Tracker::new(20);
+        for (f, s) in [(8, 0.6), (16, 0.6), (24, 0.2), (32, 0.5)] {
+            t.push(e(f, s));
+        }
+        assert_eq!(t.max(), Some(e(16, 0.6)));
+        t.push(e(40, 0.2));
+        assert_eq!(t.max(), Some(e(32, 0.5)), "16 left the window");
+        // ring capacity binds when frames are denser than the ring: entries 1, 2 are overwritten by 3
+        let mut t = Tracker::new(2);
+        for (f, s) in [(1, 0.9), (2, 0.4), (3, 0.3)] {
+            t.push(e(f, s));
+        }
+        assert_eq!(t.max(), Some(e(2, 0.4)));
+        t.reset();
+        assert_eq!(t.max(), None);
+        t.push(e(9, 0.1));
+        assert_eq!(t.max(), Some(e(9, 0.1)));
+        // history 1: the current score only
+        let mut t = Tracker::new(1);
+        t.push(e(8, 0.9));
+        t.push(e(16, 0.2));
+        assert_eq!(t.max(), Some(e(16, 0.2)));
+
+        // HEY_DISNEY's two components: decay 0.0 with history, decay 0.3 without; weights 1, 1
+        let c = col(1, 4, 2);
+        let mut d0 = Smoother::Decay { rate: 0.0, state: 0.0 };
+        let mut d1 = Smoother::Decay { rate: 0.3, state: 0.0 };
+        let mut h0 = Tracker::new(100);
+        let inputs = [(0.2f32, 0.1f32), (0.6, 0.5), (0.3, 0.7)];
+        let mut got = Vec::new();
+        for (k, &(a, b)) in inputs.iter().enumerate() {
+            let v = [0.0, 0.0, a, b];
+            let vals: [&[f32]; 1] = [&v];
+            let s0 = d0.score(&c, &vals, k as u64).0;
+            let c1 = Column { class: 3, ..c };
+            let s1 = d1.score(&c1, &vals, k as u64).0;
+            h0.push(Entry { frame: 8 * (k as u64 + 1), score: s0, start: 1 });
+            got.push(aggregate(&[h0.max().unwrap().score, s1], &[1.0, 1.0]));
+        }
+        let (mut x1, mut m0) = (0.0f32, 0.0f32);
+        let want: Vec<f32> = inputs
+            .iter()
+            .map(|&(a, b)| {
+                x1 = b * (1.0 - 0.3f32) + 0.3 * x1;
+                m0 = if a > m0 { a } else { m0 };
+                (m0 * x1).sqrt()
+            })
+            .collect();
+        assert_eq!(got, want);
+        assert_eq!(got[2], (0.6f32 * (0.7 * 0.7 + 0.3 * (0.5 * 0.7 + 0.3 * (0.1 * 0.7)))).sqrt());
+    }
+
+    #[test]
+    fn powf_special_cases() {
+        let x = 0.37f32;
+        assert_eq!(powf_exact(x, 1.0), Some(x));
+        assert_eq!(powf_exact(x, 2.0), Some(x * x));
+        assert_eq!(powf_exact(x, 0.5), Some(x.sqrt()));
+        assert_eq!(powf_exact(x, 0.0), Some(1.0));
+        assert_eq!(powf_exact(0.0, 0.5), Some(0.0));
+        assert_eq!(powf_exact(x, 0.25), None);
+        assert_eq!(powf_exact(x, -1.0), None);
+        assert_eq!(aggregate(&[0.25, 0.64], &[1.0, 1.0]), 0.4);
+        assert_eq!(aggregate(&[0.3], &[1.0]), 0.3);
     }
 
     #[test]

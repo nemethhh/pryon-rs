@@ -1,0 +1,107 @@
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-0: Scorer "ww_stop" is already activated
+command @16080 SessionEnd -> 0
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-0: {KWS} Skipping Federated Learning; The detection frame index (8) must be greater than the feature window length (100)
+pryon[2] ERROR: DecoderID=dec: recognition_id=dec-0: {KWS} Unexpected detection event type NearMiss is emitted from DETECTION_AUXILIARY spotter
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-1: {KWS} Skipping Federated Learning; The detection frame index (8) must be greater than the feature window length (100)
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-1: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 8240 Preroll frame index (wrt cms): 51 Preroll sample index (wrt result audio): 8240
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-1: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-1: {KWS} segmentation_score=-inf,classifier_score=0.8,active_threshold=0.3,detection_type=NearMiss
+RESULT decoder=dec keyword=ALEXA type=0 begin=16240 end=38480 (1.01s..2.40s) meta=992
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"NearMiss","kwClassificationScore":0.8,"kwActiveThreshold":0.3,"kwSampleStartIndex":16240,"kwSampleEndIndex":16400,"kwSampleDetectionIndex":38480,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-2: {KWS} Skipping Federated Learning; The sum of the feature window length (100) and lockout period (132) must not exceed the buffer size (200)
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-2: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 22000 Preroll frame index (wrt cms): 137 Preroll sample index (wrt result audio): 22000
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-2: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-2: {KWS} segmentation_score=-inf,classifier_score=0.8,active_threshold=0.3,detection_type=NearMiss
+RESULT decoder=dec keyword=ALEXA type=0 begin=30000 end=60240 (1.88s..3.77s) meta=1008
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"NearMiss","kwClassificationScore":0.8,"kwActiveThreshold":0.3,"kwSampleStartIndex":30000,"kwSampleEndIndex":30160,"kwSampleDetectionIndex":60240,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-3: {KWS} Skipping Federated Learning; The sum of the feature window length (100) and lockout period (132) must not exceed the buffer size (200)
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-3: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 43760 Preroll frame index (wrt cms): 273 Preroll sample index (wrt result audio): 43760
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-3: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-3: {KWS} segmentation_score=-inf,classifier_score=0.8,active_threshold=0.3,detection_type=NearMiss
+RESULT decoder=dec keyword=ALEXA type=0 begin=51760 end=82000 (3.23s..5.12s) meta=1016
+META header 13 bytes, {"kwName":"ALEXA","kwDetectionType":"NearMiss","kwClassificationScore":0.8,"kwActiveThreshold":0.3,"kwSampleStartIndex":51760,"kwSampleEndIndex":51920,"kwSampleDetectionIndex":82000,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-4: {KWS} Skipping Federated Learning; The sum of the feature window length (100) and lockout period (132) must not exceed the buffer size (200)
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-4: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 65520 Preroll frame index (wrt cms): 409 Preroll sample index (wrt result audio): 65520
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-4: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-4: {KWS} segmentation_score=-inf,classifier_score=0.8,active_threshold=0.3,detection_type=NearMiss
+RESULT decoder=dec keyword=ALEXA type=0 begin=73520 end=103760 (4.59s..6.49s) meta=1024
+META header 13 bytes, {"kwName":"ALEXA","kwDetectionType":"NearMiss","kwClassificationScore":0.8,"kwActiveThreshold":0.3,"kwSampleStartIndex":73520,"kwSampleEndIndex":73680,"kwSampleDetectionIndex":103760,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-5: {KWS} Skipping Federated Learning; The sum of the feature window length (100) and lockout period (132) must not exceed the buffer size (200)
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-5: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 87280 Preroll frame index (wrt cms): 545 Preroll sample index (wrt result audio): 87280
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-5: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-5: {KWS} segmentation_score=-inf,classifier_score=0.8,active_threshold=0.3,detection_type=NearMiss
+RESULT decoder=dec keyword=ALEXA type=0 begin=95280 end=125520 (5.96s..7.84s) meta=1024
+META header 13 bytes, {"kwName":"ALEXA","kwDetectionType":"NearMiss","kwClassificationScore":0.8,"kwActiveThreshold":0.3,"kwSampleStartIndex":95280,"kwSampleEndIndex":95440,"kwSampleDetectionIndex":125520,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-6: {KWS} Skipping Federated Learning; The sum of the feature window length (100) and lockout period (132) must not exceed the buffer size (200)
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-6: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 109040 Preroll frame index (wrt cms): 681 Preroll sample index (wrt result audio): 109040
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-6: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-6: {KWS} segmentation_score=-inf,classifier_score=0.8,active_threshold=0.3,detection_type=NearMiss
+RESULT decoder=dec keyword=ALEXA type=0 begin=117040 end=147280 (7.32s..9.21s) meta=1032
+META header 13 bytes, {"kwName":"ALEXA","kwDetectionType":"NearMiss","kwClassificationScore":0.8,"kwActiveThreshold":0.3,"kwSampleStartIndex":117040,"kwSampleEndIndex":117200,"kwSampleDetectionIndex":147280,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-7: {KWS} Skipping Federated Learning; The sum of the feature window length (100) and lockout period (132) must not exceed the buffer size (200)
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-7: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 130800 Preroll frame index (wrt cms): 817 Preroll sample index (wrt result audio): 130800
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-7: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-7: {KWS} segmentation_score=-inf,classifier_score=0.8,active_threshold=0.3,detection_type=NearMiss
+RESULT decoder=dec keyword=ALEXA type=0 begin=138800 end=169040 (8.68s..10.56s) meta=1032
+META header 13 bytes, {"kwName":"ALEXA","kwDetectionType":"NearMiss","kwClassificationScore":0.8,"kwActiveThreshold":0.3,"kwSampleStartIndex":138800,"kwSampleEndIndex":138960,"kwSampleDetectionIndex":169040,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-8: {KWS} Skipping Federated Learning; The sum of the feature window length (100) and lockout period (132) must not exceed the buffer size (200)
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-8: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 152560 Preroll frame index (wrt cms): 953 Preroll sample index (wrt result audio): 152560
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-8: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-8: {KWS} segmentation_score=-inf,classifier_score=0.8,active_threshold=0.3,detection_type=NearMiss
+RESULT decoder=dec keyword=ALEXA type=0 begin=160560 end=190800 (10.04s..11.93s) meta=1032
+META header 13 bytes, {"kwName":"ALEXA","kwDetectionType":"NearMiss","kwClassificationScore":0.8,"kwActiveThreshold":0.3,"kwSampleStartIndex":160560,"kwSampleEndIndex":160720,"kwSampleDetectionIndex":190800,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-9: {KWS} Skipping Federated Learning; The sum of the feature window length (100) and lockout period (132) must not exceed the buffer size (200)
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-9: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 174320 Preroll frame index (wrt cms): 1089 Preroll sample index (wrt result audio): 174320
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-9: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-9: {KWS} segmentation_score=-inf,classifier_score=0.8,active_threshold=0.3,detection_type=NearMiss
+RESULT decoder=dec keyword=ALEXA type=0 begin=182320 end=212560 (11.39s..13.29s) meta=1032
+META header 13 bytes, {"kwName":"ALEXA","kwDetectionType":"NearMiss","kwClassificationScore":0.8,"kwActiveThreshold":0.3,"kwSampleStartIndex":182320,"kwSampleEndIndex":182480,"kwSampleDetectionIndex":212560,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-10: {KWS} Skipping Federated Learning; The sum of the feature window length (100) and lockout period (132) must not exceed the buffer size (200)
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-10: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 196080 Preroll frame index (wrt cms): 1225 Preroll sample index (wrt result audio): 196080
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-10: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-10: {KWS} segmentation_score=-inf,classifier_score=0.8,active_threshold=0.3,detection_type=NearMiss
+RESULT decoder=dec keyword=ALEXA type=0 begin=204080 end=234320 (12.76s..14.64s) meta=1032
+META header 13 bytes, {"kwName":"ALEXA","kwDetectionType":"NearMiss","kwClassificationScore":0.8,"kwActiveThreshold":0.3,"kwSampleStartIndex":204080,"kwSampleEndIndex":204240,"kwSampleDetectionIndex":234320,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-11: {KWS} Skipping Federated Learning; The sum of the feature window length (100) and lockout period (132) must not exceed the buffer size (200)
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-11: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 217840 Preroll frame index (wrt cms): 1361 Preroll sample index (wrt result audio): 217840
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-11: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-11: {KWS} segmentation_score=-inf,classifier_score=0.8,active_threshold=0.3,detection_type=NearMiss
+RESULT decoder=dec keyword=ALEXA type=0 begin=225840 end=256080 (14.12s..16.00s) meta=1040
+META header 13 bytes, {"kwName":"ALEXA","kwDetectionType":"NearMiss","kwClassificationScore":0.8,"kwActiveThreshold":0.3,"kwSampleStartIndex":225840,"kwSampleEndIndex":226000,"kwSampleDetectionIndex":256080,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-12: {KWS} Skipping Federated Learning; The sum of the feature window length (100) and lockout period (132) must not exceed the buffer size (200)
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-12: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 239600 Preroll frame index (wrt cms): 1497 Preroll sample index (wrt result audio): 239600
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-12: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-12: {KWS} segmentation_score=-inf,classifier_score=0.8,active_threshold=0.3,detection_type=NearMiss
+RESULT decoder=dec keyword=ALEXA type=0 begin=247600 end=277840 (15.47s..17.36s) meta=1040
+META header 13 bytes, {"kwName":"ALEXA","kwDetectionType":"NearMiss","kwClassificationScore":0.8,"kwActiveThreshold":0.3,"kwSampleStartIndex":247600,"kwSampleEndIndex":247760,"kwSampleDetectionIndex":277840,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-13: {KWS} Skipping Federated Learning; The sum of the feature window length (100) and lockout period (132) must not exceed the buffer size (200)
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-13: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 261360 Preroll frame index (wrt cms): 1633 Preroll sample index (wrt result audio): 261360
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-13: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-13: {KWS} segmentation_score=-inf,classifier_score=0.8,active_threshold=0.3,detection_type=NearMiss
+RESULT decoder=dec keyword=ALEXA type=0 begin=269360 end=299600 (16.84s..18.73s) meta=1040
+META header 13 bytes, {"kwName":"ALEXA","kwDetectionType":"NearMiss","kwClassificationScore":0.8,"kwActiveThreshold":0.3,"kwSampleStartIndex":269360,"kwSampleEndIndex":269520,"kwSampleDetectionIndex":299600,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-14: {KWS} Skipping Federated Learning; The sum of the feature window length (100) and lockout period (132) must not exceed the buffer size (200)
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-14: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 283120 Preroll frame index (wrt cms): 1769 Preroll sample index (wrt result audio): 283120
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-14: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-14: {KWS} segmentation_score=-inf,classifier_score=0.8,active_threshold=0.3,detection_type=NearMiss
+RESULT decoder=dec keyword=ALEXA type=0 begin=291120 end=321360 (18.20s..20.09s) meta=1040
+META header 13 bytes, {"kwName":"ALEXA","kwDetectionType":"NearMiss","kwClassificationScore":0.8,"kwActiveThreshold":0.3,"kwSampleStartIndex":291120,"kwSampleEndIndex":291280,"kwSampleDetectionIndex":321360,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-15: {KWS} Skipping Federated Learning; The sum of the feature window length (100) and lockout period (132) must not exceed the buffer size (200)
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-15: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 304880 Preroll frame index (wrt cms): 1905 Preroll sample index (wrt result audio): 304880
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-15: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-15: {KWS} segmentation_score=-inf,classifier_score=0.8,active_threshold=0.3,detection_type=NearMiss
+RESULT decoder=dec keyword=ALEXA type=0 begin=312880 end=343120 (19.55s..21.45s) meta=1040
+META header 13 bytes, {"kwName":"ALEXA","kwDetectionType":"NearMiss","kwClassificationScore":0.8,"kwActiveThreshold":0.3,"kwSampleStartIndex":312880,"kwSampleEndIndex":313040,"kwSampleDetectionIndex":343120,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-16: {KWS} Skipping Federated Learning; The sum of the feature window length (100) and lockout period (132) must not exceed the buffer size (200)
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-16: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 326640 Preroll frame index (wrt cms): 2041 Preroll sample index (wrt result audio): 326640
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-16: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-16: {KWS} segmentation_score=-inf,classifier_score=0.8,active_threshold=0.3,detection_type=NearMiss
+RESULT decoder=dec keyword=ALEXA type=0 begin=334640 end=364880 (20.91s..22.80s) meta=1032
+META header 13 bytes, {"kwName":"ALEXA","kwDetectionType":"NearMiss","kwClassificationScore":0.8,"kwActiveThreshold":0.3,"kwSampleStartIndex":334640,"kwSampleEndIndex":334800,"kwSampleDetectionIndex":364880,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-17: {KWS} Skipping Federated Learning; The sum of the feature window length (100) and lockout period (132) must not exceed the buffer size (200)
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-17: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 348400 Preroll frame index (wrt cms): 2177 Preroll sample index (wrt result audio): 348400
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-17: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-17: {KWS} segmentation_score=-inf,classifier_score=0.8,active_threshold=0.3,detection_type=NearMiss
+RESULT decoder=dec keyword=ALEXA type=0 begin=356400 end=386640 (22.27s..24.16s) meta=1040
+META header 13 bytes, {"kwName":"ALEXA","kwDetectionType":"NearMiss","kwClassificationScore":0.8,"kwActiveThreshold":0.3,"kwSampleStartIndex":356400,"kwSampleEndIndex":356560,"kwSampleDetectionIndex":386640,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pushed 400000 samples (25.0s), 17 callbacks

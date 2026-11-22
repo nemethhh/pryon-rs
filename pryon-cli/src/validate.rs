@@ -1,8 +1,8 @@
 //! `validate`: libpryon (qemu) and pryon-rs on the same clips, every difference printed, validated sets recorded.
 
 use pryon::wake::{load_set, Detection, DetectionKind, Spotter, SpotterModel, SpotterOptions};
-use pryon_testkit::compare::{compare, pad_clip, pushed, Diff, Ev, Limits, Tally, LEAD_MS, TAIL_MS};
-use pryon_testkit::oracle::{parse_wake, OracleCmd, OracleEnv, OracleEvent, OracleKind};
+use pryon_testkit::compare::{compare, oracle_cache_key, pad_clip, pushed, Diff, Ev, Limits, Tally, LEAD_MS, TAIL_MS};
+use pryon_testkit::oracle::{deterministic_set, parse_wake, OracleCmd, OracleEnv, OracleEvent, OracleKind};
 use pryon_testkit::fnv1a64;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -22,8 +22,8 @@ struct Args {
     /// Digital silence added before and after every clip, for both engines.
     lead_ms: u32,
     tail_ms: u32,
-    /// (sample, name, value).
-    props: Vec<(u64, String, i32)>,
+    /// Clip sample, then a property (name, value) or a session end.
+    cmds: Vec<(u64, Option<(String, i32)>)>,
     model: PathBuf,
     clips: Vec<PathBuf>,
 }
@@ -39,7 +39,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         jobs: std::thread::available_parallelism().map_or(4, |n| n.get()),
         lead_ms: LEAD_MS,
         tail_ms: TAIL_MS,
-        props: Vec::new(),
+        cmds: Vec::new(),
         model: PathBuf::new(),
         clips: Vec::new(),
     };
@@ -70,12 +70,16 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                 let (assign, at) = v.split_once('@').map_or((v.as_str(), Some(0)), |(x, s)| (x, s.parse::<u64>().ok()));
                 match (assign.split_once('='), at) {
                     (Some((n, x)), Some(at)) if !n.is_empty() => match x.parse::<i32>() {
-                        Ok(x) => a.props.push((at, n.to_string(), x)),
+                        Ok(x) => a.cmds.push((at, Some((n.to_string(), x)))),
                         Err(_) => return Err(format!("-p {v}: VALUE must be an integer")),
                     },
                     _ => return Err(format!("-p {v}: expected NAME=VALUE[@SAMPLE]")),
                 }
             }
+            "-e" | "--session-end" => match val()?.parse::<u64>() {
+                Ok(at) => a.cmds.push((at, None)),
+                Err(_) => return Err(format!("{o} needs a clip sample")),
+            },
             s if s.starts_with('-') && s.len() > 1 => return Err(format!("unknown option {s}")),
             _ => pos.push(o.clone()),
         }
@@ -172,16 +176,19 @@ fn kind_of(k: DetectionKind) -> OracleKind {
     }
 }
 
-/// Feeds `pcm` applying each property before its sample.
-fn run_rust(model: &Arc<SpotterModel>, pcm: &[i16], props: &[(u64, String, i32)]) -> Result<Vec<Ev>, String> {
+/// Feeds `pcm` applying each command before its sample, in the order given (as pryon_test does).
+fn run_rust(model: &Arc<SpotterModel>, pcm: &[i16], cmds: &[(u64, Option<(String, i32)>)]) -> Result<Vec<Ev>, String> {
     let mut sp = Spotter::new(model.clone(), SpotterOptions::default()).map_err(|e| e.to_string())?;
-    let mut cmds: Vec<&(u64, String, i32)> = props.iter().collect();
+    let mut cmds: Vec<&(u64, Option<(String, i32)>)> = cmds.iter().collect();
     cmds.sort_by_key(|c| c.0);
     let mut out: Vec<Detection> = Vec::new();
     let (mut pos, mut next) = (0usize, 0usize);
     loop {
         while next < cmds.len() && cmds[next].0 <= pos as u64 {
-            sp.set_property(&cmds[next].1, cmds[next].2);
+            match &cmds[next].1 {
+                Some((n, v)) => sp.set_property(n, *v),
+                None => sp.reset(&mut out),
+            }
             next += 1;
         }
         if pos == pcm.len() {
@@ -201,15 +208,15 @@ fn run_rust(model: &Arc<SpotterModel>, pcm: &[i16], props: &[(u64, String, i32)]
 
 struct ClipOut {
     name: String,
-    /// Per keyword: tally, differences, probabilistic-accept events.
-    per_kw: BTreeMap<String, (Tally, Vec<Diff>, Vec<Ev>)>,
-    notes: Vec<String>,
+    /// Per keyword: tally and differences.
+    per_kw: BTreeMap<String, (Tally, Vec<Diff>)>,
     fnv: u64,
 }
 
 struct Ctx<'a> {
     args: &'a Args,
     model: Arc<SpotterModel>,
+    /// The deterministic oracle copy of the set (oracle::deterministic_set).
     manifest: PathBuf,
     limits: Limits,
     checksum: String,
@@ -217,21 +224,22 @@ struct Ctx<'a> {
     scratch: PathBuf,
 }
 
-/// Properties at clip sample `at`; one at 0 still lands before the audio.
-fn shifted(c: &Ctx) -> Vec<(u64, String, i32)> {
+/// Commands at padded-clip samples; one at 0 still lands before the audio.
+fn shifted(c: &Ctx) -> Vec<(u64, Option<(String, i32)>)> {
     let lead = u64::from(c.args.lead_ms) * 16;
-    c.args.props.iter().map(|(at, n, v)| (if *at == 0 { 0 } else { at + lead }, n.clone(), *v)).collect()
+    c.args.cmds.iter().map(|(at, x)| (if *at == 0 { 0 } else { at + lead }, x.clone())).collect()
 }
 
 /// `pcm` is the padded clip; `fnv` its hash.
 fn oracle_text(c: &Ctx, path: &Path, pcm: &[i16], fnv: u64) -> Result<String, String> {
-    let cmds: Vec<OracleCmd> =
-        shifted(c).into_iter().map(|(at, name, value)| OracleCmd::Property { at, name, value }).collect();
-    // Properties and a non-default speed change the output, so they are part of the key.
-    let mut key = fnv;
-    if !cmds.is_empty() || c.args.speed != 1.0 {
-        key = fnv1a64(format!("{fnv:016x}|{:?}|{}", cmds, c.args.speed).as_bytes());
-    }
+    let cmds: Vec<OracleCmd> = shifted(c)
+        .into_iter()
+        .map(|(at, x)| match x {
+            Some((name, value)) => OracleCmd::Property { at, name, value },
+            None => OracleCmd::SessionEnd { at },
+        })
+        .collect();
+    let key = oracle_cache_key(fnv, &cmds, c.args.speed);
     let cached = c.args.cache.as_ref().map(|d| d.join(&c.checksum).join(format!("{key:016x}.txt")));
     if let Some(Ok(t)) = cached.as_ref().map(std::fs::read_to_string) {
         return Ok(t);
@@ -270,12 +278,11 @@ fn one_clip(c: &Ctx, path: &Path) -> Result<ClipOut, String> {
     for e in &mut oracle {
         (e.begin, e.end) = (e.begin.saturating_sub(lead), e.end.saturating_sub(lead));
     }
-    let mut notes = Vec::new();
-    let fed = pushed(&text).unwrap_or(pcm.len()).min(pcm.len());
-    if fed < pcm.len() {
-        notes.push(format!("NOTE restart {name} oracle fed {fed} of {} samples; Rust fed the same", pcm.len()));
+    let fed = pushed(&text).unwrap_or(0);
+    if fed != pcm.len() {
+        return Err(format!("the oracle was fed {fed} of {} samples", pcm.len()));
     }
-    let mut engine = run_rust(&c.model, &pcm[..fed], &shifted(c))?;
+    let mut engine = run_rust(&c.model, &pcm, &shifted(c))?;
     for e in &mut engine {
         (e.begin, e.end) = (e.begin.saturating_sub(lead), e.end.saturating_sub(lead));
     }
@@ -287,11 +294,11 @@ fn one_clip(c: &Ctx, path: &Path) -> Result<ClipOut, String> {
     for k in keywords {
         let o: Vec<OracleEvent> = oracle.iter().filter(|e| e.keyword == k).cloned().collect();
         let r: Vec<Ev> = engine.iter().filter(|e| e.keyword == k).cloned().collect();
-        let (mut diffs, mut prob) = (Vec::new(), Vec::new());
-        let t = compare(&o, &r, &c.limits, c.args.exact, &mut diffs, &mut prob);
-        per_kw.insert(k, (t, diffs, prob));
+        let mut diffs = Vec::new();
+        let t = compare(&o, &r, &c.limits, c.args.exact, &mut diffs);
+        per_kw.insert(k, (t, diffs));
     }
-    Ok(ClipOut { name, per_kw, notes, fnv })
+    Ok(ClipOut { name, per_kw, fnv })
 }
 
 /// Runs `f` over `items` on `jobs` threads, results in order.
@@ -346,7 +353,7 @@ pub fn run(args: &[String]) -> Result<ExitCode, (bool, String)> {
     for s in load_set(&model_dir).map_err(|e| (false, e.to_string()))?.spotters {
         let t = &s.thresholds;
         let ov: Vec<f32> = t.overrides.iter().map(|o| o.accept).collect();
-        limits.add(&s.name, t.accept, t.notify, &ov, t.probabilistic.map(|p| p.0));
+        limits.add(&s.name, t.accept, t.notify, &ov);
     }
     let env = match (a.rootfs.clone().or_else(|| std::env::var_os("PRYON_ORACLE_ROOTFS").map(Into::into)), a.pryon_test.clone().or_else(|| std::env::var_os("PRYON_PRYON_TEST").map(Into::into))) {
         (Some(rootfs), Some(pryon_test)) => Some(OracleEnv { rootfs, pryon_test }),
@@ -355,7 +362,8 @@ pub fn run(args: &[String]) -> Result<ExitCode, (bool, String)> {
     let checksum = model.checksum().to_string();
     let scratch = std::env::temp_dir().join(format!("pryon-validate-{}", std::process::id()));
     std::fs::create_dir_all(&scratch).map_err(|e| (false, e.to_string()))?;
-    let ctx = Ctx { args: &a, model: model.clone(), manifest: model_dir.join("pryon.manifest"), limits, checksum: checksum.clone(), env, scratch: scratch.clone() };
+    let oracle_set = deterministic_set(&model_dir, &scratch.join("oracle-set")).map_err(|e| (false, format!("oracle set: {e}")))?;
+    let ctx = Ctx { args: &a, model: model.clone(), manifest: oracle_set.join("pryon.manifest"), limits, checksum: checksum.clone(), env, scratch: scratch.clone() };
     let results = par_map(a.jobs, &a.clips, |p| one_clip(&ctx, p));
     let _ = std::fs::remove_dir_all(&scratch);
 
@@ -373,15 +381,9 @@ pub fn run(args: &[String]) -> Result<ExitCode, (bool, String)> {
             Ok(c) => {
                 ok_clips += 1;
                 all_fnvs.push(c.fnv);
-                for n in &c.notes {
-                    println!("{n}");
-                }
-                for (k, (t, diffs, prob)) in &c.per_kw {
+                for (k, (t, diffs)) in &c.per_kw {
                     for d in diffs {
                         println!("DIFF {} {}", c.name, d);
-                    }
-                    for e in prob {
-                        println!("PROB {} {k} oracle={e}", c.name);
                     }
                     totals.entry(k.clone()).or_default().add(t);
                     fnvs.entry(k.clone()).or_default().push(c.fnv);
@@ -392,7 +394,7 @@ pub fn run(args: &[String]) -> Result<ExitCode, (bool, String)> {
     let mut differences = 0usize;
     for (k, t) in &totals {
         differences += t.differing + t.oracle_only + t.engine_only;
-        println!("SUMMARY {k}: {}{}", t.line(), if t.prob > 0 { format!(" | PROB {}", t.prob) } else { String::new() });
+        println!("SUMMARY {k}: {}", t.line());
     }
     println!("TOTAL clips {} errors {errors} differences {differences} (set {checksum})", a.clips.len());
     if errors > 0 {

@@ -1,6 +1,6 @@
 //! Firmware and DAVS layouts to a [`SetSpec`]; set checksum.
 
-use super::kwcfg::{self, ClassifierSpec, MachineSpec, Nemort, OutputType, SpotterSpec};
+use super::kwcfg::{self, ClassifierSpec, MachineSpec, Nemort, OutputType, RestartSpec, SpotterSpec};
 use crate::json::Doc;
 use super::pconfig::{inside, join, read_manifest, read_text, rel, unsupported, PConfig};
 use crate::lfbe::LfbeSpec;
@@ -41,6 +41,7 @@ pub struct SetSpec {
     pub spotters: Vec<SpotterSpec>,
     pub words: Vec<(u32, String)>,
     pub machine: Option<MachineSpec>,
+    pub restart: RestartSpec,
 }
 
 /// How a pryon.config key is treated.
@@ -349,8 +350,8 @@ pub fn load_set(given: &Path) -> Result<SetSpec, Error> {
     let kw = path_key(&cfg, &top, "keyword_spotter.config_filepath")?;
     let mut b = Builder { dir, fe_bins: fe.bins, stages: Vec::new(), published: Vec::new(), components: Vec::new() };
 
-    let spotters = if davs {
-        let spotters = kwcfg::spotters(&kw, None, &words_name)?;
+    let (spotters, restart) = if davs {
+        let (spotters, restart) = kwcfg::spotters(&kw, None, &words_name)?;
         let enc = Doc::load(&path_key(&cfg, &top, "scorer.single.config_filepath")?)?;
         let list = kwcfg::scorers(&enc)?;
         let [e] = &list[..] else {
@@ -386,7 +387,7 @@ pub fn load_set(given: &Path) -> Result<SetSpec, Error> {
         if let Some((a, _)) = b.published.iter().find(|(a, _)| !listed.contains(a)) {
             return Err(unsupported(&list_file, format!("artifact {a} is published but not in tensor_artifacts")));
         }
-        spotters
+        (spotters, restart)
     } else {
         let frames = int_key(&cfg, &top, "scorer.initialize.frame_count")?;
         let skip = setting(&cfg, &top, "scorer.score_upsampling.default_skip_frame_count")?;
@@ -415,7 +416,7 @@ pub fn load_set(given: &Path) -> Result<SetSpec, Error> {
         Some(p) => read_text(p)?.trim().to_string(),
         None => fnv_tree(dir)?,
     };
-    Ok(SetSpec { dir: given.to_path_buf(), checksum, fe, stages: b.stages, spotters, words, machine })
+    Ok(SetSpec { dir: given.to_path_buf(), checksum, fe, stages: b.stages, spotters, words, machine, restart })
 }
 
 /// FNV-1a-64 over every regular file under `dir`, by sorted relative path: the path's bytes, then the file's.

@@ -1,7 +1,8 @@
 //! `pryon-cli validate` with hand-written oracle outputs in `--cache` (no qemu).
 
 use pryon::wake::SpotterModel;
-use pryon_testkit::compare::{pad_clip, LEAD_MS, TAIL_MS};
+use pryon_testkit::compare::{oracle_cache_key, pad_clip, LEAD_MS, TAIL_MS};
+use pryon_testkit::oracle::OracleCmd;
 use pryon_testkit::{fnv1a64, TempDir};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -22,6 +23,11 @@ struct Fixture {
 
 impl Fixture {
     fn new(tag: &str) -> Fixture {
+        Fixture::with_session_ends(tag, &[])
+    }
+
+    /// The cached oracle output is the engine's own run with session ends before these clip samples.
+    fn with_session_ends(tag: &str, ends: &[u64]) -> Fixture {
         let dir = TempDir::new(&format!("validate-{tag}"));
         let set = dir.join("set");
         let clip = dir.join("noise.raw");
@@ -33,7 +39,14 @@ impl Fixture {
         let padded: Vec<u8> = pad_clip(&pcm, LEAD_MS, TAIL_MS).iter().flat_map(|x| x.to_le_bytes()).collect();
         let padded_clip = dir.join("padded.raw");
         std::fs::write(&padded_clip, &padded).unwrap();
-        let events = cli(&["wake", "-m", &s(&set), &s(&padded_clip)]);
+        let lead = u64::from(LEAD_MS) * 16;
+        let shifted: Vec<u64> = ends.iter().map(|&at| if at == 0 { 0 } else { at + lead }).collect();
+        let mut args = vec!["wake".to_string(), "-m".into(), s(&set)];
+        for at in &shifted {
+            args.extend(["--reset-at".to_string(), at.to_string()]);
+        }
+        args.push(s(&padded_clip));
+        let events = cli(&args.iter().map(String::as_str).collect::<Vec<_>>());
         assert!(events.status.success());
         let mut text = String::new();
         for l in String::from_utf8(events.stdout).unwrap().lines().filter(|l| l.starts_with("EVENT ")) {
@@ -50,7 +63,8 @@ impl Fixture {
         }
         text += &format!("pushed {} samples, 0 callbacks\n", padded.len() / 2);
         let sum = SpotterModel::load(&set).unwrap().checksum().to_string();
-        let key = fnv1a64(&padded);
+        let cmds: Vec<OracleCmd> = shifted.iter().map(|&at| OracleCmd::SessionEnd { at }).collect();
+        let key = oracle_cache_key(fnv1a64(&padded), &cmds, 1.0);
         let cache_file = dir.join("cache").join(&sum).join(format!("{key:016x}.txt"));
         std::fs::create_dir_all(cache_file.parent().unwrap()).unwrap();
         std::fs::write(&cache_file, text).unwrap();
@@ -156,4 +170,27 @@ fn padding_keys_cache_and_prints_clip_samples() {
     let o = f.validate(&[]);
     let want = format!("end={})", end - lead);
     assert!(text(&o).lines().any(|l| l.starts_with("DIFF ") && l.contains(&want)), "{want}\n{}", text(&o));
+}
+
+#[test]
+fn session_end_script_keyed_and_applied() {
+    let f = Fixture::with_session_ends("session-end", &[40_000]);
+    // the same script hits the cache and both engines agree
+    let o = f.validate(&["-e", "40000"]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+    // without the session end it is another oracle input
+    let o = f.validate(&[]);
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o));
+    assert!(text(&o).contains("no cached oracle output"), "{}", text(&o));
+}
+
+#[test]
+fn short_oracle_feed_is_an_error() {
+    let f = Fixture::new("short-feed");
+    let t = std::fs::read_to_string(&f.cache_file).unwrap();
+    let pushed = t.lines().find(|l| l.starts_with("pushed ")).unwrap().to_string();
+    std::fs::write(&f.cache_file, t.replace(&pushed, "pushed 16000 samples, 0 callbacks")).unwrap();
+    let o = f.validate(&[]);
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o));
+    assert!(text(&o).contains("fed 16000 of"), "{}", text(&o));
 }

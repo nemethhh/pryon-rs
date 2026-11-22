@@ -60,6 +60,16 @@ pub struct SpotterSpec {
     pub local_command: bool,
 }
 
+/// libpryon's defensive decoder restart: `max_events` accepts of one keyword within `span_ms`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestartSpec {
+    pub max_events: u32,
+    pub span_ms: u32,
+}
+
+/// libpryon's values when kw.cfg has no restart-trigger (0x76f658).
+pub const RESTART_DEFAULT: RestartSpec = RestartSpec { max_events: 12, span_ms: 60000 };
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct MachineSpec {
     pub initial: usize,
@@ -388,6 +398,32 @@ fn thresholds(d: &Doc, t: &Obj) -> Result<Thresholds, Error> {
     })
 }
 
+/// KeywordMultiWordSpotter's own checks (keyword_multi_word_spotter.cpp; factory 0x9b98c4): one smoother per word
+/// component, at most two components, the last one remembering only its current score.
+fn multi_word(d: &Doc, s: &Obj, components: &[WordComponent], smoothers: &[f32]) -> Result<(), Error> {
+    let wca = s.at("word-component-array");
+    if smoothers.len() != components.len() {
+        let k = components.len();
+        return Err(d.unsup(format!("{} with {} entries for {k} word components", s.at("posterior-smoothers"), smoothers.len())));
+    }
+    if components.len() > 2 {
+        return Err(d.unsup(format!("{wca} has {} entries (libpryon takes at most 2)", components.len())));
+    }
+    for (i, w) in components.iter().enumerate() {
+        match w.history {
+            Some(h) if h >= 1 => {}
+            h => return Err(d.unsup(format!("{wca}[{i}].word-score-history-size = {h:?} (implemented: >= 1)"))),
+        }
+    }
+    if components.last().and_then(|w| w.history) != Some(1) {
+        return Err(d.unsup(format!("{wca}: the last word-score-history-size must be 1 (libpryon asserts it)")));
+    }
+    if let Some(r) = smoothers.iter().find(|r| !(0.0..=1.0).contains(*r)) {
+        return Err(d.unsup(format!("{}: decay-rate {r} outside [0, 1]", s.at("posterior-smoothers"))));
+    }
+    Ok(())
+}
+
 const SPOTTER_KEYS: &[&str] = &[
     "classification-thresholds",
     "word-component-array",
@@ -430,6 +466,9 @@ fn spotter(d: &Doc, e: &Obj, single: Option<&str>) -> Result<SpotterSpec, Error>
     }
     let c = d.get(e, "classifier")?;
     let c = c.obj(&e.at("classifier")).ok_or_else(|| d.bad(format!("{} is not an object", e.at("classifier"))))?;
+    if c.get("type").is_some_and(|t| matches!(t, Json::Str(s) if s == "weighted-geometric-average-aggregator")) {
+        multi_word(d, &s, &components, &smoothers)?;
+    }
     let scorer = match (single, e.get("scorers")) {
         (Some(s), None) => s.to_string(),
         (None, Some(_)) => match &d.strings(e, "scorers")?[..] {
@@ -472,9 +511,13 @@ fn spotter(d: &Doc, e: &Obj, single: Option<&str>) -> Result<SpotterSpec, Error>
     })
 }
 
-/// kw.cfg.json's spotters. `single` is the firmware's one scorer (its spotters name none); DAVS spotters name
-/// exactly one. `words_file` is the id2word file name the word-symbol-table must agree with.
-pub(crate) fn spotters(path: &Path, single: Option<&str>, words_file: &str) -> Result<Vec<SpotterSpec>, Error> {
+/// kw.cfg.json's spotters and restart trigger. `single` is the firmware's one scorer (its spotters name none); DAVS
+/// spotters name exactly one. `words_file` is the id2word file name the word-symbol-table must agree with.
+pub(crate) fn spotters(
+    path: &Path,
+    single: Option<&str>,
+    words_file: &str,
+) -> Result<(Vec<SpotterSpec>, RestartSpec), Error> {
     let d = Doc::load(path)?;
     let top = d.top(&[
         "acoustic-model",
@@ -490,9 +533,12 @@ pub(crate) fn spotters(path: &Path, single: Option<&str>, words_file: &str) -> R
     let am = d.sub(&top, "acoustic-model", &["non-speech-pdf", "speech-pdf"])?;
     d.pin_num(&am, "non-speech-pdf", 0.0, true)?;
     d.pin_num(&am, "speech-pdf", 0.0, true)?;
+    let mut restart = RESTART_DEFAULT;
     if let Some(r) = d.opt_sub(&top, "restart-trigger", &["max-event-count", "evaluation-span-msec"])? {
-        d.pin_num(&r, "max-event-count", 30.0, true)?;
-        d.pin_num(&r, "evaluation-span-msec", 180000.0, true)?;
+        restart = RestartSpec { max_events: d.int(&r, "max-event-count")?, span_ms: d.int(&r, "evaluation-span-msec")? };
+        if restart.max_events == 0 || restart.span_ms == 0 {
+            return Err(d.unsup(format!("{} = {restart:?} (implemented: both positive)", top.at("restart-trigger"))));
+        }
     }
     let wst = d.sub(&top, "word-symbol-table", &["filename"])?;
     let f = d.str(&wst, "filename")?;
@@ -515,7 +561,7 @@ pub(crate) fn spotters(path: &Path, single: Option<&str>, words_file: &str) -> R
             return Err(d.unsup(format!("auxiliary spotter {} without a primary", a.name)));
         }
     }
-    Ok(out)
+    Ok((out, restart))
 }
 
 /// tensor_artifacts.json: the names of the in-memory artifacts stages may publish.
@@ -588,6 +634,10 @@ pub(crate) fn machine(path: &Path, keywords: &[&str]) -> Result<MachineSpec, Err
             None => None,
         };
         states.push(MachineState { name: name.to_string(), rules, timeout });
+    }
+    // libpryon enables a spotter only while the state names its keyword; one named nowhere is not read here
+    if let Some(k) = keywords.iter().find(|k| !states.iter().any(|s| s.rules.iter().any(|(r, _)| r == *k))) {
+        return Err(d.unsup(format!("keyword {k} is in no state's rules")));
     }
     Ok(MachineSpec { initial: index(&top, "initial")?, states })
 }

@@ -48,6 +48,9 @@ pub fn parse_wake(output: &str) -> Result<Vec<OracleEvent>, String> {
             (2, "Accept") => OracleKind::Accept,
             (2, "AcceptAuxiliary") => OracleKind::AcceptAuxiliary,
             (0, "NearMiss") => OracleKind::NearMiss,
+            (_, "AcceptProbabilistic") => {
+                return Err(format!("event {i}: a probabilistic accept; run the oracle on deterministic_set()"));
+            }
             _ => return Err(format!("event {i}: RESULT type {ty} contradicts detection_type={dtype}")),
         };
         events.push(OracleEvent { keyword, kind, score, threshold, begin, end, afe });
@@ -72,6 +75,72 @@ fn meta_afe(line: &str) -> Option<(i64, i64)> {
         return None;
     }
     Some((num("\"timestamp_before_ww_start\":")?, num("\"timestamp_before_ww_end\":")?))
+}
+
+const PROBABILITY: &str = "\"probabilistic-accept-probability\"";
+
+/// `text` with every kw.cfg `probabilistic-accept-probability` value set to 0, and whether any was nonzero.
+pub fn zero_probability(text: &str) -> (String, bool) {
+    let (mut out, mut rest, mut changed) = (String::new(), text, false);
+    while let Some(i) = rest.find(PROBABILITY) {
+        let after = &rest[i + PROBABILITY.len()..];
+        let colon = after.len() - after.trim_start().len();
+        let Some(v) = after[colon..].strip_prefix(':') else {
+            out.push_str(&rest[..i + PROBABILITY.len()]);
+            rest = after;
+            continue;
+        };
+        let lead = v.len() - v.trim_start().len();
+        let num = v[lead..].find(|c: char| !(c.is_ascii_digit() || "+-.eE".contains(c))).unwrap_or(v.len() - lead);
+        changed |= v[lead..lead + num].parse::<f64>().map_or(true, |x| x != 0.0);
+        out.push_str(&rest[..i + PROBABILITY.len() + colon + 1 + lead]);
+        out.push('0');
+        rest = &v[lead + num..];
+    }
+    out.push_str(rest);
+    (out, changed)
+}
+
+/// The set the oracle should run for `set`: `set` itself, or, when a kw.cfg.json gives a nonzero
+/// probabilistic-accept-probability, a tree of symlinks under `work` with those values at 0. libpryon then always
+/// ends a probabilistic-accept window in a near miss (its draw is seeded from the clock), the only effect of the
+/// field (keyword_spotter.cpp, 0x9b5488).
+pub fn deterministic_set(set: &Path, work: &Path) -> std::io::Result<PathBuf> {
+    fn walk(src: &Path, dst: &Path, patch: &mut Vec<(PathBuf, String)>, links: &mut Vec<(PathBuf, PathBuf)>) -> std::io::Result<()> {
+        for e in std::fs::read_dir(src)? {
+            let e = e?;
+            let (s, d) = (e.path(), dst.join(e.file_name()));
+            if e.file_type()?.is_dir() || (e.file_type()?.is_symlink() && s.is_dir()) {
+                walk(&s, &d, patch, links)?;
+            } else if e.file_name() == "kw.cfg.json" {
+                let (text, changed) = zero_probability(&std::fs::read_to_string(&s)?);
+                if changed {
+                    patch.push((d, text));
+                } else {
+                    links.push((s, d));
+                }
+            } else {
+                links.push((s, d));
+            }
+        }
+        Ok(())
+    }
+    let set = std::fs::canonicalize(set)?;
+    let (mut patch, mut links) = (Vec::new(), Vec::new());
+    walk(&set, work, &mut patch, &mut links)?;
+    if patch.is_empty() {
+        return Ok(set);
+    }
+    let _ = std::fs::remove_dir_all(work);
+    for (d, text) in &patch {
+        std::fs::create_dir_all(d.parent().unwrap())?;
+        std::fs::write(d, text)?;
+    }
+    for (s, d) in &links {
+        std::fs::create_dir_all(d.parent().unwrap())?;
+        std::os::unix::fs::symlink(s, d)?;
+    }
+    Ok(work.to_path_buf())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -212,6 +281,41 @@ mod tests {
         assert!(parse_wake(&format!("{RESULT_A}\n")).is_err());
         assert!(parse_wake(&format!("{KWS_A}\n")).is_err());
         assert_eq!(parse_wake("pushed 5 samples, 0 callbacks\n").unwrap(), vec![]);
+    }
+
+    #[test]
+    fn probabilistic_accept_rejected() {
+        let kws = KWS_A.replace("detection_type=Accept", "detection_type=AcceptProbabilistic");
+        let e = parse_wake(&format!("{RESULT_A}\n{kws}\n")).unwrap_err();
+        assert!(e.contains("deterministic_set"), "{e}");
+    }
+
+    #[test]
+    fn probability_zeroed() {
+        let t = r#"{ "a": 1, "probabilistic-accept-probability": 0.001, "b": { "probabilistic-accept-probability" : 1e-3 } }"#;
+        let (z, changed) = zero_probability(t);
+        assert!(changed);
+        assert_eq!(z, r#"{ "a": 1, "probabilistic-accept-probability": 0, "b": { "probabilistic-accept-probability" : 0 } }"#);
+        assert_eq!(zero_probability(&z), (z.clone(), false));
+        assert_eq!(zero_probability("{}"), ("{}".to_string(), false));
+    }
+
+    #[test]
+    fn deterministic_set_links_all_but_kw_cfg() {
+        let src = TempDir::new("detset-src");
+        std::fs::create_dir_all(src.join("BDP")).unwrap();
+        std::fs::write(src.join("pryon.manifest"), "m").unwrap();
+        std::fs::write(src.join("BDP/kw.cfg.json"), r#"{"probabilistic-accept-probability": 0.001}"#).unwrap();
+        let work = TempDir::new("detset-work");
+        let dst = work.join("set");
+        let got = deterministic_set(&src, &dst).unwrap();
+        assert_eq!(got, dst);
+        assert!(std::fs::symlink_metadata(dst.join("pryon.manifest")).unwrap().file_type().is_symlink());
+        let kw = std::fs::read_to_string(dst.join("BDP/kw.cfg.json")).unwrap();
+        assert_eq!(kw, r#"{"probabilistic-accept-probability": 0}"#);
+        // nothing to zero: the set itself
+        std::fs::write(src.join("BDP/kw.cfg.json"), "{}").unwrap();
+        assert_eq!(deterministic_set(&src, &work.join("other")).unwrap(), std::fs::canonicalize(&*src).unwrap());
     }
 
     #[test]

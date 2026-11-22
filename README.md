@@ -83,15 +83,22 @@ link it with the native libraries rustc lists for the target
   `--speed 1` feeds in real time
 - `rusage -- CMD ...`: run a command and report its CPU time and peak memory (to measure libpryon the same way)
 - `validate [--oracle-rootfs DIR --pryon-test PATH] [--cache DIR] [--exact] [--records DIR] [--speed X] [--jobs N]
-  [--lead-ms MS] [--tail-ms MS] [-p NAME=VALUE[@SAMPLE]]... MODEL CLIPS...`: run libpryon (`pryon_test` under qemu-arm; `PRYON_ORACLE_ROOTFS` and
+  [--lead-ms MS] [--tail-ms MS] [-p NAME=VALUE[@SAMPLE]]... [-e SAMPLE]... MODEL CLIPS...`: run libpryon (`pryon_test` under qemu-arm; `PRYON_ORACLE_ROOTFS` and
   `PRYON_PRYON_TEST` stand in for the two flags) and the wake engine on the same `.raw` or 16 kHz mono `.wav` clips
   (files or directories) and print every difference as `DIFF <clip> <keyword> oracle=<event|-> rust=<event|->`, then
   a summary per keyword. Exit 0 clean, 1 differences, 2 usage or oracle errors. The oracle runs in real time
   (`--speed 1`, the default) because libpryon's results depend on feed timing at higher speeds, `--jobs` clips at a
   time. Both engines get each clip between `--lead-ms` (default 2500) and `--tail-ms` (default 1000) of digital
   silence: the firmware oracle scores nothing in its first ~1.7 s, and libpryon reports an accept only ~120 ms after
-  the keyword ends, so not at the very end of a clip; events are printed in clip samples. `--cache` keeps oracle
-  outputs as `<set checksum>/<padded clip fnv>.txt` (properties and a non-default speed are part of the key). On a clean `--exact` run (scores compared as 6-decimal strings) it writes
+  the keyword ends, so not at the very end of a clip; events are printed in clip samples. `-p` sets a client
+  property and `-e` ends the session (`Spotter::reset`, libpryon's `PryonDecoder_SessionEnd`) before the given clip
+  sample, in both engines. libpryon's probabilistic accept (a random accept of a near miss, drawn from a
+  clock-seeded generator) is switched off for the oracle only: it runs a copy of the set whose
+  `probabilistic-accept-probability` values are 0 (symlinks plus the edited `kw.cfg.json`), which is the field's
+  only effect; the engine never draws. When libpryon restarts its decoder after too many accepts, `pryon_test`
+  creates a new one and goes on from the sample after the triggering frame, as the engine does. `--cache` keeps
+  oracle outputs as `<set checksum>/<key>.txt`, the key covering the padded clip, the commands, the speed and the
+  harness version. On a clean `--exact` run (scores compared as 6-decimal strings) it writes
   `validated/<checksum>.<KEYWORD>.rec` for each keyword the oracle accepted at least once: the set, the keyword,
   the clip count and digest, the padding, accept and near-miss counts, date and pryon-rs commit.
 - `synth NAME OUT.raw`, `synth-model DIR`: synthetic test clips and a random-weight model in the real format
@@ -189,6 +196,9 @@ device). No fixture is affected. Run on the device to confirm parity there.
 `synth-{fw,davs}/<clip>.txt` are libpryon's events for the synthetic sets of `pryon-cli synth-wake-set fw|davs DIR
 --force 0.99` on the same clips; they probe libpryon's keyword rules. They were run in real time (`-x 1`): a set
 that fires on every step makes libpryon fall behind at `-x 1000`, and then the event times change from run to run.
+`synth-variants/` and `synth-scripts/` are the same sets with single kw.cfg/op.cfg edits, client properties and
+session ends at given samples (the probes of the keyword rules, the operating-state machine, HEY_DISNEY's
+aggregator, the restart trigger); every one was run twice with identical events.
 In all wake fixtures the `META` lines keep only the `kw*` fields and the LSB-metadata flags.
 
 ## Third-party notices

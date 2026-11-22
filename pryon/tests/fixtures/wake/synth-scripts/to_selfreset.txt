@@ -1,0 +1,157 @@
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-0: Scorer "ww_stop" is already activated
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-0: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 0 Preroll frame index (wrt cms): 0 Preroll sample index (wrt result audio): 0
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-0: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-0: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=160 end=1280 (0.01s..0.08s) meta=984
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":160,"kwSampleEndIndex":320,"kwSampleDetectionIndex":1280,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-1: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 3360 Preroll frame index (wrt cms): 21 Preroll sample index (wrt result audio): 3360
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-1: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-1: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=11360 end=20480 (0.71s..1.28s) meta=1024
+META header 13 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":11360,"kwSampleEndIndex":11520,"kwSampleDetectionIndex":20480,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-2: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 14880 Preroll frame index (wrt cms): 93 Preroll sample index (wrt result audio): 14880
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-2: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-2: {KWS} segmentation_score=-inf,classifier_score=0.498657,active_threshold=0.49,detection_type=Accept
+RESULT decoder=dec keyword=STOP type=2 begin=22880 end=30720 (1.43s..1.92s) meta=984
+META header 12 bytes, {"kwName":"STOP","kwDetectionType":"Accept","kwClassificationScore":0.498657,"kwActiveThreshold":0.49,"kwSampleStartIndex":22880,"kwSampleEndIndex":23040,"kwSampleDetectionIndex":30720,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-3: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 22560 Preroll frame index (wrt cms): 141 Preroll sample index (wrt result audio): 22560
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-3: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-3: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=30560 end=39680 (1.91s..2.48s) meta=1000
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":30560,"kwSampleEndIndex":30720,"kwSampleDetectionIndex":39680,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-4: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 41760 Preroll frame index (wrt cms): 261 Preroll sample index (wrt result audio): 41760
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-4: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-4: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=49760 end=58880 (3.11s..3.68s) meta=992
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":49760,"kwSampleEndIndex":49920,"kwSampleDetectionIndex":58880,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-5: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 53280 Preroll frame index (wrt cms): 333 Preroll sample index (wrt result audio): 53280
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-5: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-5: {KWS} segmentation_score=-inf,classifier_score=0.498657,active_threshold=0.49,detection_type=Accept
+RESULT decoder=dec keyword=STOP type=2 begin=61280 end=69120 (3.83s..4.32s) meta=1000
+META header 12 bytes, {"kwName":"STOP","kwDetectionType":"Accept","kwClassificationScore":0.498657,"kwActiveThreshold":0.49,"kwSampleStartIndex":61280,"kwSampleEndIndex":61440,"kwSampleDetectionIndex":69120,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-6: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 60960 Preroll frame index (wrt cms): 381 Preroll sample index (wrt result audio): 60960
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-6: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-6: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=68960 end=78080 (4.31s..4.88s) meta=1000
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":68960,"kwSampleEndIndex":69120,"kwSampleDetectionIndex":78080,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-7: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 80160 Preroll frame index (wrt cms): 501 Preroll sample index (wrt result audio): 80160
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-7: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-7: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=88160 end=97280 (5.51s..6.08s) meta=1000
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":88160,"kwSampleEndIndex":88320,"kwSampleDetectionIndex":97280,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-8: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 91680 Preroll frame index (wrt cms): 573 Preroll sample index (wrt result audio): 91680
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-8: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-8: {KWS} segmentation_score=-inf,classifier_score=0.498657,active_threshold=0.49,detection_type=Accept
+RESULT decoder=dec keyword=STOP type=2 begin=99680 end=107520 (6.23s..6.72s) meta=1000
+META header 12 bytes, {"kwName":"STOP","kwDetectionType":"Accept","kwClassificationScore":0.498657,"kwActiveThreshold":0.49,"kwSampleStartIndex":99680,"kwSampleEndIndex":99840,"kwSampleDetectionIndex":107520,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-9: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 99360 Preroll frame index (wrt cms): 621 Preroll sample index (wrt result audio): 99360
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-9: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-9: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=107360 end=116480 (6.71s..7.28s) meta=1000
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":107360,"kwSampleEndIndex":107520,"kwSampleDetectionIndex":116480,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-10: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 118560 Preroll frame index (wrt cms): 741 Preroll sample index (wrt result audio): 118560
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-10: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-10: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=126560 end=135680 (7.91s..8.48s) meta=1000
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":126560,"kwSampleEndIndex":126720,"kwSampleDetectionIndex":135680,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-11: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 130080 Preroll frame index (wrt cms): 813 Preroll sample index (wrt result audio): 130080
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-11: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-11: {KWS} segmentation_score=-inf,classifier_score=0.498657,active_threshold=0.49,detection_type=Accept
+RESULT decoder=dec keyword=STOP type=2 begin=138080 end=145920 (8.63s..9.12s) meta=1008
+META header 12 bytes, {"kwName":"STOP","kwDetectionType":"Accept","kwClassificationScore":0.498657,"kwActiveThreshold":0.49,"kwSampleStartIndex":138080,"kwSampleEndIndex":138240,"kwSampleDetectionIndex":145920,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-12: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 137760 Preroll frame index (wrt cms): 861 Preroll sample index (wrt result audio): 137760
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-12: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-12: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=145760 end=154880 (9.11s..9.68s) meta=1000
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":145760,"kwSampleEndIndex":145920,"kwSampleDetectionIndex":154880,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-13: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 156960 Preroll frame index (wrt cms): 981 Preroll sample index (wrt result audio): 156960
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-13: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-13: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=164960 end=174080 (10.31s..10.88s) meta=1000
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":164960,"kwSampleEndIndex":165120,"kwSampleDetectionIndex":174080,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-14: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 168480 Preroll frame index (wrt cms): 1053 Preroll sample index (wrt result audio): 168480
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-14: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-14: {KWS} segmentation_score=-inf,classifier_score=0.498657,active_threshold=0.49,detection_type=Accept
+RESULT decoder=dec keyword=STOP type=2 begin=176480 end=184320 (11.03s..11.52s) meta=1000
+META header 12 bytes, {"kwName":"STOP","kwDetectionType":"Accept","kwClassificationScore":0.498657,"kwActiveThreshold":0.49,"kwSampleStartIndex":176480,"kwSampleEndIndex":176640,"kwSampleDetectionIndex":184320,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-15: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 176160 Preroll frame index (wrt cms): 1101 Preroll sample index (wrt result audio): 176160
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-15: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-15: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=184160 end=193280 (11.51s..12.08s) meta=1008
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":184160,"kwSampleEndIndex":184320,"kwSampleDetectionIndex":193280,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-16: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 195360 Preroll frame index (wrt cms): 1221 Preroll sample index (wrt result audio): 195360
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-16: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-16: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=203360 end=212480 (12.71s..13.28s) meta=1000
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":203360,"kwSampleEndIndex":203520,"kwSampleDetectionIndex":212480,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-17: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 206880 Preroll frame index (wrt cms): 1293 Preroll sample index (wrt result audio): 206880
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-17: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-17: {KWS} segmentation_score=-inf,classifier_score=0.498657,active_threshold=0.49,detection_type=Accept
+RESULT decoder=dec keyword=STOP type=2 begin=214880 end=222720 (13.43s..13.92s) meta=1000
+META header 12 bytes, {"kwName":"STOP","kwDetectionType":"Accept","kwClassificationScore":0.498657,"kwActiveThreshold":0.49,"kwSampleStartIndex":214880,"kwSampleEndIndex":215040,"kwSampleDetectionIndex":222720,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-18: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 214560 Preroll frame index (wrt cms): 1341 Preroll sample index (wrt result audio): 214560
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-18: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-18: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=222560 end=231680 (13.91s..14.48s) meta=1008
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":222560,"kwSampleEndIndex":222720,"kwSampleDetectionIndex":231680,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-19: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 233760 Preroll frame index (wrt cms): 1461 Preroll sample index (wrt result audio): 233760
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-19: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-19: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=241760 end=250880 (15.11s..15.68s) meta=1000
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":241760,"kwSampleEndIndex":241920,"kwSampleDetectionIndex":250880,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-20: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 245280 Preroll frame index (wrt cms): 1533 Preroll sample index (wrt result audio): 245280
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-20: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-20: {KWS} segmentation_score=-inf,classifier_score=0.498657,active_threshold=0.49,detection_type=Accept
+RESULT decoder=dec keyword=STOP type=2 begin=253280 end=261120 (15.83s..16.32s) meta=1008
+META header 12 bytes, {"kwName":"STOP","kwDetectionType":"Accept","kwClassificationScore":0.498657,"kwActiveThreshold":0.49,"kwSampleStartIndex":253280,"kwSampleEndIndex":253440,"kwSampleDetectionIndex":261120,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-21: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 252960 Preroll frame index (wrt cms): 1581 Preroll sample index (wrt result audio): 252960
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-21: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-21: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=260960 end=270080 (16.31s..16.88s) meta=1008
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":260960,"kwSampleEndIndex":261120,"kwSampleDetectionIndex":270080,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-22: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 272160 Preroll frame index (wrt cms): 1701 Preroll sample index (wrt result audio): 272160
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-22: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-22: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=280160 end=289280 (17.51s..18.08s) meta=1000
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":280160,"kwSampleEndIndex":280320,"kwSampleDetectionIndex":289280,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-23: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 283680 Preroll frame index (wrt cms): 1773 Preroll sample index (wrt result audio): 283680
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-23: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-23: {KWS} segmentation_score=-inf,classifier_score=0.498657,active_threshold=0.49,detection_type=Accept
+RESULT decoder=dec keyword=STOP type=2 begin=291680 end=299520 (18.23s..18.72s) meta=1008
+META header 12 bytes, {"kwName":"STOP","kwDetectionType":"Accept","kwClassificationScore":0.498657,"kwActiveThreshold":0.49,"kwSampleStartIndex":291680,"kwSampleEndIndex":291840,"kwSampleDetectionIndex":299520,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-24: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 291360 Preroll frame index (wrt cms): 1821 Preroll sample index (wrt result audio): 291360
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-24: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-24: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=299360 end=308480 (18.71s..19.28s) meta=1000
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":299360,"kwSampleEndIndex":299520,"kwSampleDetectionIndex":308480,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-25: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 310560 Preroll frame index (wrt cms): 1941 Preroll sample index (wrt result audio): 310560
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-25: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-25: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=318560 end=327680 (19.91s..20.48s) meta=1000
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":318560,"kwSampleEndIndex":318720,"kwSampleDetectionIndex":327680,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-26: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 322080 Preroll frame index (wrt cms): 2013 Preroll sample index (wrt result audio): 322080
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-26: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-26: {KWS} segmentation_score=-inf,classifier_score=0.498657,active_threshold=0.49,detection_type=Accept
+RESULT decoder=dec keyword=STOP type=2 begin=330080 end=337920 (20.63s..21.12s) meta=1000
+META header 12 bytes, {"kwName":"STOP","kwDetectionType":"Accept","kwClassificationScore":0.498657,"kwActiveThreshold":0.49,"kwSampleStartIndex":330080,"kwSampleEndIndex":330240,"kwSampleDetectionIndex":337920,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-27: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 329760 Preroll frame index (wrt cms): 2061 Preroll sample index (wrt result audio): 329760
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-27: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-27: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=337760 end=346880 (21.11s..21.68s) meta=1008
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":337760,"kwSampleEndIndex":337920,"kwSampleDetectionIndex":346880,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-28: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 348960 Preroll frame index (wrt cms): 2181 Preroll sample index (wrt result audio): 348960
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-28: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-28: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=356960 end=366080 (22.31s..22.88s) meta=1000
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":356960,"kwSampleEndIndex":357120,"kwSampleDetectionIndex":366080,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-29: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 360480 Preroll frame index (wrt cms): 2253 Preroll sample index (wrt result audio): 360480
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-29: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-29: {KWS} segmentation_score=-inf,classifier_score=0.498657,active_threshold=0.49,detection_type=Accept
+RESULT decoder=dec keyword=STOP type=2 begin=368480 end=376320 (23.03s..23.52s) meta=1008
+META header 12 bytes, {"kwName":"STOP","kwDetectionType":"Accept","kwClassificationScore":0.498657,"kwActiveThreshold":0.49,"kwSampleStartIndex":368480,"kwSampleEndIndex":368640,"kwSampleDetectionIndex":376320,"activeKeywords":["HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-30: {KWS} Lookahead metadata: Unable to get CMS stats for preroll audio, Preroll sample index (wrt cms): 368160 Preroll frame index (wrt cms): 2301 Preroll sample index (wrt result audio): 368160
+pryon[3] WARN: DecoderID=dec: recognition_id=dec-30: {KWS} Model produced invalid wakeword indices. Falling back on best-effort guess for appropriate values.
+pryon[4] INFO: DecoderID=dec: recognition_id=dec-30: {KWS} segmentation_score=-inf,classifier_score=0.99,active_threshold=0.92,detection_type=Accept
+RESULT decoder=dec keyword=ALEXA type=2 begin=376160 end=385280 (23.51s..24.08s) meta=1000
+META header 12 bytes, {"kwName":"ALEXA","kwDetectionType":"Accept","kwClassificationScore":0.99,"kwActiveThreshold":0.92,"kwSampleStartIndex":376160,"kwSampleEndIndex":376320,"kwSampleDetectionIndex":385280,"activeKeywords":["STOP","HEY_DISNEY","ALEXA","ALEXA_DETECTION_AUXILIARY"],"clientProperties":{},"deviceMetrics":{"has_audio_lsb_metadata":0}}
+pushed 400000 samples (25.0s), 31 callbacks

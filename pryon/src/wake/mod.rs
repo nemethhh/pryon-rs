@@ -7,7 +7,9 @@ mod rules;
 mod set;
 
 #[doc(hidden)]
-pub use kwcfg::{ClassifierSpec, MachineSpec, MachineState, Override, SpotterSpec, Thresholds, WordComponent};
+pub use kwcfg::{
+    ClassifierSpec, MachineSpec, MachineState, Override, RestartSpec, SpotterSpec, Thresholds, WordComponent,
+};
 #[doc(hidden)]
 pub use pipeline::{ComponentRef, LoadedSet, Pipeline, StepOut};
 #[doc(hidden)]
@@ -85,15 +87,17 @@ pub struct Spotter {
     orchestra: Orchestra,
     /// Samples fed since creation.
     fed: u64,
-    /// Samples fed before the last reset.
-    base: u64,
 }
+
+/// A front-end frame completes once this many samples follow the last origin (25 ms window, 10 ms shift).
+const WINDOW: u64 = 400;
+const HOP: u64 = 160;
 
 impl Spotter {
     pub fn new(model: Arc<SpotterModel>, _opts: SpotterOptions) -> Result<Spotter, Error> {
         let pipeline = Pipeline::new(&model.set);
         let orchestra = Orchestra::new(&model.set)?;
-        Ok(Spotter { model, pipeline, orchestra, fed: 0, base: 0 })
+        Ok(Spotter { model, pipeline, orchestra, fed: 0 })
     }
 
     pub fn keywords(&self) -> &[String] {
@@ -102,26 +106,35 @@ impl Spotter {
 
     /// Feeds PCM of any length; appends the detections it completes.
     pub fn feed(&mut self, pcm: &[i16], out: &mut Vec<Detection>) {
-        let first = out.len();
-        let orchestra = &mut self.orchestra;
-        self.pipeline.push_frames(pcm, &mut |f, s| orchestra.tick(f, s, out));
-        for d in &mut out[first..] {
-            d.begin_sample += self.base;
-            d.end_sample += self.base;
+        let mut rest = pcm;
+        while !rest.is_empty() {
+            // pieces end where frames complete, so a restart takes effect exactly after its frame
+            let since = self.fed - self.orchestra.origin();
+            let next = if since < WINDOW { WINDOW } else { since + HOP - (since - WINDOW) % HOP };
+            let n = rest.len().min((next - since) as usize);
+            let orchestra = &mut self.orchestra;
+            self.pipeline.push_frames(&rest[..n], &mut |f, s| orchestra.tick(f, s, out));
+            self.fed += n as u64;
+            rest = &rest[n..];
+            if self.orchestra.restart_due() {
+                self.pipeline.reset();
+                self.orchestra.restart(self.fed);
+            }
         }
-        self.fed += pcm.len() as u64;
     }
 
-    /// Sets a client property that kw.cfg threshold overrides test; unknown names are ignored.
+    /// Sets a client property that kw.cfg threshold overrides test, as libpryon does: from the first 10 ms frame
+    /// that starts after the samples fed so far. Unknown names are ignored.
     pub fn set_property(&mut self, name: &str, value: i32) {
-        self.orchestra.set_property(name, value);
+        let at = self.fed - self.orchestra.origin();
+        self.orchestra.set_property(name, value, at);
     }
 
-    /// Session end: restarts the network, rings and rules; the sample clock keeps counting.
-    pub fn reset(&mut self) {
+    /// Session end: a pending near miss is reported into `out`, then the front end, network, rings, rules and
+    /// operating state restart; client properties stay and the sample clock keeps counting.
+    pub fn reset(&mut self, out: &mut Vec<Detection>) {
         self.pipeline.reset();
-        self.orchestra.reset();
-        self.base = self.fed;
+        self.orchestra.reset(self.fed, out);
     }
 }
 

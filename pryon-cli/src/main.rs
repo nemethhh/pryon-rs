@@ -21,7 +21,7 @@ const USAGE: &str = "usage:
   pryon-cli bench -m DIR [--chunk N] [--speed X] CLIP.raw
   pryon-cli rusage -- CMD ARGS...
   pryon-cli validate [--oracle-rootfs DIR --pryon-test PATH] [--cache DIR] [--exact] [--records DIR]
-      [--speed X] [--jobs N] [--lead-ms MS] [--tail-ms MS] [-p NAME=VALUE[@SAMPLE]]... MODEL CLIPS...";
+      [--speed X] [--jobs N] [--lead-ms MS] [--tail-ms MS] [-p NAME=VALUE[@SAMPLE]]... [-e SAMPLE]... MODEL CLIPS...";
 
 enum Fail {
     Usage(String),
@@ -347,7 +347,7 @@ fn cmd_wake(args: &[String]) -> Res {
             }
             match c {
                 Some((n, v)) => sp.set_property(n, v),
-                None => sp.reset(),
+                None => sp.reset(&mut out),
             }
             next.next();
         }

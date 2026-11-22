@@ -2,7 +2,7 @@
 
 use pryon::lfbe::LfbeSpec;
 use pryon::onnx::{Graph, Session};
-use pryon::wake::{load_set, ClassifierSpec, SetSpec, StageInput, StageSpec};
+use pryon::wake::{load_set, ClassifierSpec, RestartSpec, SetSpec, StageInput, StageSpec};
 use pryon::Error;
 use pryon_testkit::wakeset::{write_davs_set, write_fw_set, WakeSetOpts};
 use pryon_testkit::{Rng, TempDir};
@@ -131,6 +131,62 @@ fn loads_synthetic_davs() {
     let m = s.machine.as_ref().unwrap();
     assert_eq!(m.states[m.initial].name, "sleep");
     assert_eq!(m.states[m.initial].rules.len(), 2);
+    assert_eq!(s.restart, RestartSpec { max_events: 30, span_ms: 180000 });
+}
+
+#[test]
+fn restart_trigger_fields() {
+    // without the object libpryon restarts after 12 accepts in 60 s (0x76f658)
+    assert_eq!(load_set(&fw("restart-default")).unwrap().restart, RestartSpec { max_events: 12, span_ms: 60000 });
+    let d = davs("restart");
+    let kw = d.join("BDPGeneratedFiles/kw.cfg.json");
+    edit(&kw, r#""max-event-count": 30"#, r#""max-event-count": 3"#);
+    assert_eq!(load_set(&d).unwrap().restart, RestartSpec { max_events: 3, span_ms: 180000 });
+    edit(&kw, r#""evaluation-span-msec": 180000"#, r#""evaluation-span-msec": 0"#);
+    assert!(unsupported(load_set(&d)).1.contains("restart-trigger"));
+}
+
+#[test]
+fn multi_word_spotter_checks() {
+    // libpryon's KeywordMultiWordSpotter: a smoother per component, at most two, the last remembering one frame
+    let cases: [(&str, &str, &str); 4] = [
+        (r#""posterior-smoothers": [ { "type": "exponential-decay", "decay-rate": 0.0 },"#, r#""posterior-smoothers": ["#, "posterior-smoothers"),
+        (r#""word-score-history-size": 1, "#, r#""word-score-history-size": 2, "#, "must be 1"),
+        (r#""word-score-history-size": 100, "#, "", "word-score-history-size = None"),
+        (r#""word-score-history-size": 100, "#, r#""word-score-history-size": 0, "#, "word-score-history-size = Some(0)"),
+    ];
+    for (from, to, want) in cases {
+        let d = davs("multi-word");
+        edit(&d.join("BDPGeneratedFiles/kw.cfg.json"), from, to);
+        let (_, what) = unsupported(load_set(&d));
+        assert!(what.contains(want), "{to}: {what}");
+    }
+}
+
+#[test]
+fn aggregator_weights_need_exact_powf() {
+    use pryon::wake::SpotterModel;
+    // weights 2, 2: powf(x, 2) is exact, the final powf(prod, 0.25) is not one of msun's special cases
+    let d = davs("weights");
+    edit(&d.join("BDPGeneratedFiles/kw.cfg.json"), r#""weights": [ 1, 1 ]"#, r#""weights": [ 2, 2 ]"#);
+    match SpotterModel::load(&d) {
+        Err(Error::Unsupported { what, .. }) => assert!(what.contains("HEY_DISNEY") && what.contains("powf"), "{what}"),
+        Err(e) => panic!("expected Unsupported, got {e}"),
+        Ok(_) => panic!("loaded"),
+    }
+    let d = davs("weights-ok");
+    edit(&d.join("BDPGeneratedFiles/kw.cfg.json"), r#""weights": [ 1, 1 ]"#, r#""weights": [ 2, 0 ]"#);
+    SpotterModel::load(&d).unwrap();
+}
+
+#[test]
+fn keyword_in_no_state_refused() {
+    let d = davs("machine-orphan");
+    let op = d.join("BDPGeneratedFiles/op.cfg.json");
+    edit(&op, r#",
+      { "name": "STOP", "next": "sleep" }"#, "");
+    let (file, what) = unsupported(load_set(&d));
+    assert!(file.ends_with("op.cfg.json") && what.contains("STOP"), "{}: {what}", file.display());
 }
 
 /// Binds every graph input the loader named: audio at one step, artifacts at their publisher's shape, LSTM states
@@ -532,17 +588,14 @@ fn verifier_without_primary_refused() {
 }
 
 #[test]
-fn verifier_of_unserved_primary_refused() {
+fn verifier_of_aggregating_primary_served() {
     use pryon::wake::SpotterModel;
     let d = davs("aggregate-verifier");
     let kw = d.join("BDPGeneratedFiles/kw.cfg.json");
-    // the verifier now belongs to HEY_DISNEY, whose aggregating primary is not served
+    // the verifier now belongs to HEY_DISNEY, whose primary is the multi-word spotter: the hold is the base class's
     let v = r#""name": "ALEXA", "scorers": [ "ww_alexa" ],
       "spotter": { "spotter-type""#;
     edit(&kw, v, &v.replace("ALEXA", "HEY_DISNEY"));
-    match SpotterModel::load(&d) {
-        Err(Error::Unsupported { what, .. }) => assert!(what.contains("HEY_DISNEY"), "{what}"),
-        Err(e) => panic!("expected Unsupported, got {e}"),
-        Ok(_) => panic!("loaded"),
-    }
+    let m = SpotterModel::load(&d).unwrap();
+    assert_eq!(m.keywords(), ["ALEXA", "HEY_DISNEY", "STOP"]);
 }
