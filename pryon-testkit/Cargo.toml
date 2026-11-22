@@ -3,3 +3,5 @@ name = "pryon-testkit"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
+repository.workspace = true
+description = "Synthetic clips and models for pryon tests"

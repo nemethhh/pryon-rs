@@ -6,6 +6,7 @@ members = ["pryon", "pryon-ffi", "pryon-cli", "pryon-testkit"]
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.91"
+repository = "https://github.com/nemethhh/pryon-rs"
 
 [profile.release]
 lto = true
