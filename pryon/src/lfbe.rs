@@ -2,13 +2,12 @@
 //!
 //! Third-party: `msun_logf` ports FreeBSD msun e_logf.c (Sun, permissive); the FFT operation order follows
 //! Ne10 (BSD-3-Clause); the window/power/mel stages follow Kaldi (Apache-2.0). See THIRD_PARTY_NOTICES.md.
-use crate::lfbe_tables::POVEY;
+use crate::lfbe_tables::{NE_SU, NE_TW, POVEY};
 
 pub const BINS: usize = 20;
 const FL: usize = 400;
 const HOP: usize = 160;
 const N: usize = 512;
-const PI: f64 = 3.14159265358979323846264338327;
 const TW81: f32 = 0.70710678;
 const TW81N: f32 = -0.70710678;
 
@@ -433,42 +432,16 @@ fn last_stage(dst: &mut [f32], src: &[f32], tw: &[f32]) {
 
 struct FftTables {
     tw: [[f32; 2]; 120],
-    su: [f32; 2 * (12 + N / 32 * 12)],
+    su: [f32; 408],
 }
 
 impl FftTables {
     fn new() -> FftTables {
-        let mut t = FftTables { tw: [[0.; 2]; 120], su: [0.; 2 * (12 + N / 32 * 12)] };
-        let ne_pi = (PI as f32) as f64;
-        let mut o = 0;
-        for stage in 0..2 {
-            let (ms, fs) = if stage == 1 { (32usize, 1usize) } else { (8, 4) };
-            for j in 0..ms {
-                for k in 1..4usize {
-                    let ph = (-2.0 * ne_pi * fs as f64 * k as f64 * j as f64 / 128.0) as f32 as f64;
-                    t.tw[o + 3 * j + k - 1] = [ph.cos() as f32, ph.sin() as f32];
-                }
-            }
-            o += ms * 3;
+        let mut tw = [[0f32; 2]; 120];
+        for (i, t) in tw.iter_mut().enumerate() {
+            *t = [NE_TW[2 * i], NE_TW[2 * i + 1]];
         }
-        let pi = PI as f32;
-        let mut put = |idx: usize, ph: f32| {
-            t.su[2 * idx] = (ph as f64).cos() as f32;
-            t.su[2 * idx + 1] = (ph as f64).sin() as f32;
-        };
-        for i in 1..4usize {
-            for j in 0..4usize {
-                put(4 * i - 4 + j, -2.0 * pi * ((i * j) as f32 / N as f32));
-            }
-        }
-        for k in 1..N / 32 {
-            for s in 1..4usize {
-                for j in 0..4usize {
-                    put(12 * k + j + 4 * (s - 1), -2.0 * pi * (((k * 4 + j) * s) as f32 / N as f32));
-                }
-            }
-        }
-        t
+        FftTables { tw, su: NE_SU }
     }
 
     /// In place, Kaldi packing [re0, reN/2, re1, im1, ...].
