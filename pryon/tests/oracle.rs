@@ -9,6 +9,7 @@ use std::sync::Arc;
 const FW: &str = "PRYON_AED_MODEL_DIR";
 const DAVS: &str = "PRYON_AED_DAVS_DIR";
 const CLIPS: &str = "PRYON_CLIPS_DIR";
+const OVERRIDE: &str = "PRYON_ORACLE_OVERRIDE_DIR";
 
 struct OracleType {
     score: String,
@@ -41,9 +42,16 @@ fn detect(m: &Arc<SoundModel>, pcm: &[i16]) -> (Vec<String>, Vec<SoundWindow>) {
     (det.type_names().to_vec(), out)
 }
 
+fn fixture_in(over: Option<&Path>, rel: &str) -> String {
+    let p = match over {
+        Some(d) => d.join(rel),
+        None => Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/oracle").join(rel),
+    };
+    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{}: {e}", p.display()))
+}
+
 fn fixture(rel: &str) -> String {
-    let p = format!("{}/tests/fixtures/oracle/{rel}", env!("CARGO_MANIFEST_DIR"));
-    std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{p}: {e}"))
+    fixture_in(std::env::var_os(OVERRIDE).map(PathBuf::from).as_deref(), rel)
 }
 
 fn field<'a>(o: &'a Value, k: &str, what: &str) -> &'a Value {
@@ -165,9 +173,11 @@ fn local_clips() {
         .collect();
     raws.sort();
     let mut checked = 0;
+    let mut models = 0;
     for (var, suffix) in [(DAVS, "_out.txt"), (FW, "_fw_out.txt")] {
         let Some(dir) = env_dir(var) else { continue };
         let m = model(&dir);
+        models += 1;
         for raw in &raws {
             let name = raw.file_stem().unwrap().to_str().unwrap();
             let Ok(text) = std::fs::read_to_string(clips.join(format!("{name}{suffix}"))) else { continue };
@@ -175,5 +185,15 @@ fn local_clips() {
             checked += 1;
         }
     }
+    assert!(models == 0 || checked > 0, "no clip in {} has an oracle output", clips.display());
     println!("local clips checked: {checked}");
+}
+
+#[test]
+fn override_dir_used() {
+    let d = pryon_testkit::TempDir::new("oracle-override");
+    std::fs::create_dir_all(d.join("fw")).unwrap();
+    std::fs::write(d.join("fw/noise.txt"), "override marker").unwrap();
+    assert_eq!(fixture_in(Some(&d), "fw/noise.txt"), "override marker");
+    assert_ne!(fixture_in(None, "fw/noise.txt"), "override marker");
 }

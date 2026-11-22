@@ -20,6 +20,8 @@ Tests that need Amazon models or local clips skip (`skipped: set VAR`) unless se
 - `PRYON_AED_DAVS_DIR`: DAVS AED model (`pypryon/build/aed/model`).
 - `PRYON_CLIPS_DIR`: local clips; `local_clips` checks every `<name>.raw` against `<name>_out.txt` (DAVS) and
   `<name>_fw_out.txt` (firmware).
+- `PRYON_ORACLE_OVERRIDE_DIR`: read the oracle outputs from this dir (same `{fw,davs}/<clip>.txt` layout) instead of the
+  committed fixtures.
 
 ## Building for the Echo
 
