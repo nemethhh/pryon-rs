@@ -52,3 +52,15 @@ fn real_configs() {
         assert!(c.mlp_path.is_file());
     }
 }
+
+#[test]
+fn real_sound_models_load() {
+    for var in ["PRYON_AED_DAVS_DIR", "PRYON_AED_MODEL_DIR"] {
+        let Ok(dir) = std::env::var(var) else {
+            println!("skipped: set {var}");
+            continue;
+        };
+        let m = pryon::SoundModel::load(std::path::Path::new(&dir)).unwrap();
+        assert_eq!(m.type_names().len(), 12, "{var}");
+    }
+}

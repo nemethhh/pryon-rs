@@ -1,6 +1,4 @@
 //! Bit-exact scalar ports of libpryon's NEON numerics (quantizer, sums, exp, reciprocal, nonlinearities).
-// Consumed by the LSTM in a later task.
-#![cfg_attr(not(test), allow(dead_code))]
 
 pub(crate) fn quantize(x: &[f32], inv: f32, off: f32, k: &mut [u8]) {
     let n16 = x.len() & !15;
@@ -105,6 +103,11 @@ pub(crate) fn sdot_vfp(a: &[f32], b: &[f32]) -> f32 {
     s0 + s1
 }
 
+/// OpenBLAS ARMv7 sgemv_t / sgemm 4x4 kernel order: one accumulator, inputs in order.
+pub(crate) fn dot_seq(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b).fold(0.0, |acc, (&x, &y)| acc + x * y)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,6 +172,13 @@ mod tests {
         quantize(&x, 1.0, 0.0, &mut k);
         let want = [1u8, 2, 3, 0, 255, 255, 0, 0, 1, 2, 3, 0, 255, 255, 0, 0, 0, 2, 2, 0, 255, 255, 0, 0];
         assert_eq!(k, want);
+    }
+
+    #[test]
+    fn dot_seq_order() {
+        // A two-accumulator order (sdot_vfp) gives 2 here.
+        assert_eq!(dot_seq(&[1e8, 1.0, -1e8, 1.0], &[1.0; 4]), 1.0);
+        assert_eq!(dot_seq(&[1.5, -2.0, 0.25], &[2.0, 0.5, 4.0]), 3.0);
     }
 
     #[test]

@@ -1,6 +1,3 @@
-// Consumed by the quantized LSTM in a later task.
-#![cfg_attr(not(test), allow(dead_code))]
-
 mod portable;
 
 /// Dot product of int8-range weights with u8 activations.
