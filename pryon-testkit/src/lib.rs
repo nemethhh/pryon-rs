@@ -2,6 +2,7 @@
 
 pub mod onnx;
 pub mod oracle;
+pub mod wakeset;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Clip {

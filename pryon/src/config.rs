@@ -1,4 +1,5 @@
 //! `pryon.config` (`key = value`) and `AED.json` (minimal JSON) -> `SoundConfig`.
+use crate::json::{self, Json};
 use crate::Error;
 use std::path::{Path, PathBuf};
 
@@ -63,7 +64,7 @@ impl SoundConfig {
 }
 
 fn parse_types(text: &str) -> Result<Vec<TypeConfig>, Error> {
-    let root = parse_json(text)?;
+    let root = json::parse(text).map_err(err)?;
     let events = root
         .get("configuration")
         .and_then(|c| c.get("acoustic_event"))
@@ -97,189 +98,6 @@ fn parse_type(e: &Json) -> Result<TypeConfig, Error> {
         energy_threshold: num("energy_threshold")?.parse().map_err(|_| bad("energy_threshold"))?,
         energy_min_samples: num("energy_min_num_samples")?.parse().map_err(|_| bad("energy_min_num_samples"))?,
     })
-}
-
-// Numbers keep their source text so f32/int parsing happens once, at the use site.
-enum Json {
-    Null,
-    Bool,
-    Num(String),
-    Str(String),
-    Arr(Vec<Json>),
-    Obj(Vec<(String, Json)>),
-}
-
-impl Json {
-    fn get(&self, key: &str) -> Option<&Json> {
-        match self {
-            Json::Obj(o) => o.iter().find(|(k, _)| k == key).map(|(_, v)| v),
-            _ => None,
-        }
-    }
-}
-
-fn parse_json(text: &str) -> Result<Json, Error> {
-    let mut p = Parser { s: text.as_bytes(), i: 0, depth: 0 };
-    let v = p.value()?;
-    p.ws();
-    if p.i != p.s.len() {
-        return Err(err("trailing data after JSON value"));
-    }
-    Ok(v)
-}
-
-struct Parser<'a> {
-    s: &'a [u8],
-    i: usize,
-    depth: usize,
-}
-
-impl Parser<'_> {
-    fn ws(&mut self) {
-        while self.s.get(self.i).is_some_and(|c| c.is_ascii_whitespace()) {
-            self.i += 1;
-        }
-    }
-
-    fn eat(&mut self, c: u8) -> Result<(), Error> {
-        self.ws();
-        if self.s.get(self.i) == Some(&c) {
-            self.i += 1;
-            Ok(())
-        } else {
-            Err(err(format!("JSON: expected '{}' at byte {}", c as char, self.i)))
-        }
-    }
-
-    fn lit(&mut self, word: &str, v: Json) -> Result<Json, Error> {
-        if self.s[self.i..].starts_with(word.as_bytes()) {
-            self.i += word.len();
-            Ok(v)
-        } else {
-            Err(err(format!("JSON: bad literal at byte {}", self.i)))
-        }
-    }
-
-    fn value(&mut self) -> Result<Json, Error> {
-        self.ws();
-        match self.s.get(self.i) {
-            None => Err(err("JSON: unexpected end")),
-            Some(b'{') => self.nested(Self::object),
-            Some(b'[') => self.nested(Self::array),
-            Some(b'"') => Ok(Json::Str(self.string()?)),
-            Some(b't') => self.lit("true", Json::Bool),
-            Some(b'f') => self.lit("false", Json::Bool),
-            Some(b'n') => self.lit("null", Json::Null),
-            Some(_) => self.number(),
-        }
-    }
-
-    fn nested(&mut self, f: fn(&mut Self) -> Result<Json, Error>) -> Result<Json, Error> {
-        self.depth += 1;
-        if self.depth > 64 {
-            return Err(err("JSON: nesting too deep"));
-        }
-        let v = f(self);
-        self.depth -= 1;
-        v
-    }
-
-    fn object(&mut self) -> Result<Json, Error> {
-        self.eat(b'{')?;
-        let mut o = Vec::new();
-        self.ws();
-        if self.s.get(self.i) == Some(&b'}') {
-            self.i += 1;
-            return Ok(Json::Obj(o));
-        }
-        loop {
-            self.ws();
-            let k = self.string()?;
-            self.eat(b':')?;
-            o.push((k, self.value()?));
-            self.ws();
-            match self.s.get(self.i) {
-                Some(b',') => self.i += 1,
-                Some(b'}') => {
-                    self.i += 1;
-                    return Ok(Json::Obj(o));
-                }
-                _ => return Err(err(format!("JSON: expected ',' or '}}' at byte {}", self.i))),
-            }
-        }
-    }
-
-    fn array(&mut self) -> Result<Json, Error> {
-        self.eat(b'[')?;
-        let mut a = Vec::new();
-        self.ws();
-        if self.s.get(self.i) == Some(&b']') {
-            self.i += 1;
-            return Ok(Json::Arr(a));
-        }
-        loop {
-            a.push(self.value()?);
-            self.ws();
-            match self.s.get(self.i) {
-                Some(b',') => self.i += 1,
-                Some(b']') => {
-                    self.i += 1;
-                    return Ok(Json::Arr(a));
-                }
-                _ => return Err(err(format!("JSON: expected ',' or ']' at byte {}", self.i))),
-            }
-        }
-    }
-
-    fn string(&mut self) -> Result<String, Error> {
-        if self.s.get(self.i) != Some(&b'"') {
-            return Err(err(format!("JSON: expected string at byte {}", self.i)));
-        }
-        self.i += 1;
-        let mut out = Vec::new();
-        loop {
-            let c = *self.s.get(self.i).ok_or_else(|| err("JSON: unterminated string"))?;
-            self.i += 1;
-            match c {
-                b'"' => return String::from_utf8(out).map_err(|_| err("JSON: invalid UTF-8")),
-                b'\\' => {
-                    let e = *self.s.get(self.i).ok_or_else(|| err("JSON: unterminated escape"))?;
-                    self.i += 1;
-                    match e {
-                        b'"' | b'\\' | b'/' => out.push(e),
-                        b'n' => out.push(b'\n'),
-                        b't' => out.push(b'\t'),
-                        b'r' => out.push(b'\r'),
-                        b'b' => out.push(8),
-                        b'f' => out.push(12),
-                        b'u' => {
-                            let hex = self.s.get(self.i..self.i + 4).ok_or_else(|| err("JSON: short \\u escape"))?;
-                            let n = u32::from_str_radix(std::str::from_utf8(hex).unwrap_or("x"), 16)
-                                .map_err(|_| err("JSON: bad \\u escape"))?;
-                            self.i += 4;
-                            let ch = char::from_u32(n).unwrap_or('\u{fffd}');
-                            out.extend(ch.to_string().as_bytes());
-                        }
-                        _ => return Err(err("JSON: bad escape")),
-                    }
-                }
-                _ => out.push(c),
-            }
-        }
-    }
-
-    fn number(&mut self) -> Result<Json, Error> {
-        let start = self.i;
-        while self.s.get(self.i).is_some_and(|c| matches!(c, b'0'..=b'9' | b'-' | b'+' | b'.' | b'e' | b'E')) {
-            self.i += 1;
-        }
-        if start == self.i {
-            return Err(err(format!("JSON: unexpected byte at {start}")));
-        }
-        let raw = std::str::from_utf8(&self.s[start..self.i]).unwrap();
-        raw.parse::<f64>().map_err(|_| err(format!("JSON: bad number '{raw}'")))?;
-        Ok(Json::Num(raw.to_string()))
-    }
 }
 
 #[cfg(test)]
@@ -346,15 +164,5 @@ mod tests {
         let c = std::fs::read_to_string(d.join("pryon.config")).unwrap();
         std::fs::write(d.join("pryon.config"), c.replace("9980", "5000")).unwrap();
         assert!(matches!(SoundConfig::load(&d), Err(Error::Config(_))));
-    }
-
-    #[test]
-    fn json_escapes_and_unknown_fields() {
-        let v = parse_json(r#"{"a": [1, -2.5e1, true, false, null, "q\"\\x"], "b": {"c": {}}}"#).unwrap();
-        let Json::Obj(o) = v else { panic!() };
-        let Json::Arr(a) = &o[0].1 else { panic!() };
-        assert!(matches!(&a[5], Json::Str(s) if s == "q\"\\x"));
-        assert!(parse_json("{} x").is_err());
-        assert!(parse_json("[1,]").is_err());
     }
 }

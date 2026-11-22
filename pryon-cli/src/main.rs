@@ -1,4 +1,5 @@
 use pryon::{SoundDetector, SoundModel, SoundWindow};
+use pryon_testkit::wakeset::{write_davs_set, write_fw_set, WakeSetOpts};
 use pryon_testkit::{synth, write_model_dir, Clip};
 use std::io::Read;
 use std::path::Path;
@@ -10,6 +11,8 @@ const USAGE: &str = "usage:
   pryon-cli run -m DIR [-t a,b] [--bits] CLIP.raw
   pryon-cli synth NAME OUT.raw
   pryon-cli synth-model DIR [--threshold X]
+  pryon-cli synth-wake-set fw|davs DIR [--seed N] [--force SCORE]
+  pryon-cli inspect DIR
   pryon-cli bench -m DIR [--chunk N] [--speed X] CLIP.raw
   pryon-cli rusage -- CMD ARGS...";
 
@@ -51,6 +54,8 @@ fn dispatch(args: &[String]) -> Result<ExitCode, Fail> {
         "run" => cmd_run(rest)?,
         "synth" => cmd_synth(rest)?,
         "synth-model" => cmd_synth_model(rest)?,
+        "synth-wake-set" => cmd_synth_wake_set(rest)?,
+        "inspect" => cmd_inspect(rest)?,
         "bench" => cmd_bench(rest)?,
         "rusage" => return cmd_rusage(rest),
         _ => return usage(format!("unknown command {cmd}")),
@@ -66,6 +71,8 @@ struct Opts {
     chunk: Option<usize>,
     threshold: Option<f32>,
     speed: Option<f64>,
+    seed: Option<u64>,
+    force: Option<f32>,
     pos: Vec<String>,
 }
 
@@ -92,6 +99,14 @@ fn parse(args: &[String], allowed: &[&str]) -> Result<Opts, Fail> {
             "--threshold" => match val()?.parse::<f32>() {
                 Ok(x) => o.threshold = Some(x),
                 Err(_) => return usage("--threshold needs a number"),
+            },
+            "--seed" => match val()?.parse::<u64>() {
+                Ok(n) => o.seed = Some(n),
+                Err(_) => return usage("--seed needs a non-negative integer"),
+            },
+            "--force" => match val()?.parse::<f32>() {
+                Ok(x) if x > 0.0 && x < 1.0 => o.force = Some(x),
+                _ => return usage("--force needs a score strictly between 0 and 1"),
             },
             _ => o.pos.push(a.clone()),
         }
@@ -174,6 +189,30 @@ fn cmd_synth_model(args: &[String]) -> Res {
     };
     rt(dir, std::fs::create_dir_all(dir))?;
     write_model_dir(Path::new(dir), 1, o.threshold.unwrap_or(0.5));
+    Ok(())
+}
+
+fn cmd_synth_wake_set(args: &[String]) -> Res {
+    let o = parse(args, &["--seed", "--force"])?;
+    let [layout, dir] = o.pos.as_slice() else {
+        return usage("synth-wake-set needs fw|davs DIR");
+    };
+    let opts = WakeSetOpts { seed: o.seed.unwrap_or(1), force_score: o.force };
+    rt(dir, std::fs::create_dir_all(dir))?;
+    match layout.as_str() {
+        "fw" => write_fw_set(Path::new(dir), &opts),
+        "davs" => write_davs_set(Path::new(dir), &opts),
+        _ => return usage(format!("unknown layout {layout} (fw or davs)")),
+    }
+    Ok(())
+}
+
+fn cmd_inspect(args: &[String]) -> Res {
+    let [dir] = args else {
+        return usage("inspect needs DIR");
+    };
+    let set = rt(dir, pryon::wake::load_set(Path::new(dir)))?;
+    print!("{}", rt(dir, pryon::wake::describe(&set))?);
     Ok(())
 }
 

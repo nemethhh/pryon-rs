@@ -3,6 +3,7 @@ pub mod cmn;
 pub mod config;
 mod cpunk;
 pub mod error;
+mod json;
 pub mod lfbe;
 mod kernels;
 mod lfbe_tables;
@@ -11,6 +12,7 @@ mod num;
 pub mod onnx;
 mod qlstm;
 pub mod sound;
+pub mod wake;
 
 pub use config::{SoundConfig, TypeConfig};
 pub use error::Error;

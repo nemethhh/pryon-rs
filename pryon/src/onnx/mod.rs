@@ -123,6 +123,58 @@ impl Session {
     }
 }
 
+/// A graph's declared interface, read without planning it (the set loader checks names against it).
+pub(crate) struct Interface {
+    pub inputs: Vec<Port>,
+    pub outputs: Vec<Port>,
+    /// Sorted `op_type` counts.
+    pub ops: Vec<(String, usize)>,
+}
+
+pub(crate) struct Port {
+    pub name: String,
+    /// Declared dims; `None` for a symbolic or unknown one, empty when no shape is declared.
+    pub dims: Vec<Option<usize>>,
+    /// Inputs only: an initializer of that name exists, and whether it carries data.
+    pub init: Option<bool>,
+}
+
+pub(crate) fn interface(path: &Path) -> Result<Interface, Error> {
+    let bytes = std::fs::read(path).map_err(|source| Error::Io { path: path.to_path_buf(), source })?;
+    let m = proto::parse_model(&bytes).map_err(|e| Error::Format(format!("{}: {e}", path.display())))?;
+    let g = &m.graph;
+    let dims = |v: &proto::ValueInfo| -> Vec<Option<usize>> {
+        v.dims
+            .iter()
+            .map(|d| match d {
+                proto::Dim::Value(x) => usize::try_from(*x).ok(),
+                _ => None,
+            })
+            .collect()
+    };
+    let init = |name: &str| {
+        g.initializers.iter().find(|t| t.name == name).map(|t| match &t.data {
+            proto::TensorData::Empty => false,
+            proto::TensorData::Raw(b) => !b.is_empty(),
+            proto::TensorData::F32(v) => !v.is_empty(),
+            proto::TensorData::I32(v) => !v.is_empty(),
+            proto::TensorData::I64(v) => !v.is_empty(),
+            proto::TensorData::F64(v) => !v.is_empty(),
+        })
+    };
+    let inputs = g.inputs.iter().map(|v| Port { name: v.name.clone(), dims: dims(v), init: init(&v.name) }).collect();
+    let outputs = g.outputs.iter().map(|v| Port { name: v.name.clone(), dims: dims(v), init: None }).collect();
+    let mut ops: Vec<(String, usize)> = Vec::new();
+    for n in &g.nodes {
+        match ops.iter_mut().find(|(o, _)| *o == n.op_type) {
+            Some(e) => e.1 += 1,
+            None => ops.push((n.op_type.clone(), 1)),
+        }
+    }
+    ops.sort();
+    Ok(Interface { inputs, outputs, ops })
+}
+
 /// IR version, opsets and sorted `op_type` counts of a model; test support for real-graph checks.
 #[doc(hidden)]
 #[allow(clippy::type_complexity)]
