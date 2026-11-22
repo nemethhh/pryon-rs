@@ -69,8 +69,6 @@ impl SoundModel {
     }
 }
 
-// Driven by the streaming detector (next task).
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct Net {
     trunk: QLstm,
     heads: Vec<QLstm>,
@@ -78,7 +76,6 @@ pub(crate) struct Net {
     head_out: [f32; HEADS],
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl Net {
     pub fn new(m: &SoundModel) -> Net {
         let mut net = Net {

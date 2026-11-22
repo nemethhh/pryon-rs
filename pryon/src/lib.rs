@@ -12,4 +12,4 @@ pub mod sound;
 pub use config::{SoundConfig, TypeConfig};
 pub use error::Error;
 pub use mlp::{AffineParams, Mlp, QLstmParams, QMatrix};
-pub use sound::SoundModel;
+pub use sound::{SoundDetector, SoundModel, SoundWindow, TypeResult, WINDOW_FRAMES, WINDOW_SAMPLES};
