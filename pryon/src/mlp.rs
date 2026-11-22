@@ -54,7 +54,9 @@ fn fmt_err<T>(m: impl Into<String>) -> Result<T, Error> {
 
 fn find(hay: &[u8], needle: &[u8], from: usize) -> Option<usize> {
     let tail = hay.get(from..)?;
-    tail.windows(needle.len()).position(|w| w == needle).map(|i| i + from)
+    // First-byte test inline: a slice compare per offset made model load take most of a second on the Echo.
+    let first = *needle.first()?;
+    tail.windows(needle.len()).position(|w| w[0] == first && w == needle).map(|i| i + from)
 }
 
 struct Cur<'a> {
