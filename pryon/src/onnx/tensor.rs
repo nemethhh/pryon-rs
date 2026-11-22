@@ -2,8 +2,8 @@
 
 use super::proto::{TensorData, TensorProto};
 
-/// Largest tensor (and arena) in elements; real graphs stay far below, untrusted files are cut off here.
-pub(crate) const MAX_ELEMS: usize = 1 << 24;
+/// Largest tensor (and arena) in elements; the largest real tensor has 331 776, crafted files stop here.
+pub(crate) const MAX_ELEMS: usize = 1 << 22;
 pub(crate) const MAX_RANK: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,7 +31,7 @@ impl DType {
         })
     }
 
-    fn size(self) -> usize {
+    pub fn size(self) -> usize {
         match self {
             DType::I8 | DType::U8 | DType::Bool => 1,
             DType::I16 => 2,
@@ -85,6 +85,31 @@ macro_rules! convert {
 }
 
 impl Tensor {
+    pub fn zeros(dtype: DType, dims: Vec<usize>, n: usize) -> Tensor {
+        let data = match dtype {
+            DType::F32 => Data::F32(vec![0.0; n]),
+            DType::I8 => Data::I8(vec![0; n]),
+            DType::U8 => Data::U8(vec![0; n]),
+            DType::I16 => Data::I16(vec![0; n]),
+            DType::I32 => Data::I32(vec![0; n]),
+            DType::I64 => Data::I64(vec![0; n]),
+            DType::Bool => Data::Bool(vec![false; n]),
+        };
+        Tensor { dims, data }
+    }
+
+    pub fn len(&self) -> usize {
+        match &self.data {
+            Data::F32(v) => v.len(),
+            Data::I8(v) => v.len(),
+            Data::U8(v) => v.len(),
+            Data::I16(v) => v.len(),
+            Data::I32(v) => v.len(),
+            Data::I64(v) => v.len(),
+            Data::Bool(v) => v.len(),
+        }
+    }
+
     pub fn i64(dims: Vec<usize>, v: Vec<i64>) -> Tensor {
         Tensor { dims, data: Data::I64(v) }
     }

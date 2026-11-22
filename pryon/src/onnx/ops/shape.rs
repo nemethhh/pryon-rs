@@ -1,6 +1,6 @@
 //! Shape and data-movement operators; with bound input shapes their integer side always folds at load.
 
-use super::{arg, axes_of, axis, const_ints, copy_op, each_index, opt_arg, strides, view, Attrs, Built, Value};
+use super::{arg, axes_of, axis, const_ints, copy_op, each_index, fold_numel, opt_arg, strides, view, Attrs, Built, Value};
 use crate::onnx::proto::NodeProto;
 use crate::onnx::tensor::{numel, DType, Tensor, MAX_ELEMS};
 
@@ -19,7 +19,10 @@ pub(super) fn cast(_: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -> Resul
     let to = a.int("to")?.ok_or("attribute to missing")?;
     let to = i32::try_from(to).ok().and_then(DType::from_onnx).ok_or_else(|| format!("cast to element type {to}"))?;
     match arg(ins, 0)? {
-        Value::Const(t) => Ok(Built::Folded(vec![t.cast(to)])),
+        Value::Const(t) => {
+            fold_numel(&t.dims)?;
+            Ok(Built::Folded(vec![t.cast(to)]))
+        }
         x => {
             let mut b = view(x, x.dims().to_vec())?;
             if let Built::Runtime { outs, .. } = &mut b {
@@ -110,16 +113,16 @@ pub(super) fn concat(_: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -> Res
         }
         out[k] = out[k].checked_add(d[k]).ok_or("concatenated axis overflows")?;
     }
-    numel(&out)?;
     let outer: usize = first[..k].iter().product();
     let inner: Vec<usize> = parts.iter().map(|p| p.dims()[k..].iter().product()).collect();
-    let mut map = Vec::new();
-    for o in 0..outer {
-        for (i, &n) in inner.iter().enumerate() {
-            map.extend((0..n).map(|e| (i, o * n + e)));
+    copy_op(ins, parts.len(), out, |emit| {
+        for o in 0..outer {
+            for (i, &n) in inner.iter().enumerate() {
+                (0..n).for_each(|e| emit(i, o * n + e));
+            }
         }
-    }
-    copy_op(ins, parts.len(), map, out)
+        Ok(())
+    })
 }
 
 pub(super) fn slice(_: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -> Result<Built, String> {
@@ -160,12 +163,12 @@ pub(super) fn slice(_: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -> Resu
         (start[k], step[k], out[k]) = (s, st, len as usize);
     }
     let sx = strides(dims);
-    let mut map = Vec::new();
-    each_index(&out, |idx| {
-        let off: i64 = (0..r).map(|k| (start[k] + idx[k] as i64 * step[k]) * sx[k] as i64).sum();
-        map.push((0, off as usize));
-    })?;
-    copy_op(ins, 1, map, out)
+    copy_op(ins, 1, out.clone(), |emit| {
+        each_index(&out, |idx| {
+            let off: i64 = (0..r).map(|k| (start[k] + idx[k] as i64 * step[k]) * sx[k] as i64).sum();
+            emit(0, off as usize);
+        })
+    })
 }
 
 pub(super) fn gather(_: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -> Result<Built, String> {
@@ -182,15 +185,15 @@ pub(super) fn gather(_: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -> Res
         })
         .collect::<Result<Vec<_>, _>>()?;
     let out = [&dims[..k], iv.dims(), &dims[k + 1..]].concat();
-    numel(&out)?;
     let (outer, inner): (usize, usize) = (dims[..k].iter().product(), dims[k + 1..].iter().product());
-    let mut map = Vec::new();
-    for o in 0..outer {
-        for &i in &idx {
-            map.extend((0..inner).map(|e| (0, (o * d + i) * inner + e)));
+    copy_op(ins, 1, out, |emit| {
+        for o in 0..outer {
+            for &i in &idx {
+                (0..inner).for_each(|e| emit(0, (o * d + i) * inner + e));
+            }
         }
-    }
-    copy_op(ins, 1, map, out)
+        Ok(())
+    })
 }
 
 pub(super) fn tile(_: &NodeProto, _: &mut Attrs, ins: &[Value], _: i64) -> Result<Built, String> {
@@ -204,14 +207,19 @@ pub(super) fn tile(_: &NodeProto, _: &mut Attrs, ins: &[Value], _: i64) -> Resul
         .iter()
         .zip(&reps)
         .map(|(&d, &r)| {
-            let r = usize::try_from(r).map_err(|_| format!("negative repeat {r}"))?;
-            d.checked_mul(r).ok_or_else(|| format!("tile of {dims:?} by {reps:?}: more than {MAX_ELEMS} elements"))
+            if r < 0 {
+                return Err(format!("negative repeat {r}"));
+            }
+            usize::try_from(r)
+                .ok()
+                .and_then(|r| d.checked_mul(r))
+                .ok_or_else(|| format!("tile of {dims:?} by {reps:?}: more than {MAX_ELEMS} elements"))
         })
         .collect::<Result<Vec<_>, _>>()?;
     let s = strides(dims);
-    let mut map = Vec::new();
-    each_index(&out, |idx| map.push((0, (0..dims.len()).map(|k| idx[k] % dims[k] * s[k]).sum())))?;
-    copy_op(ins, 1, map, out)
+    copy_op(ins, 1, out.clone(), |emit| {
+        each_index(&out, |idx| emit(0, (0..dims.len()).map(|k| idx[k] % dims[k] * s[k]).sum()))
+    })
 }
 
 pub(super) fn transpose(_: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -> Result<Built, String> {
@@ -228,7 +236,5 @@ pub(super) fn transpose(_: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -> 
         .ok_or_else(|| format!("perm {perm:?} for rank {r}"))?;
     let out: Vec<usize> = perm.iter().map(|&p| dims[p]).collect();
     let s = strides(dims);
-    let mut map = Vec::new();
-    each_index(&out, |idx| map.push((0, (0..r).map(|k| idx[k] * s[perm[k]]).sum())))?;
-    copy_op(ins, 1, map, out)
+    copy_op(ins, 1, out.clone(), |emit| each_index(&out, |idx| emit(0, (0..r).map(|k| idx[k] * s[perm[k]]).sum())))
 }

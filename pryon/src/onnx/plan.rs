@@ -1,12 +1,16 @@
 //! Load-time planning: shape binding, constant folding, dead-node removal and the arena layout.
 
-use super::ops::{Attrs, BuildFn, Built, Op, Value};
+use super::ops::{Attrs, BuildFn, Built, Op, Value, MAX_FOLD};
 use super::proto::{Dim, ModelProto, TensorData, TensorProto, ValueInfo};
 use super::tensor::{numel, DType, Tensor, MAX_ELEMS};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 const MAX_NODES: usize = 1 << 16;
+/// Decoded initializer bytes; the largest real graph is a 3.6 MB file, so this only stops crafted ones.
+const MAX_DECODED: usize = 256 << 20;
+/// Folded elements over the whole graph; real graphs fold a few dozen shape integers.
+const MAX_FOLDED: usize = 1 << 20;
 /// Inputs or outputs per node; the run loop keeps one array of each on the stack (plus a scratch slot).
 pub(crate) const MAX_IO: usize = 31;
 
@@ -43,8 +47,9 @@ pub(crate) struct Plan {
 
 use Fail::{Format, Unsupported};
 
-/// Decodes an initializer; a kept `placeholder` without data (firmware state inputs) is zeros.
-fn konst(t: &TensorProto, placeholder: bool) -> Result<Tensor, Fail> {
+/// Decodes an initializer within the `decoded` byte budget; a kept `placeholder` without data
+/// (firmware state inputs) is zeros.
+fn konst(t: &TensorProto, placeholder: bool, decoded: &mut usize) -> Result<Tensor, Fail> {
     let dtype = DType::from_onnx(t.data_type)
         .ok_or_else(|| Unsupported(format!("tensor element type {} (initializer {})", t.data_type, t.name)))?;
     let dims = t
@@ -54,12 +59,16 @@ fn konst(t: &TensorProto, placeholder: bool) -> Result<Tensor, Fail> {
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| Format(format!("initializer {}: negative dimension", t.name)))?;
     let n = numel(&dims).map_err(|e| Unsupported(format!("initializer {}: {e}", t.name)))?;
+    *decoded = decoded.saturating_add(n * dtype.size());
+    if *decoded > MAX_DECODED {
+        return Err(Unsupported(format!("initializers decoding to more than {MAX_DECODED} bytes")));
+    }
     let empty = matches!(&t.data, TensorData::Empty) || matches!(&t.data, TensorData::Raw(b) if b.is_empty());
     if empty && n > 0 {
         if !placeholder {
             return Err(Format(format!("initializer {} has no data (a placeholder input must be kept)", t.name)));
         }
-        return Ok(Tensor::i64(dims, vec![0; n]).cast(dtype));
+        return Ok(Tensor::zeros(dtype, dims, n));
     }
     Tensor::from_proto(t, dtype, dims, n).map_err(Format)
 }
@@ -90,6 +99,7 @@ fn check_declared(vi: &ValueInfo, dims: &[usize]) -> Result<(), Fail> {
 struct Values<'a> {
     vals: HashMap<&'a str, Value>,
     inits: HashMap<&'a str, &'a TensorProto>,
+    decoded: usize,
 }
 
 impl<'a> Values<'a> {
@@ -99,7 +109,7 @@ impl<'a> Values<'a> {
             return Ok(Some(v.clone()));
         }
         let Some(t) = self.inits.get(name) else { return Ok(None) };
-        let v = Value::Const(Arc::new(konst(t, false)?));
+        let v = Value::Const(Arc::new(konst(t, false, &mut self.decoded)?));
         self.vals.insert(name, v.clone());
         Ok(Some(v))
     }
@@ -162,7 +172,7 @@ pub(crate) fn plan(m: &ModelProto, bind: &[(&str, &[usize])], keep: &[&str], ops
         return Err(Unsupported(format!("graph of {} nodes (at most {MAX_NODES})", g.nodes.len())));
     }
 
-    let mut vs = Values { vals: HashMap::new(), inits: HashMap::new() };
+    let mut vs = Values { vals: HashMap::new(), inits: HashMap::new(), decoded: 0 };
     for t in &g.initializers {
         if t.external {
             return Err(Unsupported(format!("external data (initializer {})", t.name)));
@@ -193,10 +203,11 @@ pub(crate) fn plan(m: &ModelProto, bind: &[(&str, &[usize])], keep: &[&str], ops
         }
     }
     let mut inputs = Vec::new();
+    let mut buffers = 0usize;
     for &name in &names {
         let bound = bind.iter().find(|(n, _)| *n == name).map(|b| b.1);
         let (dims, dtype, initial) = if keep.contains(&name) {
-            let t = konst(vs.inits[name], true)?;
+            let t = konst(vs.inits[name], true, &mut vs.decoded)?;
             if bound.is_some_and(|b| b != t.dims) {
                 return Err(Unsupported(format!(
                     "bound shape {:?} of input {name} conflicts with its initializer {:?}",
@@ -215,7 +226,7 @@ pub(crate) fn plan(m: &ModelProto, bind: &[(&str, &[usize])], keep: &[&str], ops
         if let Some(vi) = declared.get(name) {
             check_declared(vi, &dims)?;
         }
-        numel(&dims).map_err(|e| Unsupported(format!("input {name}: {e}")))?;
+        buffers += numel(&dims).map_err(|e| Unsupported(format!("input {name}: {e}")))?;
         vs.vals.insert(name, Value::Runtime(dims.clone(), dtype));
         inputs.push(Io { name: name.to_string(), dims, off: 0, len: 0, initial });
     }
@@ -234,6 +245,7 @@ pub(crate) fn plan(m: &ModelProto, bind: &[(&str, &[usize])], keep: &[&str], ops
     }
 
     let mut pending: Vec<(usize, Box<dyn Op>, Vec<Vec<usize>>)> = Vec::new();
+    let mut folded = 0usize;
     for (i, n) in g.nodes.iter().enumerate().filter(|&(i, _)| live[i]) {
         let label = if n.name.is_empty() { n.outputs.first().map_or("", String::as_str) } else { &n.name };
         let op = &n.op_type;
@@ -258,6 +270,11 @@ pub(crate) fn plan(m: &ModelProto, bind: &[(&str, &[usize])], keep: &[&str], ops
                 })?
             });
         }
+        for (x, v) in n.inputs.iter().zip(&ins) {
+            if matches!(v, Value::Runtime(_, t) if *t != DType::F32) {
+                return Err(Unsupported(format!("non-float runtime tensor {x} at node {label}")));
+            }
+        }
         let mut attrs = Attrs::new(n);
         let built = build(n, &mut attrs, &ins, opset).map_err(|e| Unsupported(format!("{op} (node {label}): {e}")))?;
         if let Some(a) = attrs.leftover() {
@@ -274,23 +291,26 @@ pub(crate) fn plan(m: &ModelProto, bind: &[(&str, &[usize])], keep: &[&str], ops
         match built {
             Built::Folded(ts) => {
                 for (o, t) in n.outputs.iter().zip(ts) {
-                    numel(&t.dims).map_err(too_big)?;
+                    if t.len() > MAX_FOLD {
+                        return Err(too_big(format!("folded tensor of {} elements", t.len())));
+                    }
+                    folded += t.len();
+                    if folded > MAX_FOLDED {
+                        return Err(too_big(format!("folded constants exceed {MAX_FOLDED} elements")));
+                    }
                     vs.define(o, Value::Const(Arc::new(t)))?;
                 }
             }
             Built::Runtime { op: rop, outs } => {
-                let non_float = |x: &str| Unsupported(format!("non-float runtime tensor {x} at node {label}"));
-                for (x, v) in n.inputs.iter().zip(&ins) {
-                    if matches!(v, Value::Runtime(_, t) if *t != DType::F32) {
-                        return Err(non_float(x));
-                    }
-                }
                 let mut dims = Vec::with_capacity(outs.len());
                 for (o, (d, t)) in n.outputs.iter().zip(outs) {
                     if t != DType::F32 {
-                        return Err(non_float(o));
+                        return Err(Unsupported(format!("non-float runtime tensor {o} at node {label}")));
                     }
-                    numel(&d).map_err(too_big)?;
+                    buffers = buffers.saturating_add(numel(&d).map_err(too_big)?);
+                    if buffers > MAX_ELEMS {
+                        return Err(Unsupported(format!("graph needing more than {MAX_ELEMS} elements of buffers")));
+                    }
                     vs.define(o, Value::Runtime(d.clone(), DType::F32))?;
                     dims.push(d);
                 }
@@ -299,6 +319,9 @@ pub(crate) fn plan(m: &ModelProto, bind: &[(&str, &[usize])], keep: &[&str], ops
         }
     }
 
+    if let Some(io) = inputs.iter().find(|io| vs.vals.get(io.name.as_str()).and_then(Value::dtype) != Some(DType::F32)) {
+        return Err(Unsupported(format!("non-float runtime tensor {} (graph input)", io.name)));
+    }
     let mut outputs = Vec::new();
     for o in &g.outputs {
         let v = vs.get(&o.name)?.ok_or_else(|| Format(format!("graph output {} is never produced", o.name)))?;

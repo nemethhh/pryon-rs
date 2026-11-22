@@ -366,3 +366,55 @@ fn placeholder_state_and_repeated_inputs() {
     let e = load(clash, &[("x", &[2])], &[]).unwrap_err().to_string();
     assert!(e.contains("input x declared twice"), "{e}");
 }
+
+#[test]
+fn fold_budget_refused() {
+    // one Tile past the per-tensor fold limit, and a chain of small folds past the total
+    let big = ModelBuilder::new(8, 15)
+        .output("y", I64, &[])
+        .init_i64("one", &[1], &[0])
+        .init_i64("rep", &[1], &[1 << 20])
+        .node("Tile", &["one", "rep"], &["y"], &[]);
+    let e = unsupported(load(big, &[], &[]));
+    assert!(e.contains("folded tensor") && e.contains("elements"), "{e}");
+    let mut chain = ModelBuilder::new(8, 15).init_i64("one", &[1], &[0]).init_i64("rep", &[1], &[1 << 16]);
+    let mut prev = String::new();
+    for k in 0..40 {
+        let t = format!("t{k}");
+        chain = chain.node("Tile", &["one", "rep"], &[&t], &[]);
+        if k > 0 {
+            let s = format!("s{k}");
+            chain = chain.node("Add", &[&prev, &t], &[&s], &[]);
+            prev = s;
+        } else {
+            prev = t;
+        }
+    }
+    let e = unsupported(load(chain.output(&prev, I64, &[]), &[], &[]));
+    assert!(e.contains("folded constants"), "{e}");
+}
+
+#[test]
+fn non_float_inputs_refused() {
+    let shape_only = ModelBuilder::new(8, 15)
+        .input("x", I64, &d(&[2]))
+        .output("y", F, &d(&[1]))
+        .node_named("sh", "Shape", &["x"], &["s"], &[])
+        .node("Cast", &["s"], &["y"], &[("to", Attr::Int(1))]);
+    let e = unsupported(load(shape_only, &[("x", &[2])], &[]));
+    assert!(e.contains("non-float runtime tensor x at node sh"), "{e}");
+    let kept = ModelBuilder::new(8, 15)
+        .output("y", F, &d(&[1]))
+        .init_i64("k", &[3], &[1, 2, 3])
+        .node_named("sh", "Shape", &["k"], &["s"], &[])
+        .node("Cast", &["s"], &["y"], &[("to", Attr::Int(1))]);
+    let e = unsupported(load(kept, &[], &["k"]));
+    assert!(e.contains("non-float runtime tensor k at node sh"), "{e}");
+    let unused = ModelBuilder::new(8, 15)
+        .input("x", F, &d(&[2]))
+        .input("n", I64, &d(&[2]))
+        .output("y", F, &d(&[2]))
+        .node("Relu", &["x"], &["y"], &[]);
+    let e = unsupported(load(unused, &[("x", &[2]), ("n", &[2])], &[]));
+    assert!(e.contains("non-float runtime tensor n (graph input)"), "{e}");
+}

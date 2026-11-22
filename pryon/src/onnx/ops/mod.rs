@@ -190,24 +190,54 @@ pub(crate) fn axes_of(a: &mut Attrs, ins: &[Value], i: usize) -> Result<Option<V
     }
 }
 
-/// Data movement given per output element as `(input, offset)` over inputs `0..n`; folds when all are constant.
-pub(crate) fn copy_op(ins: &[Value], n: usize, map: Vec<(usize, usize)>, dims: Vec<usize>) -> Result<Built, String> {
+/// Largest folded tensor; real graphs fold only shape integers (at most a few elements).
+pub(crate) const MAX_FOLD: usize = 1 << 16;
+
+/// Element count of a tensor about to be folded, checked before anything is allocated for it.
+pub(crate) fn fold_numel(dims: &[usize]) -> Result<usize, String> {
+    numel(dims)?;
+    let n = dims.iter().product();
+    if n > MAX_FOLD {
+        return Err(format!("folded tensor of shape {dims:?}: more than {MAX_FOLD} elements"));
+    }
+    Ok(n)
+}
+
+/// Data movement over inputs `0..n`: `gen` emits `(input, offset)` for each output element in order.
+/// Folds when every source is constant; otherwise the sources become contiguous copy runs as they are emitted.
+pub(crate) fn copy_op(
+    ins: &[Value],
+    n: usize,
+    dims: Vec<usize>,
+    gen: impl FnOnce(&mut dyn FnMut(usize, usize)) -> Result<(), String>,
+) -> Result<Built, String> {
     let consts: Option<Vec<&Tensor>> = ins[..n].iter().map(Value::konst).collect();
     if let Some(parts) = consts {
+        let mut map = Vec::with_capacity(fold_numel(&dims)?);
+        gen(&mut |i, o| map.push((i, o)))?;
         return Ok(Built::Folded(vec![Tensor::gather(&parts, &map, dims)?]));
     }
+    numel(&dims)?;
     let dtype = ins[0].dtype().ok_or("input 0 missing")?;
     if ins[..n].iter().any(|v| v.dtype() != Some(dtype)) {
         return Err("inputs of different element types".into());
     }
-    Ok(Built::Runtime { op: Box::new(CopyRuns::new(&map)), outs: vec![(dims, dtype)] })
+    let mut runs: Vec<(usize, usize, usize)> = Vec::new();
+    gen(&mut |i, o| match runs.last_mut() {
+        Some((ri, ro, rl)) if *ri == i && *ro + *rl == o => *rl += 1,
+        _ => runs.push((i, o, 1)),
+    })?;
+    Ok(Built::Runtime { op: Box::new(CopyRuns(runs)), outs: vec![(dims, dtype)] })
 }
 
 /// The same elements under new dims (Reshape, Squeeze, Unsqueeze, Cast at runtime).
 pub(crate) fn view(x: &Value, dims: Vec<usize>) -> Result<Built, String> {
     let n = numel(&dims)?;
     Ok(match x {
-        Value::Const(t) => Built::Folded(vec![Tensor { dims, data: t.data.clone() }]),
+        Value::Const(t) => {
+            fold_numel(&dims)?;
+            Built::Folded(vec![Tensor { dims, data: t.data.clone() }])
+        }
         _ => {
             let dtype = x.dtype().ok_or("input missing")?;
             Built::Runtime { op: Box::new(CopyRuns(vec![(0, 0, n)])), outs: vec![(dims, dtype)] }
@@ -217,19 +247,6 @@ pub(crate) fn view(x: &Value, dims: Vec<usize>) -> Result<Built, String> {
 
 /// Contiguous runs `(input, offset, len)` written back to back into output 0.
 struct CopyRuns(Vec<(usize, usize, usize)>);
-
-impl CopyRuns {
-    fn new(map: &[(usize, usize)]) -> CopyRuns {
-        let mut runs: Vec<(usize, usize, usize)> = Vec::new();
-        for &(i, o) in map {
-            match runs.last_mut() {
-                Some((ri, ro, rl)) if *ri == i && *ro + *rl == o => *rl += 1,
-                _ => runs.push((i, o, 1)),
-            }
-        }
-        CopyRuns(runs)
-    }
-}
 
 impl Op for CopyRuns {
     fn run(&self, ins: &[&[f32]], outs: &mut [&mut [f32]]) {

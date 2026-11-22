@@ -1,6 +1,6 @@
 //! Elementwise arithmetic with NumPy broadcasting; integer constants fold with wrapping arithmetic.
 
-use super::{arg, each_index, strides, Attrs, Built, Op, Value};
+use super::{arg, each_index, fold_numel, strides, Attrs, Built, Op, Value};
 use crate::onnx::proto::NodeProto;
 use crate::onnx::tensor::{numel, Data, Tensor};
 use std::marker::PhantomData;
@@ -49,10 +49,13 @@ struct Bcast {
     rows: Vec<(usize, usize)>,
 }
 
-fn broadcast(a: &[usize], b: &[usize]) -> Result<(Vec<usize>, Bcast), String> {
+fn pad(d: &[usize], r: usize) -> Vec<usize> {
+    [vec![1; r - d.len()], d.to_vec()].concat()
+}
+
+fn broadcast_shape(a: &[usize], b: &[usize]) -> Result<Vec<usize>, String> {
     let r = a.len().max(b.len());
-    let pad = |d: &[usize]| [vec![1; r - d.len()], d.to_vec()].concat();
-    let (pa, pb) = (pad(a), pad(b));
+    let (pa, pb) = (pad(a, r), pad(b, r));
     let out = (0..r)
         .map(|k| match (pa[k], pb[k]) {
             (x, y) if x == y => Ok(x),
@@ -61,8 +64,16 @@ fn broadcast(a: &[usize], b: &[usize]) -> Result<(Vec<usize>, Bcast), String> {
             _ => Err(format!("shapes {a:?} and {b:?} do not broadcast")),
         })
         .collect::<Result<Vec<_>, _>>()?;
-    if numel(&out)? == 0 {
-        return Ok((out, Bcast { n: 1, sa: 0, sb: 0, rows: Vec::new() }));
+    numel(&out)?;
+    Ok(out)
+}
+
+/// Plan for broadcasting `a` and `b` to `out` (from `broadcast_shape`).
+fn broadcast(a: &[usize], b: &[usize], out: &[usize]) -> Result<Bcast, String> {
+    let r = out.len();
+    let (pa, pb) = (pad(a, r), pad(b, r));
+    if numel(out)? == 0 {
+        return Ok(Bcast { n: 1, sa: 0, sb: 0, rows: Vec::new() });
     }
     let st = |p: &[usize]| {
         let s = strides(p);
@@ -90,7 +101,7 @@ fn broadcast(a: &[usize], b: &[usize]) -> Result<(Vec<usize>, Bcast), String> {
         let off = |s: &[usize]| idx.iter().zip(&kept[..m]).map(|(&i, &k)| i * s[k]).sum::<usize>();
         rows.push((off(&sa), off(&sb)));
     })?;
-    Ok((out, Bcast { n, sa: ua, sb: ub, rows }))
+    Ok(Bcast { n, sa: ua, sb: ub, rows })
 }
 
 impl Bcast {
@@ -138,9 +149,10 @@ pub(super) fn binary<K: BinKind>(_: &NodeProto, _: &mut Attrs, ins: &[Value], _:
     if a.dtype() != b.dtype() {
         return Err(format!("element types {:?} and {:?}", a.dtype(), b.dtype()));
     }
-    let (dims, plan) = broadcast(a.dims(), b.dims())?;
+    let dims = broadcast_shape(a.dims(), b.dims())?;
     if let (Some(x), Some(y)) = (a.konst(), b.konst()) {
-        let n = numel(&dims)?;
+        let n = fold_numel(&dims)?;
+        let plan = broadcast(x.dims.as_slice(), &y.dims, &dims)?;
         let data = match (&x.data, &y.data) {
             (Data::F32(x), Data::F32(y)) => Data::F32(fold(&plan, x, y, n, K::f32)),
             (Data::I64(x), Data::I64(y)) => Data::I64(fold(&plan, x, y, n, K::int)),
@@ -150,6 +162,7 @@ pub(super) fn binary<K: BinKind>(_: &NodeProto, _: &mut Attrs, ins: &[Value], _:
         return Ok(Built::Folded(vec![Tensor { dims, data }]));
     }
     let dtype = a.dtype().ok_or("input missing")?;
+    let plan = broadcast(a.dims(), b.dims(), &dims)?;
     Ok(Built::Runtime { op: Box::new(Binary::<K> { plan, k: PhantomData }), outs: vec![(dims, dtype)] })
 }
 
@@ -202,6 +215,7 @@ impl<K: UnKind> Op for Unary<K> {
 pub(super) fn unary<K: UnKind>(_: &NodeProto, _: &mut Attrs, ins: &[Value], _: i64) -> Result<Built, String> {
     let x = arg(ins, 0)?;
     if let Some(t) = x.konst() {
+        fold_numel(&t.dims)?;
         let data = match &t.data {
             Data::F32(v) => Data::F32(v.iter().map(|&x| K::f32(x)).collect()),
             Data::I64(v) => Data::I64(v.iter().map(|&x| K::int(x)).collect()),
