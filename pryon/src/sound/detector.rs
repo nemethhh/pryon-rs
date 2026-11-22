@@ -9,8 +9,9 @@ use std::sync::Arc;
 
 pub const WINDOW_FRAMES: usize = 998;
 pub const WINDOW_SAMPLES: u64 = 159_680;
-// The window's result is the score after the step at this frame.
-const RESULT_T: usize = 996;
+// A 400-sample frame at hop 160 spans 80-sample blocks 2f..2f+4.
+const BLOCK: u64 = 80;
+const FRAME_BLOCKS: usize = 5;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct TypeResult {
@@ -28,9 +29,19 @@ pub struct SoundWindow {
     pub types: Vec<TypeResult>,
 }
 
+/// Per window: samples above each type's threshold (window samples) and max |x| (window frames).
 struct Energy {
-    max: i32,
+    thresholds: Vec<i32>,
+    samples: u64,
     above: Vec<u32>,
+    done_above: VecDeque<Vec<u32>>,
+    block_max: i32,
+    block_void: bool,
+    // The last five block maxes, None for a block holding -32768.
+    blocks: [Option<i32>; FRAME_BLOCKS],
+    frames: u64,
+    max: i32,
+    done_max: VecDeque<i32>,
 }
 
 pub struct SoundDetector {
@@ -44,12 +55,73 @@ pub struct SoundDetector {
     net: Net,
     scores: [f32; NUM_SCORES],
     frame: u64,
-    samples: u64,
-    cur: Energy,
-    done: VecDeque<Energy>,
+    energy: Energy,
     frames: Vec<[f32; 20]>,
     verdicts: Vec<bool>,
     released: Vec<(usize, [f32; 20])>,
+}
+
+impl Energy {
+    fn new(thresholds: Vec<i32>) -> Energy {
+        Energy {
+            above: vec![0; thresholds.len()],
+            thresholds,
+            samples: 0,
+            done_above: VecDeque::new(),
+            block_max: 0,
+            block_void: false,
+            blocks: [None; FRAME_BLOCKS],
+            frames: 0,
+            max: 0,
+            done_max: VecDeque::new(),
+        }
+    }
+
+    fn reset(&mut self) {
+        *self = Energy::new(std::mem::take(&mut self.thresholds));
+    }
+
+    fn push(&mut self, pcm: &[i16]) {
+        for &s in pcm {
+            // libpryon's |x| is i16: -32768 never counts and voids every frame max it falls in (oracle probes).
+            if s == i16::MIN {
+                self.block_void = true;
+            } else {
+                let a = (s as i32).abs();
+                self.block_max = self.block_max.max(a);
+                for (n, &t) in self.above.iter_mut().zip(&self.thresholds) {
+                    *n += (a >= t) as u32;
+                }
+            }
+            self.samples += 1;
+            if self.samples % BLOCK == 0 {
+                self.end_block();
+            }
+            if self.samples % WINDOW_SAMPLES == 0 {
+                let fresh = vec![0; self.above.len()];
+                self.done_above.push_back(std::mem::replace(&mut self.above, fresh));
+            }
+        }
+    }
+
+    fn end_block(&mut self) {
+        let b = self.samples / BLOCK - 1;
+        self.blocks[(b % FRAME_BLOCKS as u64) as usize] = (!self.block_void).then_some(self.block_max);
+        self.block_max = 0;
+        self.block_void = false;
+        if b + 1 >= FRAME_BLOCKS as u64 && b % 2 == 0 {
+            let frame_max = self.blocks.iter().try_fold(0, |m, b| b.map(|x| m.max(x))).unwrap_or(0);
+            self.max = self.max.max(frame_max);
+            self.frames += 1;
+            if self.frames % WINDOW_FRAMES as u64 == 0 {
+                self.done_max.push_back(std::mem::replace(&mut self.max, 0));
+            }
+        }
+    }
+
+    fn pop(&mut self) -> Option<(Vec<u32>, i32)> {
+        Some((self.done_above.pop_front()?, self.done_max.pop_front()?))
+    }
 }
 
 impl SoundDetector {
@@ -69,7 +141,7 @@ impl SoundDetector {
             sel
         };
         let names = sel.iter().map(|&i| all[i].name.clone()).collect();
-        let n = sel.len();
+        let energy = Energy::new(sel.iter().map(|&i| all[i].energy_threshold).collect());
         Ok(SoundDetector {
             net: Net::new(&model),
             model,
@@ -80,9 +152,7 @@ impl SoundDetector {
             norm: ChannelNorm::new(),
             scores: [0.0; NUM_SCORES],
             frame: 0,
-            samples: 0,
-            cur: Energy { max: 0, above: vec![0; n] },
-            done: VecDeque::new(),
+            energy,
             frames: Vec::new(),
             verdicts: Vec::new(),
             released: Vec::new(),
@@ -99,14 +169,11 @@ impl SoundDetector {
         self.norm.reset();
         self.net.reset();
         self.frame = 0;
-        self.samples = 0;
-        self.cur.max = 0;
-        self.cur.above.iter_mut().for_each(|a| *a = 0);
-        self.done.clear();
+        self.energy.reset();
     }
 
     pub fn feed(&mut self, pcm: &[i16], out: &mut Vec<SoundWindow>) {
-        self.account_energy(pcm);
+        self.energy.push(pcm);
         self.frames.clear();
         self.verdicts.clear();
         self.lfbe.push(pcm, &mut self.frames);
@@ -128,44 +195,24 @@ impl SoundDetector {
                 let (rt, x) = self.released[r];
                 if rt % 2 == 0 {
                     self.net.step(&x, &mut self.scores);
-                    if rt == RESULT_T {
-                        if let Some(w) = self.finish_window(index) {
-                            out.push(w);
-                        }
-                    }
                 }
             }
-        }
-    }
-
-    fn account_energy(&mut self, mut pcm: &[i16]) {
-        let types = &self.model.config.types;
-        while !pcm.is_empty() {
-            let pos = self.samples % WINDOW_SAMPLES;
-            let take = pcm.len().min((WINDOW_SAMPLES - pos) as usize);
-            for &s in &pcm[..take] {
-                let a = (s as i32).abs();
-                self.cur.max = self.cur.max.max(a);
-                for (n, &i) in self.cur.above.iter_mut().zip(&self.sel) {
-                    *n += (a >= types[i].energy_threshold) as u32;
+            // Scores end at the frame-996 step; frame 997 still feeds the energy max.
+            if t == WINDOW_FRAMES - 1 {
+                if let Some(w) = self.finish_window(index) {
+                    out.push(w);
                 }
-            }
-            self.samples += take as u64;
-            pcm = &pcm[take..];
-            if self.samples % WINDOW_SAMPLES == 0 {
-                let fresh = Energy { max: 0, above: vec![0; self.sel.len()] };
-                self.done.push_back(std::mem::replace(&mut self.cur, fresh));
             }
         }
     }
 
     fn finish_window(&mut self, index: u64) -> Option<SoundWindow> {
-        let e = self.done.pop_front()?;
+        let (above, max_energy) = self.energy.pop()?;
         let cfg = &self.model.config.types;
         let types = self
             .sel
             .iter()
-            .zip(&e.above)
+            .zip(&above)
             .map(|(&i, &samples_above)| {
                 let c = &cfg[i];
                 let score = self.scores[c.output_index];
@@ -175,7 +222,7 @@ impl SoundDetector {
                 TypeResult { score, samples_above, detected, near_miss }
             })
             .collect();
-        Some(SoundWindow { index, end_sample: (index + 1) * WINDOW_SAMPLES, max_energy: e.max, types })
+        Some(SoundWindow { index, end_sample: (index + 1) * WINDOW_SAMPLES, max_energy, types })
     }
 }
 
@@ -210,7 +257,8 @@ mod tests {
     #[test]
     fn window_count_and_ends() {
         let m = model("count");
-        let pcm = noise(3 * 159_680 + 80);
+        // A window closes with its last frame, 240 samples past its end.
+        let pcm = noise(3 * 159_680 + 240);
         let w = run(&m, &[], &pcm[..pcm.len() - 1], 4000);
         assert_eq!(w.iter().map(|w| w.end_sample).collect::<Vec<_>>(), [159_680, 319_360]);
         let w = run(&m, &[], &pcm, 4000);
@@ -253,11 +301,37 @@ mod tests {
         assert_eq!(above("humanPresence"), 7);
     }
 
+    fn spikes(len: usize, v: &[(usize, i16)]) -> Vec<i16> {
+        let mut pcm = vec![0i16; len];
+        v.iter().for_each(|&(i, x)| pcm[i] = x);
+        pcm
+    }
+
+    // Oracle probes: -32768 is never above threshold and voids the max of every 400-sample frame holding it.
     #[test]
     fn max_energy_min_sample() {
         let m = model("min");
         let w = run(&m, &[], &clip_with_energy(&[(5, 10), (-32768, 1)]), 5000);
-        assert_eq!(w[0].max_energy, 32768);
+        assert_eq!(w[0].max_energy, 0);
+        assert!(w[0].types.iter().all(|t| t.samples_above == 0));
+        // 1050 lies in frames 5 and 6, both holding 1150; 1400 lies in frame 7, which does not.
+        let w = run(&m, &[], &spikes(160_080, &[(1050, 900), (1150, -32768), (1400, 300)]), 7);
+        assert_eq!(w[0].max_energy, 300);
+        assert!(w[0].types.iter().all(|t| t.samples_above == 2));
+        let w = run(&m, &[], &spikes(160_080, &[(1050, 900), (1200, -32768)]), 33);
+        assert_eq!(w[0].max_energy, 900);
+    }
+
+    // The max covers the window's 998 frames, whose last two reach 240 samples into the next window.
+    #[test]
+    fn max_energy_spans_window_frames() {
+        let m = model("edge");
+        let n = WINDOW_SAMPLES as usize;
+        let w = run(&m, &[], &spikes(2 * n + 400, &[(n - 30, 500), (n + 30, 600), (2 * n - 30, 400)]), 4000);
+        assert_eq!(w.iter().map(|w| w.max_energy).collect::<Vec<_>>(), [600, 600]);
+        let w = run(&m, &[], &spikes(2 * n + 400, &[(n - 30, 500), (n + 300, 400)]), 4000);
+        assert_eq!(w.iter().map(|w| w.max_energy).collect::<Vec<_>>(), [500, 400]);
+        assert!(w.iter().all(|w| w.types.iter().all(|t| t.samples_above == 1)));
     }
 
     // Thresholds 0.0 / near miss 0.0: every score clears both, so only the energy gate decides.
