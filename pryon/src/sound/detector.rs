@@ -169,10 +169,9 @@ impl SoundDetector {
             .map(|(&i, &samples_above)| {
                 let c = &cfg[i];
                 let score = self.scores[c.output_index];
-                // Pending oracle confirmation in Task 10.
-                let gate = samples_above >= c.energy_min_samples;
-                let detected = gate && score >= c.threshold;
-                let near_miss = gate && !detected && score >= c.near_miss;
+                // libpryon: the energy gate blocks detection only, a quiet high score still reports near miss.
+                let detected = samples_above >= c.energy_min_samples && score >= c.threshold;
+                let near_miss = !detected && score >= c.near_miss;
                 TypeResult { score, samples_above, detected, near_miss }
             })
             .collect();
@@ -261,13 +260,14 @@ mod tests {
         assert_eq!(w[0].max_energy, 32768);
     }
 
+    // Thresholds 0.0 / near miss 0.0: every score clears both, so only the energy gate decides.
     #[test]
     fn gate_blocks_detection() {
         let m = model("gate");
         let w = run(&m, &[], &synth(Clip::Zeros), 5000);
         assert!(!w.is_empty());
         for win in &w {
-            assert!(win.types.iter().all(|t| !t.detected && !t.near_miss && t.samples_above == 0));
+            assert!(win.types.iter().all(|t| !t.detected && t.near_miss && t.samples_above == 0));
         }
     }
 
