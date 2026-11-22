@@ -204,6 +204,51 @@ pub fn write_mlp(trunk: (usize, usize), heads: usize, head_cell: usize, seed: u6
     o
 }
 
+pub const TYPE_NAMES: [&str; 12] = [
+    "humanPresence",
+    "smokeAlarm",
+    "glassBreak",
+    "dogBark",
+    "babyCry",
+    "snore",
+    "cough",
+    "waterSounds",
+    "beepingAppliance",
+    "smokeSiren",
+    "carbonMonoxideSiren",
+    "runningWater",
+];
+
+/// Writes a synthetic model directory in the real layout (manifest, config, AED.json, `.mlp`).
+pub fn write_model_dir(dir: &std::path::Path, seed: u64, threshold: f32) {
+    let w = |name: &str, data: &[u8]| std::fs::write(dir.join(name), data).unwrap();
+    w(
+        "pryon.manifest",
+        br#"{"default_model_name": "pryon", "models": {"pryon": {"config_file_path": "pryon.config"}}}"#,
+    );
+    w(
+        "pryon.config",
+        b"# synthetic\nscorer.model_filepath = \"model_gcmvn.cpu.v1.q.mlp\"\nscorer.batch_scorer_reset_interval_msec = 9980\nrecognizer.acoustic_event_detection.config_filepath = \"AED.json\"\n",
+    );
+    w("model_gcmvn.cpu.v1.q.mlp", &write_mlp((20, 64), 9, 96, seed));
+    let types: Vec<String> = TYPE_NAMES
+        .iter()
+        .enumerate()
+        .map(|(i, n)| {
+            let energy = if i == 0 { 108 } else { 82 };
+            format!(
+                "{{\"name\": \"{n}\", \"score_output_index\": {i}, \"score_detection_threshold\": {threshold}, \"score_near_miss_threshold\": {}, \"energy_threshold\": {energy}, \"energy_min_num_samples\": 1}}",
+                threshold / 2.0
+            )
+        })
+        .collect();
+    let json = format!(
+        "{{\"configuration\": {{\"num_detection_types\": 12, \"acoustic_event\": [{}]}}}}",
+        types.join(", ")
+    );
+    w("AED.json", json.as_bytes());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

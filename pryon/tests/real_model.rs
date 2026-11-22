@@ -34,3 +34,21 @@ fn real_shapes() {
         }
     }
 }
+
+#[test]
+fn real_configs() {
+    for (var, smoke) in [("PRYON_AED_DAVS_DIR", 0.845f32), ("PRYON_AED_MODEL_DIR", 0.825)] {
+        let Ok(dir) = std::env::var(var) else {
+            println!("skipped: set {var}");
+            continue;
+        };
+        let c = pryon::SoundConfig::load(std::path::Path::new(&dir)).unwrap();
+        assert_eq!(c.window_ms, 9980);
+        assert_eq!(c.types.len(), 12);
+        assert_eq!(c.types[0].name, "humanPresence");
+        assert_eq!(c.types[0].energy_threshold, 108);
+        assert_eq!(c.types[1].name, "smokeAlarm");
+        assert_eq!(c.types[1].threshold, smoke, "{var}");
+        assert!(c.mlp_path.is_file());
+    }
+}
