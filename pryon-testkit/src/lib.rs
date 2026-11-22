@@ -9,10 +9,11 @@ pub enum Clip {
     Zeros,
     Quiet,
     Extremes,
+    QuietTones,
 }
 
 impl Clip {
-    pub const ALL: [Clip; 7] = [
+    pub const ALL: [Clip; 8] = [
         Clip::Noise,
         Clip::Tones,
         Clip::Gap49,
@@ -20,6 +21,7 @@ impl Clip {
         Clip::Zeros,
         Clip::Quiet,
         Clip::Extremes,
+        Clip::QuietTones,
     ];
 
     pub fn name(&self) -> &'static str {
@@ -31,6 +33,7 @@ impl Clip {
             Clip::Zeros => "zeros",
             Clip::Quiet => "quiet",
             Clip::Extremes => "extremes",
+            Clip::QuietTones => "quiet_tones",
         }
     }
 
@@ -96,6 +99,8 @@ pub fn synth(clip: Clip) -> Vec<i16> {
             }
             x
         }
+        // Below every energy threshold, yet channel norm keeps the tone pattern.
+        Clip::QuietTones => synth(Clip::Tones).iter().map(|&s| (s as i32 * 80 / 8300) as i16).collect(),
         Clip::Zeros => vec![0; SHORT_LEN],
         Clip::Quiet => noise(0x7777_1111_2222_3333, LEN, 60),
         Clip::Extremes => {
@@ -305,6 +310,12 @@ mod tests {
     fn quiet_below_gate() {
         let m = synth(Clip::Quiet).iter().map(|&s| (s as i32).abs()).max().unwrap();
         assert!(m <= 60 && m > 0);
+    }
+
+    #[test]
+    fn quiet_tones_below_gate() {
+        let m = synth(Clip::QuietTones).iter().map(|&s| (s as i32).abs()).max().unwrap();
+        assert!(m <= 80 && m > 0, "{m}");
     }
 
     #[test]
