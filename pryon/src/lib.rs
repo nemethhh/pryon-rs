@@ -1,3 +1,4 @@
+pub mod cmn;
 pub mod config;
 pub mod error;
 pub mod lfbe;
