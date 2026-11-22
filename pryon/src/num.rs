@@ -85,6 +85,181 @@ pub(crate) fn tanh(z: f32) -> f32 {
     (r + r) + -1.0
 }
 
+/// Flush to zero: a subnormal becomes a zero of its sign (VFP with FPSCR.FZ, and always NEON).
+pub(crate) fn fz(x: f32) -> f32 {
+    if x.is_subnormal() {
+        0.0f32.copysign(x)
+    } else {
+        x
+    }
+}
+
+/// A NEON result: flushed to zero, any NaN the default NaN.
+fn dn(x: f32) -> f32 {
+    if x.is_nan() {
+        f32::from_bits(0x7FC0_0000)
+    } else {
+        fz(x)
+    }
+}
+
+pub(crate) fn vadd(a: f32, b: f32) -> f32 {
+    dn(fz(a) + fz(b))
+}
+
+pub(crate) fn vsub(a: f32, b: f32) -> f32 {
+    dn(fz(a) - fz(b))
+}
+
+pub(crate) fn vmul(a: f32, b: f32) -> f32 {
+    dn(fz(a) * fz(b))
+}
+
+/// NEON `vmla`: `a + b·c`, the product rounded first.
+pub(crate) fn vmla(a: f32, b: f32, c: f32) -> f32 {
+    vadd(a, vmul(b, c))
+}
+
+/// NEON `vfma`: `a + b·c` rounded once.
+pub(crate) fn vfma(a: f32, b: f32, c: f32) -> f32 {
+    dn(fmaf(fz(b), fz(c), fz(a)))
+}
+
+pub(crate) fn vmin(a: f32, b: f32) -> f32 {
+    let (a, b) = (fz(a), fz(b));
+    if a.is_nan() || b.is_nan() {
+        f32::from_bits(0x7FC0_0000)
+    } else if a < b || (a == b && a.is_sign_negative()) {
+        a
+    } else {
+        b
+    }
+}
+
+pub(crate) fn vmax(a: f32, b: f32) -> f32 {
+    let (a, b) = (fz(a), fz(b));
+    if a.is_nan() || b.is_nan() {
+        f32::from_bits(0x7FC0_0000)
+    } else if a > b || (a == b && a.is_sign_positive()) {
+        a
+    } else {
+        b
+    }
+}
+
+pub(crate) fn zsub(a: f32, b: f32) -> f32 {
+    fz(fz(a) - fz(b))
+}
+
+pub(crate) fn zmul(a: f32, b: f32) -> f32 {
+    fz(fz(a) * fz(b))
+}
+
+/// VFP division under FPSCR.FZ.
+pub(crate) fn zdiv(a: f32, b: f32) -> f32 {
+    fz(fz(a) / fz(b))
+}
+
+/// Round half to even (`nearbyintf` in the default mode), without libm.
+pub(crate) fn rint(x: f32) -> f32 {
+    const BIG: f32 = 8388608.0;
+    if !(x.abs() < BIG) {
+        return x;
+    }
+    let m = BIG.copysign(x);
+    ((x + m) - m).copysign(x)
+}
+
+/// `a·b + c` rounded once (bionic `fmaf`, NEON `vfma`), in integer arithmetic: no FMA instruction, no f64.
+pub(crate) fn fmaf(a: f32, b: f32, c: f32) -> f32 {
+    if !a.is_finite() || !b.is_finite() || c.is_nan() || a == 0.0 || b == 0.0 {
+        return a * b + c;
+    }
+    if c.is_infinite() {
+        return c;
+    }
+    let parts = |x: f32| {
+        let u = x.to_bits();
+        let e = (u >> 23 & 0xFF) as i32;
+        let m = u & 0x7F_FFFF;
+        if e == 0 { (m, -149) } else { (m | 0x80_0000, e - 150) }
+    };
+    let ((ma, ea), (mb, eb)) = (parts(a), parts(b));
+    let p = (u64::from(ma) * u64::from(mb)) as i64;
+    let p = if (a < 0.0) != (b < 0.0) { -p } else { p };
+    let ep = ea + eb;
+    if c == 0.0 {
+        return round_scaled(p.unsigned_abs(), p < 0, ep);
+    }
+    let (mc, ec) = parts(c);
+    let mc = if c < 0.0 { -i64::from(mc) } else { i64::from(mc) };
+    let d = ep - ec;
+    // the product has 48 bits and c 24: these gaps keep the aligned sum inside an i64
+    if (-38..=14).contains(&d) {
+        let (sum, e) = if d >= 0 { ((p << d) + mc, ec) } else { (p + (mc << -d), ep) };
+        return round_scaled(sum.unsigned_abs(), sum < 0, e);
+    }
+    let (p, mc) = (i128::from(p), i128::from(mc));
+    // beyond these gaps the smaller term only decides rounding, as a one-unit sticky of its sign
+    let (sum, e) = match d {
+        0..=72 => ((p << d) + mc, ec),
+        73.. => ((p << 72) + mc.signum(), ep - 72),
+        -100..=-1 => (p + (mc << -d), ep),
+        _ => (p.signum() + (mc << 100), ec - 100),
+    };
+    let m = sum.unsigned_abs();
+    // keep 62 bits with a sticky low bit: still well below the 24 bits that survive rounding
+    let sh = (128 - m.leading_zeros()).saturating_sub(62);
+    let m64 = (m >> sh) as u64 | u64::from(m & ((1u128 << sh) - 1) != 0);
+    round_scaled(m64, sum < 0, e + sh as i32)
+}
+
+/// `±m·2^e` rounded to the nearest f32, ties to even.
+fn round_scaled(m: u64, neg: bool, e: i32) -> f32 {
+    if m == 0 {
+        return 0.0;
+    }
+    let top = 63 - m.leading_zeros() as i32 + e;
+    let lsb = (top - 23).max(-149);
+    let q = if lsb <= e {
+        m << (e - lsb)
+    } else {
+        let sh = (lsb - e) as u32;
+        let (q, rem) = if sh >= 64 { (0, m) } else { (m >> sh, m & ((1u64 << sh) - 1)) };
+        let half = if sh > 64 { u64::MAX } else { 1u64 << (sh - 1) };
+        if rem > half || (rem == half && q & 1 == 1) { q + 1 } else { q }
+    };
+    let bits = if top > 127 { 0x7F80_0000 } else { ((((lsb + 149) as u32) << 23) + q as u32).min(0x7F80_0000) };
+    f32::from_bits(bits | u32::from(neg) << 31)
+}
+
+/// CPUNK's NEON exp (SigmoidImpl/TanhImpl<CortexA15>, 0x1249cb0/0x124d500): Cody-Waite, degree-5 fused polynomial.
+fn cpunk_exp(x: f32) -> f32 {
+    let c = f32::from_bits;
+    let x = vmax(vmin(x, c(0x42B1_7217)), c(0xC2AE_AC4F));
+    let t = vmla(12582912.0, x, c(0x3FB8_AA3B));
+    let n = (t.to_bits() as i32).wrapping_add(0xB4C0_0000u32 as i32);
+    let nf = n as f32;
+    let r = vfma(vfma(x, nf, c(0xBF31_7200)), nf, c(0xB5BF_BE8E));
+    let mut p = vfma(c(0x3D2B_A65B), r, c(0x3C08_0161));
+    for k in [0x3E2A_ACD3, 0x3EFF_FEC6, 0x3F7F_FFFC, 0x3F80_0000] {
+        p = vfma(c(k), p, r);
+    }
+    f32::from_bits(((n as u32) << 23).wrapping_add(p.to_bits()))
+}
+
+/// libpryon's CPUNK sigmoid: `e / (e + 1)` with `e = exp(x)`.
+pub(crate) fn cpunk_sigmoid(x: f32) -> f32 {
+    let e = cpunk_exp(x);
+    zdiv(e, vadd(e, 1.0))
+}
+
+/// libpryon's CPUNK tanh: `(e − 1) / (e + 1)` with `e = exp(2x)`.
+pub(crate) fn cpunk_tanh(x: f32) -> f32 {
+    let e = cpunk_exp(vadd(x, x));
+    zdiv(vadd(e, -1.0), vadd(e, 1.0))
+}
+
 /// OpenBLAS ARMv7 sdot_vfp order: two accumulators over blocks of four, remainder into the first.
 pub(crate) fn sdot_vfp(a: &[f32], b: &[f32]) -> f32 {
     let n = a.len().min(b.len());
@@ -180,6 +355,113 @@ mod tests {
         // A two-accumulator order (sdot_vfp) gives 2 here.
         assert_eq!(dot_seq(&[1e8, 1.0, -1e8, 1.0], &[1.0; 4]), 1.0);
         assert_eq!(dot_seq(&[1.5, -2.0, 0.25], &[2.0, 0.5, 4.0]), 3.0);
+    }
+
+    fn xorshift(mut s: u32) -> impl FnMut() -> u32 {
+        move || {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            s
+        }
+    }
+
+    #[test]
+    fn rint_ties_even() {
+        let xs = [2.5f32, 3.5, -2.5, -0.4, 0.5, 8388607.5, -8388607.5, 1e10, -0.0];
+        let want = [2.0f32, 4.0, -2.0, -0.0, 0.0, 8388608.0, -8388608.0, 1e10, -0.0];
+        assert_eq!(bits(&xs.map(rint)), bits(&want));
+    }
+
+    #[test]
+    fn fmaf_is_fused() {
+        let mut next = xorshift(0x2545_f491);
+        let special = [0.0f32, -0.0, 1.0, -1.0, f32::MIN_POSITIVE, 1e-45, -3e-45, 3.4e38, -3.4e38, 0.5, 1.0000001];
+        let mut cases = Vec::new();
+        for &a in &special {
+            for &b in &special {
+                for &c in &special {
+                    cases.push((a, b, c));
+                }
+            }
+        }
+        for i in 0..400_000u32 {
+            // exponents spread so products land everywhere from subnormal to overflow
+            let f = |e: u32, m: u32| f32::from_bits((m & 0x807F_FFFF) | (e.min(254) << 23));
+            let ea = next() % 255;
+            let eb = (254 - ea + next() % 200).saturating_sub(100);
+            let (a, b) = (f(ea, next()), f(eb, next()));
+            let (r, m) = (next(), next());
+            let c = match i % 3 {
+                0 => f32::from_bits(r),
+                // c cancels most of a·b
+                1 => -(a * b) * (1.0 + (r % 9) as f32 * f32::EPSILON),
+                _ => f((ea + eb).saturating_sub(127 + r % 60), m),
+            };
+            cases.push((a, b, c));
+        }
+        // full mantissas at every exponent gap around the i64/i128 switch, both signs of c
+        for gap in -110..=80 {
+            for (ma, mb, mc) in [(0x7F_FFFF, 0x7F_FFFF, 0x7F_FFFF), (0x7F_FF7E, 0x0A_3B11, 0x7F_FFFC), (0, 0, 1)] {
+                let (a, b) = (f32::from_bits(0x3F00_0000 | ma), f32::from_bits(0x3F00_0000 | mb));
+                let c = f32::from_bits((((126 - gap).clamp(1, 254) as u32) << 23) | mc);
+                cases.extend([(a, b, c), (a, b, -c), (-a, b, c)]);
+            }
+        }
+        for (a, b, c) in cases {
+            let (got, want) = (fmaf(a, b, c), a.mul_add(b, c));
+            let same = got.to_bits() == want.to_bits() || (got.is_nan() && want.is_nan());
+            assert!(same, "fmaf({a:e}, {b:e}, {c:e}) = {got:e}, fused {want:e}");
+        }
+    }
+
+    #[test]
+    fn neon_flushes_subnormals() {
+        let tiny = f32::from_bits(1);
+        assert_eq!(vadd(tiny, 0.0).to_bits(), 0);
+        assert_eq!(vmul(-1e-20, 1e-20).to_bits(), 0x8000_0000);
+        assert_eq!(vmul(f32::NAN, 1.0).to_bits(), 0x7FC0_0000);
+        assert_eq!(vfma(1.0, tiny, 1e30).to_bits(), 1.0f32.to_bits());
+        assert_eq!(zdiv(f32::MIN_POSITIVE, 2.0).to_bits(), 0);
+    }
+
+    /// CPUNK's exp (SigmoidImpl/TanhImpl<CortexA15>) written with the platform's fused multiply-add.
+    fn ref_exp(x: f32) -> f32 {
+        let c = f32::from_bits;
+        let x = x.min(c(0x42B1_7217)).max(c(0xC2AE_AC4F));
+        let t = 12582912.0f32 + x * c(0x3FB8_AA3B);
+        let n = (t.to_bits() as i32).wrapping_add(0xB4C0_0000u32 as i32);
+        let nf = n as f32;
+        let r = nf.mul_add(c(0xBF31_7200), x);
+        let r = nf.mul_add(c(0xB5BF_BE8E), r);
+        let mut p = r.mul_add(c(0x3C08_0161), c(0x3D2B_A65B));
+        for k in [0x3E2A_ACD3, 0x3EFF_FEC6, 0x3F7F_FFFC, 0x3F80_0000] {
+            p = p.mul_add(r, c(k));
+        }
+        f32::from_bits(((n as u32) << 23).wrapping_add(p.to_bits()))
+    }
+
+    #[test]
+    fn activation_bits() {
+        let xs = [-100.0f32, -87.0, -20.0, -5.0, -1.0, -0.1, -1e-6, 0.0, 1e-6, 0.1, 0.5, 1.0, 5.0, 20.0, 88.0, 100.0];
+        let sig = [
+            0x0080_0026u32, 0x00B3_3687, 0x310D_A432, 0x3BDB_4FB2, 0x3E89_B2B1, 0x3EF3_35ED, 0x3EFF_FFF7, 0x3F00_0000,
+            0x3F00_0004, 0x3F06_6509, 0x3F1F_597E, 0x3F3B_26A8, 0x3F7E_4961, 0x3F80_0000, 0x3F80_0000, 0x3F80_0000,
+        ];
+        let tanh = [
+            0xBF80_0000u32, 0xBF80_0000, 0xBF80_0000, 0xBF7F_FA0C, 0xBF42_F7D5, 0xBDCC_1EC4, 0xB588_0009, 0x0000_0000,
+            0x3587_FFF8, 0x3DCC_1EB6, 0x3EEC_9A9F, 0x3F42_F7D6, 0x3F7F_FA0D, 0x3F80_0000, 0x3F80_0000, 0x3F80_0000,
+        ];
+        assert_eq!(bits(&xs.map(cpunk_sigmoid)), sig);
+        assert_eq!(bits(&xs.map(cpunk_tanh)), tanh);
+        let mut next = xorshift(7);
+        for _ in 0..200_000 {
+            let x = f32::from_bits(next() % 0x42C8_0000 | (next() & 0x8000_0000));
+            let e = ref_exp(x);
+            assert_eq!(cpunk_sigmoid(x).to_bits(), (e / (e + 1.0)).to_bits(), "sigmoid({x:e})");
+            let e = ref_exp(x + x);
+            assert_eq!(cpunk_tanh(x).to_bits(), ((e + -1.0) / (e + 1.0)).to_bits(), "tanh({x:e})");
+        }
     }
 
     #[test]

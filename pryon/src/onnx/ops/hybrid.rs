@@ -2,7 +2,7 @@
 
 use super::{arg, opt_arg, Attrs, Built, Op, Value};
 use crate::cpunk::{qmatmul_row, QWeights, MAX_COLS};
-use crate::num::{sigmoid, tanh};
+use crate::num::{cpunk_sigmoid, cpunk_tanh, fmaf, vadd, vmul};
 use crate::onnx::proto::NodeProto;
 use crate::onnx::tensor::{numel, Data, DType};
 
@@ -102,7 +102,6 @@ pub(super) fn hybrid_gemm(_: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -
 
 struct Conv {
     wq: QWeights,
-    bias: bool,
     /// Input `[batch, c, h, w]`, kernel `(kh, kw)`, strides and output `(oh, ow)`.
     x: [usize; 4],
     k: (usize, usize),
@@ -117,7 +116,6 @@ impl Op for Conv {
         let (y, scratch) = outs.split_at_mut(1);
         let (patch, row) = scratch[0].split_at_mut(self.wq.cols);
         let mut q = [0i8; MAX_COLS];
-        let bias = self.bias.then(|| ins[5]);
         for b in 0..batch {
             for i in 0..oh {
                 for j in 0..ow {
@@ -128,7 +126,7 @@ impl Op for Conv {
                             patch[(ci * kh + u) * kw..][..kw].copy_from_slice(&ins[0][at..at + kw]);
                         }
                     }
-                    qmatmul_row(patch, &self.wq, bias, &mut q, row);
+                    qmatmul_row(patch, &self.wq, Some(ins[5]), &mut q, row);
                     for (f, &v) in row.iter().enumerate() {
                         y[0][((b * n + f) * oh + i) * ow + j] = v;
                     }
@@ -142,7 +140,7 @@ impl Op for Conv {
     }
 }
 
-/// `(x, w, sw, zw, sums, bias)`: valid NCHW convolution through im2col rows, bias added in the kernel.
+/// `(x, w, sw, zw, sums, bias)`: valid NCHW convolution through im2col rows, bias added in the kernel (required).
 pub(super) fn hybrid_conv(_: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -> Result<Built, String> {
     let x = float_arg(ins, 0)?;
     let &[batch, c, h, w] = x.dims() else { return Err(format!("input of shape {:?}", x.dims())) };
@@ -174,15 +172,15 @@ pub(super) fn hybrid_conv(_: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -
         _ => return Err(format!("weights of shape {wd:?} for {c} channels and kernel {k:?}")),
     };
     let wq = qweights(ins, 1, n, cols, wv.to_vec())?;
-    let bias = opt_arg(ins, 5).is_some();
-    if bias {
-        float_vec(ins, 5, n)?;
+    if opt_arg(ins, 5).is_none() {
+        return Err("input 5 (bias) missing".into());
     }
+    float_vec(ins, 5, n)?;
     no_more_inputs(ins, 6)?;
     let o = ((h - k.0) / s.0 + 1, (w - k.1) / s.1 + 1);
     let out = vec![batch, n, o.0, o.1];
     numel(&out)?;
-    let op = Conv { wq, bias, x: [batch, c, h, w], k, s, o };
+    let op = Conv { wq, x: [batch, c, h, w], k, s, o };
     Ok(Built::Runtime { op: Box::new(op), outs: vec![(out, DType::F32)] })
 }
 
@@ -211,21 +209,22 @@ impl Op for Lstm {
         let n_in = self.w.cols;
         for t in 0..self.steps {
             for (r, gr) in gx.chunks_exact_mut(g4).enumerate() {
-                qmatmul_row(&ins[0][(t * self.xrows + r) * n_in..][..n_in], &self.w, None, &mut q, gr);
+                qmatmul_row(&ins[0][(t * self.xrows + r) * n_in..][..n_in], &self.w, Some(wb), &mut q, gr);
             }
             for l in 0..lanes {
                 let (hl, cl) = (&mut h[l * hid..][..hid], &mut c[l * hid..][..hid]);
-                qmatmul_row(hl, &self.r, None, &mut q, g);
+                // libpryon fuses Wb into the input product and Rb into the recurrent one, then adds the two
+                qmatmul_row(hl, &self.r, Some(rb), &mut q, g);
                 let gxl = &gx[if self.xrows == 1 { 0 } else { l * g4 }..][..g4];
-                for j in 0..g4 {
-                    g[j] = ((gxl[j] + g[j]) + wb[j]) + rb[j];
+                for (gj, &x) in g.iter_mut().zip(gxl) {
+                    *gj = vadd(x, *gj);
                 }
-                // gates i, o, f, c
+                // gates i, o, f, c; the cell update is bionic fmaf (0xc62b88), the rest CPUNK NEON
                 for u in 0..hid {
-                    let (i, og, f) = (sigmoid(g[u]), sigmoid(g[hid + u]), sigmoid(g[2 * hid + u]));
-                    let cn = f * cl[u] + i * tanh(g[3 * hid + u]);
+                    let (i, f) = (cpunk_sigmoid(g[u]), cpunk_sigmoid(g[2 * hid + u]));
+                    let cn = fmaf(i, cpunk_tanh(g[3 * hid + u]), vmul(f, cl[u]));
                     cl[u] = cn;
-                    hl[u] = og * tanh(cn);
+                    hl[u] = vmul(cpunk_sigmoid(g[hid + u]), cpunk_tanh(cn));
                 }
                 o[0][(t * lanes + l) * hid..][..hid].copy_from_slice(hl);
             }
@@ -298,4 +297,62 @@ pub(super) fn hybrid_lstm(n: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -
     let op = Lstm { w, r, hid, lanes, steps, xrows, nout };
     numel(&[op.scratch()])?;
     Ok(Built::Runtime { op: Box::new(op), outs })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::num::{cpunk_sigmoid, cpunk_tanh, fmaf};
+
+    /// One-lane, one-step LSTM with hidden size `hid`; `w` and `r` hold one weight per gate row (same columns).
+    fn lstm(n_in: usize, hid: usize, w: (&[i8], &[f32]), r: (&[i8], &[f32])) -> Lstm {
+        let q = |rows: usize, cols: usize, (w, sw): (&[i8], &[f32])| {
+            let sums: Vec<i64> = w.chunks(cols).map(|r| r.iter().map(|&v| i64::from(v)).sum()).collect();
+            QWeights::new(rows, cols, w.to_vec(), sw.to_vec(), vec![0; rows], &sums).unwrap()
+        };
+        Lstm { w: q(4 * hid, n_in, w), r: q(4 * hid, hid, r), hid, lanes: 1, steps: 1, xrows: 1, nout: 3 }
+    }
+
+    fn run(op: &Lstm, x: &[f32], b: &[f32], h0: &[f32], c0: &[f32]) -> (Vec<f32>, Vec<f32>) {
+        let n = op.hid;
+        let (mut y, mut yh, mut yc, mut s) = (vec![0.0; n], vec![0.0; n], vec![0.0; n], vec![0.0; op.scratch()]);
+        let mut ins: [&[f32]; 13] = [&[]; 13];
+        (ins[0], ins[9], ins[11], ins[12]) = (x, b, h0, c0);
+        op.run(&ins, &mut [&mut y, &mut yh, &mut yc, &mut s]);
+        assert_eq!(y, yh);
+        (yh, yc)
+    }
+
+    /// libpryon's cell (0xc626cc): i, o, f, c gates; c = fmaf(i, g, f·c0), h = o·tanh(c).
+    fn cell(g: [f32; 4], c0: f32) -> (f32, f32) {
+        let c = fmaf(cpunk_sigmoid(g[0]), cpunk_tanh(g[3]), cpunk_sigmoid(g[2]) * c0);
+        (cpunk_sigmoid(g[1]) * cpunk_tanh(c), c)
+    }
+
+    #[test]
+    fn lstm_gate_sum_order() {
+        // x = h0 = −1 are constant rows, so W·x = −sw_w and R·h0 = −sw_r exactly; the biases ride in each product
+        let (sw_w, sw_r) = ([0.5f32, 0.205, 0.25, 0.205], [0.125f32, 0.897, 0.375, 0.897]);
+        let b = [0.1f32, -0.213, 0.2, -0.213, 0.05, 1.26, -0.1, 1.26];
+        let op = lstm(1, 1, (&[1; 4], &sw_w), (&[1; 4], &sw_r));
+        let (h, c) = run(&op, &[-1.0], &b, &[-1.0], &[0.7]);
+        let g: [f32; 4] = std::array::from_fn(|j| (-sw_w[j] + b[j]) + (-sw_r[j] + b[4 + j]));
+        let want = cell(g, 0.7);
+        assert_eq!((h[0].to_bits(), c[0].to_bits()), (want.0.to_bits(), want.1.to_bits()));
+        let old: [f32; 4] = std::array::from_fn(|j| ((-sw_w[j] + -sw_r[j]) + b[j]) + b[4 + j]);
+        assert_ne!(cell(old, 0.7), want, "the old order gives the same h and c");
+    }
+
+    #[test]
+    fn recurrent_saturates_127() {
+        // h0 = [−63.5, 63.5]: s = 1, z = 64, and 63.5 quantises to 128, held at 127 (LEDGER's tie rows)
+        let sw_r = [0.01f32, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08];
+        let op = lstm(1, 2, (&[1; 8], &[0.0; 8]), (&[0, 1].repeat(8), &sw_r));
+        let (h, c) = run(&op, &[0.0], &[0.0; 16], &[-63.5, 63.5], &[0.5, -0.5]);
+        // R·h for the column picking h[1]: dot 127, c = 127 − 2·64, acc = 127 − (−1·0 + 64·1) = 63
+        let g = |u: usize| -> [f32; 4] { std::array::from_fn(|k| sw_r[2 * k + u] * 63.0) };
+        let want = [cell(g(0), 0.5), cell(g(1), -0.5)];
+        assert_eq!([h[0], h[1]], [want[0].0, want[1].0]);
+        assert_eq!([c[0], c[1]], [want[0].1, want[1].1]);
+    }
 }

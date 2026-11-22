@@ -263,6 +263,7 @@ fn conv_matches_ref() {
     assert_bits("conv_stride2_bias");
 }
 
+// pypryon's LSTM and constant-row contracts approximate libpryon's: a bound here, the bits in capture/unit tests
 #[test]
 fn lstm_matches_ref() {
     assert_close("lstm_h20_16lanes_t3", 1e-5);
@@ -326,6 +327,20 @@ fn conv_dilation_refused() {
         );
     let e = unsupported(load(m, &[("x", &[1, 1, 4, 4])]));
     assert!(e.contains("HybridConv (node c)") && e.contains("dilations"), "{e}");
+}
+
+#[test]
+fn conv_missing_bias_refused() {
+    let m = ModelBuilder::new(6, 11)
+        .input("x", F, &d(&[1, 1, 4, 4]))
+        .output("y", F, &d(&[1, 1, 3, 4]))
+        .init_i8("w", &[1, 2], &[1, 1])
+        .init_f32("sw", &[1], &[1.0])
+        .init_i32("zw", &[1], &[0])
+        .init_i32("sums", &[1], &[2])
+        .node_named("c", "HybridConv", &["x", "w", "sw", "zw", "sums"], &["y"], &[("kernel_shape", Attr::Ints(vec![2, 1]))]);
+    let e = unsupported(load(m, &[("x", &[1, 1, 4, 4])]));
+    assert!(e.contains("HybridConv (node c)") && e.contains("bias"), "{e}");
 }
 
 #[test]

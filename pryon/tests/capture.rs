@@ -276,6 +276,26 @@ fn node_table(clip: &Path, stage: &str) -> HashMap<String, (usize, String, Vec<S
     out
 }
 
+/// The graph inputs a step feeds: LSTM and recurrent state, then the stage input.
+fn fed(st: &pryon::wake::StageSpec) -> Vec<&str> {
+    let mut inputs: Vec<&str> = st.lstm.iter().chain(&st.recurrent).map(|(i, _)| i.as_str()).collect();
+    inputs.push(match &st.inputs[..] {
+        [StageInput::Audio(n)] => n,
+        [StageInput::Artifact { input, .. }] => input,
+        _ => panic!("stage {}: {} inputs; the test feeds one", st.name, st.inputs.len()),
+    });
+    inputs
+}
+
+fn feed(sess: &mut Session, graph: &pryon::onnx::Graph, step: &Step, inputs: &[&str]) {
+    for input in inputs {
+        let i = graph.input_index(input).unwrap();
+        let v = step.values(input);
+        assert_eq!(v.len(), sess.input(i).len(), "{}: {input} values", step.dir.display());
+        sess.input_mut(i).copy_from_slice(&v);
+    }
+}
+
 /// Fed libpryon's inputs and state per step, every node output is bit-equal; the failure message is the report.
 #[test]
 fn capture_nodes_bits() {
@@ -285,23 +305,13 @@ fn capture_nodes_bits() {
     for c in &caps {
         let set = &c.set;
         for (s, st) in set.spec.stages.iter().enumerate() {
-            let mut inputs: Vec<&str> = st.lstm.iter().chain(&st.recurrent).map(|(i, _)| i.as_str()).collect();
-            inputs.push(match &st.inputs[..] {
-                [StageInput::Audio(n)] => n,
-                [StageInput::Artifact { input, .. }] => input,
-                _ => panic!("stage {}: {} inputs; the test feeds one", st.name, st.inputs.len()),
-            });
+            let inputs = fed(st);
             let mut r = StageReport::default();
             for clip in &c.clips {
                 let nodes = node_table(clip, &st.name);
                 let mut sess = Session::new(set.graphs[s].clone());
                 for (t, step) in steps(clip, &st.name).iter().enumerate() {
-                    for input in &inputs {
-                        let i = set.graphs[s].input_index(input).unwrap();
-                        let v = step.values(input);
-                        assert_eq!(v.len(), sess.input(i).len(), "{}: {input} values", step.dir.display());
-                        sess.input_mut(i).copy_from_slice(&v);
-                    }
+                    feed(&mut sess, &set.graphs[s], step, &inputs);
                     let mut differ: HashSet<String> = HashSet::new();
                     sess.run_traced(&mut |tensor, _dims, ours| {
                         let got = match step.saved(tensor) {
@@ -435,4 +445,102 @@ fn stage_report(set: &LoadedSet, stage: &str, clips: usize, r: &StageReport) -> 
         o += &format!("   MISSING from the captures (traced by the engine): {}\n", list(&r.missing));
     }
     o
+}
+
+/// One Hybrid node output over the captured steps.
+#[derive(Default)]
+struct HybridStat {
+    op: String,
+    steps: usize,
+    equal: usize,
+    /// Steps whose captured node inputs are all finite (the fw warm-up feeds NaN and heap garbage).
+    finite: usize,
+    finite_equal: usize,
+    max_ulp: u32,
+    max_abs: f32,
+    first: Option<(String, usize)>,
+}
+
+/// Each Hybrid node run on libpryon's captured inputs (every traced value is replaced by libpryon's once compared,
+/// so no divergence upstream reaches it) gives libpryon's outputs bit for bit on every captured step.
+#[test]
+fn capture_hybrid_bits() {
+    let Some(caps) = captured() else { return };
+    let mut report = String::new();
+    let mut bad = false;
+    for c in &caps {
+        let set = &c.set;
+        for (s, st) in set.spec.stages.iter().enumerate() {
+            let inputs = fed(st);
+            let mut stats: BTreeMap<(usize, String), HybridStat> = BTreeMap::new();
+            let mut missing: BTreeMap<String, usize> = BTreeMap::new();
+            let mut steps_run = 0;
+            for clip in &c.clips {
+                let nodes = node_table(clip, &st.name);
+                let mut sess = Session::new(set.graphs[s].clone());
+                for (t, step) in steps(clip, &st.name).iter().enumerate() {
+                    feed(&mut sess, &set.graphs[s], step, &inputs);
+                    sess.run_forced(&mut |tensor, _dims, ours| {
+                        let (node, op, ins) = nodes.get(tensor).unwrap_or_else(|| panic!("{tensor}: no node"));
+                        let got = match step.saved(tensor) {
+                            Saved::Values(v) => v,
+                            Saved::Unsaved => return,
+                            Saved::Absent => return *missing.entry(tensor.to_string()).or_default() += 1,
+                        };
+                        assert_eq!(got.len(), ours.len(), "{} {tensor}: values", step.dir.display());
+                        if op.starts_with("Hybrid") {
+                            let (n, u, _) = diff(&got, ours);
+                            let finite =
+                                ins.iter().all(|x| step.opt(x).is_none_or(|v| v.iter().all(|y| y.is_finite())));
+                            let h = stats.entry((*node, tensor.to_string())).or_default();
+                            h.op = op.clone();
+                            h.steps += 1;
+                            h.equal += usize::from(n == 0);
+                            h.finite += usize::from(finite);
+                            h.finite_equal += usize::from(finite && n == 0);
+                            if n > 0 {
+                                h.max_ulp = h.max_ulp.max(u);
+                                let d = got.iter().zip(&*ours).map(|(a, b)| (a - b).abs()).filter(|d| d.is_finite());
+                                h.max_abs = d.fold(h.max_abs, f32::max);
+                                h.first.get_or_insert((name(clip), t));
+                            }
+                        }
+                        ours.copy_from_slice(&got);
+                    });
+                    steps_run += 1;
+                }
+            }
+            let ulp = |u: u32| if u == u32::MAX { "NaN/number".to_string() } else { u.to_string() };
+            report += &format!(
+                "== {} ({}) stage {}: {steps_run} steps, {} Hybrid outputs\n",
+                set.spec.dir.file_name().unwrap_or_default().to_string_lossy(),
+                set.spec.checksum,
+                st.name,
+                stats.len()
+            );
+            for ((node, tensor), h) in &stats {
+                let first = h.first.as_ref().map_or(String::new(), |(c, t)| format!(", first {c} step {t}"));
+                report += &format!(
+                    "   node {node:3} {:<10} {tensor}: {}/{} steps bit-equal ({}/{} with finite inputs), max ulp {} \
+                     (|d| {:.3e}){first}\n",
+                    h.op,
+                    h.equal,
+                    h.steps,
+                    h.finite_equal,
+                    h.finite,
+                    ulp(h.max_ulp),
+                    h.max_abs
+                );
+                bad |= h.equal != h.steps;
+            }
+            if !missing.is_empty() {
+                let list: Vec<&str> = missing.keys().map(String::as_str).collect();
+                report += &format!("   MISSING from the captures (traced by the engine): {}\n", list.join(", "));
+                bad = true;
+            }
+            assert!(steps_run > 0 && !stats.is_empty(), "stage {}: no Hybrid output compared", st.name);
+        }
+    }
+    println!("{report}");
+    assert!(!bad, "Hybrid nodes differ from libpryon:\n{report}");
 }

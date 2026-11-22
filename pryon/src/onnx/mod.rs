@@ -105,10 +105,16 @@ impl Session {
     /// `run`, calling `f(name, shape, data)` for every runtime value right after it is computed.
     #[doc(hidden)]
     pub fn run_traced(&mut self, f: &mut dyn FnMut(&str, &[usize], &[f32])) {
+        self.exec(Some(&mut |n, d, x| f(n, d, x)));
+    }
+
+    /// `run_traced` whose callback may overwrite each value before later nodes read it (per-node comparisons).
+    #[doc(hidden)]
+    pub fn run_forced(&mut self, f: &mut dyn FnMut(&str, &[usize], &mut [f32])) {
         self.exec(Some(f));
     }
 
-    fn exec(&mut self, mut trace: Option<&mut dyn FnMut(&str, &[usize], &[f32])>) {
+    fn exec(&mut self, mut trace: Option<&mut dyn FnMut(&str, &[usize], &mut [f32])>) {
         let base = self.arena.as_mut_ptr();
         for s in &self.graph.plan.steps {
             let mut ins: [&[f32]; MAX_IO] = [&[]; MAX_IO];
@@ -125,7 +131,7 @@ impl Session {
             }
             s.op.run(&ins[..s.ins.len()], &mut outs[..s.outs.len()]);
             if let Some(f) = trace.as_mut() {
-                for ((name, dims), data) in s.names.iter().zip(&s.dims).zip(&outs) {
+                for ((name, dims), data) in s.names.iter().zip(&s.dims).zip(outs.iter_mut()) {
                     if !name.is_empty() {
                         f(name, dims, data);
                     }
