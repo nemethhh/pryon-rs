@@ -310,7 +310,7 @@ fn classifier(d: &Doc, c: &Obj, components: usize) -> Result<ClassifierSpec, Err
             if window == 0 {
                 return Err(d.unsup(format!("{} = 0", c.at("window-size"))));
             }
-            // absent in the DAVS sets: no trimming
+            // fitted: pypryon (absent in the DAVS sets; window-1 max over all lanes matched the oracle)
             let trim_tail = d.opt_int(c, "trim-tail")?.unwrap_or(0);
             single(ClassifierSpec::MovingAverageMaxPool { window, trim_tail })
         }
@@ -491,6 +491,25 @@ pub(crate) fn spotters(path: &Path, single: Option<&str>, words_file: &str) -> R
         }
     }
     Ok(out)
+}
+
+/// tensor_artifacts.json: the names of the in-memory artifacts stages may publish.
+pub(crate) fn tensor_artifacts(path: &Path) -> Result<Vec<String>, Error> {
+    let d = Doc::load(path)?;
+    let top = d.top(&["tensor_artifacts", "object_type_name", "object_type_version"])?;
+    d.pin_str(&top, "object_type_name", &["tensor_artifacts_list_config"], true)?;
+    d.pin_num(&top, "object_type_version", 1.0, true)?;
+    let mut names: Vec<String> = Vec::new();
+    for a in d.items(&top, "tensor_artifacts", &["name", "format", "protocol"])? {
+        d.pin_str(&a, "format", &["in-memory"], true)?;
+        d.pin_str(&a, "protocol", &["runtime"], true)?;
+        let n = d.str(&a, "name")?;
+        if names.iter().any(|x| x == n) {
+            return Err(d.bad(format!("artifact {n} listed twice")));
+        }
+        names.push(n.to_string());
+    }
+    Ok(names)
 }
 
 /// `word index` lines, in file order.

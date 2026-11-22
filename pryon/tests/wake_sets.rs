@@ -391,24 +391,66 @@ fn real_sets_load() {
 #[test]
 fn de_sets_refused() {
     let Some(root) = env_dir("PRYON_WAKE_SETS_DIR") else { return };
-    for set in ["alexa-de-DE", "amazon-de-DE"] {
+    let expect = [
+        (
+            "alexa-de-DE",
+            "BDPGeneratedFiles/kw.cfg.json",
+            "field keyword-orchestra.keyword-spotters[0].spotter.probabilistic-accept-lock-period",
+        ),
+        ("amazon-de-DE", "pryon.config", "key scorer.initialize.publish_frame_count"),
+    ];
+    for (set, file, what) in expect {
         let dir = root.join(set);
         if !dir.join("pryon.manifest").is_file() {
             println!("skipped: {set} not extracted under PRYON_WAKE_SETS_DIR");
             continue;
         }
-        let r = load_set(&dir);
-        let m = message(load_set(&dir));
-        unsupported(r);
-        println!("{set}: {m}");
+        let (f, w) = unsupported(load_set(&dir));
+        println!("{set}: {}: unsupported {w}", f.display());
+        assert_eq!(f, dir.join(file), "{set}");
+        assert_eq!(w, what, "{set}");
     }
+}
+
+#[test]
+fn paths_confined_to_the_set() {
+    let d = davs("escape-include");
+    append(&d.join("encoder/pryon.config"), "INCLUDE \"../../outside.config\"\n");
+    let (file, what) = unsupported(load_set(&d));
+    assert!(file.ends_with("encoder/pryon.config") && what.contains("INCLUDE") && what.contains("outside"), "{what}");
+
+    let d = davs("escape-graph");
+    let nem = d.join("alexa-wakeworddecoder/nemort_scorer_config_decoder_alexa.json");
+    edit(&nem, r#""det_vrf_multi_lstm.int8.onnx""#, r#""/etc/hostname""#);
+    let (file, what) = unsupported(load_set(&d));
+    assert_eq!(file, nem);
+    assert!(what.contains("model_filepath") && what.contains("outside the set directory"), "{what}");
+
+    let d = davs("escape-key");
+    edit(&d.join("BDPGeneratedFiles/pryon.config"), r#""words.shrunk.txt""#, r#""../../words.shrunk.txt""#);
+    let (_, what) = unsupported(load_set(&d));
+    assert!(what.contains("id2word.mapping_filepath") && what.contains("outside"), "{what}");
+
+    let d = davs("symlink-read");
+    let words = d.join("BDPGeneratedFiles/words.shrunk.txt");
+    std::fs::rename(&words, d.join("BDPGeneratedFiles/words.real")).unwrap();
+    std::os::unix::fs::symlink("words.real", &words).unwrap();
+    let (_, what) = unsupported(load_set(&d));
+    assert!(what.contains("id2word.mapping_filepath") && what.contains("symlink"), "{what}");
+
+    // an unread symlink still changes nothing silently: the fallback checksum refuses it
+    let d = davs("symlink-checksum");
+    std::os::unix::fs::symlink("BDPGeneratedFiles/words.shrunk.txt", d.join("notes.txt")).unwrap();
+    let (file, what) = unsupported(load_set(&d));
+    assert!(file.ends_with("notes.txt") && what.contains("symlink"), "{what}");
 }
 
 #[test]
 fn cross_file_checks_named() {
     let kw = "BDPGeneratedFiles/kw.cfg.json";
     let dec = "BDPGeneratedFiles/decoders.cfg.json";
-    let cases: [(&str, &str, &str, &str); 6] = [
+    let ta = "encoder/tensor_artifacts.json";
+    let cases: [(&str, &str, &str, &str); 9] = [
         (kw, r#""scorer-index": 1"#, r#""scorer-index": 9"#, "index 9"),
         (kw, r#""name": "ww_det_scores""#, r#""name": "ww_det""#, "ww_det is not an output of scorer ww_alexa"),
         (kw, r#""exponential-decay", "decay-rate": 0.6"#, r#""median", "decay-rate": 0.6"#, "classifier.type = median"),
@@ -419,6 +461,9 @@ fn cross_file_checks_named() {
       "scorer.num_dnn_outputs": 4"#, r#""scorer.initialize.frame_count": 2,
       "scorer.feat.dimensions": 16,
       "scorer.num_dnn_outputs": 4"#, "default_skip_frame_count = 0 with frame_count 2"),
+        (ta, r#""name": "encoder_output""#, r#""name": "encoder_out""#, "encoder_output is published but not in"),
+        (ta, r#""in-memory""#, r#""disk""#, "tensor_artifacts[0].format = disk"),
+        (ta, r#""tensor_artifacts_list_config""#, r#""other_config""#, "object_type_name = other_config"),
     ];
     for (i, (file, from, to, want)) in cases.iter().enumerate() {
         let d = davs(&format!("cross{i}"));

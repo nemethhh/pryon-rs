@@ -2,7 +2,7 @@
 
 use super::kwcfg::{self, ClassifierSpec, MachineSpec, Nemort, OutputType, SpotterSpec};
 use crate::json::Doc;
-use super::pconfig::{read_manifest, read_text, rel, unsupported, PConfig};
+use super::pconfig::{inside, join, read_manifest, read_text, rel, unsupported, PConfig};
 use crate::lfbe::LfbeSpec;
 use crate::onnx;
 use crate::Error;
@@ -100,7 +100,7 @@ const FIRMWARE_KEYS: &[(&str, Key)] = &[
 const DAVS_KEYS: &[(&str, Key)] = &[
     ("scorer.single.config_filepath", Used),
     ("scorer.multi.config_filepath", Used),
-    ("search.tensor_artifacts_list_file", Ignored),
+    ("search.tensor_artifacts_list_file", Used),
     ("ntt.config_filepath", Ignored),
     ("uom_speakerid.config_filepath", Ignored),
     ("scd.config_filepath", Ignored),
@@ -127,6 +127,12 @@ fn check_keys(cfg: &PConfig, top: &Path, layout: &[(&str, Key)]) -> Result<(), E
 
 fn setting<'a>(cfg: &'a PConfig, top: &Path, key: &str) -> Result<&'a super::pconfig::Setting, Error> {
     cfg.get(key).ok_or_else(|| Error::Config(format!("{}: missing key {key}", top.display())))
+}
+
+/// The file a key names, confined to the set directory.
+fn path_key(cfg: &PConfig, top: &Path, key: &str) -> Result<PathBuf, Error> {
+    let s = setting(cfg, top, key)?;
+    inside(&cfg.dir, s.path(), &s.file, key)
 }
 
 fn int_key(cfg: &PConfig, top: &Path, key: &str) -> Result<usize, Error> {
@@ -193,7 +199,8 @@ impl Builder<'_> {
         if self.stages.iter().any(|s| s.name == name) {
             return Err(unsupported(&n.file, format!("a second stage named {name}")));
         }
-        let g = onnx::interface(&n.graph)?;
+        let graph = inside(self.dir, n.graph.clone(), &n.file, "model_filepath")?;
+        let g = onnx::interface(&graph)?;
         let gname = rel(self.dir, &n.graph);
         let missing =
             |what: &str, x: &str| Error::Config(format!("{}: {what} {x} is not declared by {gname}", n.file.display()));
@@ -316,7 +323,8 @@ impl Builder<'_> {
 }
 
 /// Loads the set whose `pryon.manifest` is in `dir`; refuses anything the engine does not implement.
-pub fn load_set(dir: &Path) -> Result<SetSpec, Error> {
+pub fn load_set(given: &Path) -> Result<SetSpec, Error> {
+    let dir = &join(given, ".");
     let m = read_manifest(dir)?;
     let top = m.config.clone();
     let cfg = PConfig::read(dir, &top)?;
@@ -324,25 +332,25 @@ pub fn load_set(dir: &Path) -> Result<SetSpec, Error> {
     check_keys(&cfg, &top, if davs { DAVS_KEYS } else { FIRMWARE_KEYS })?;
     let fe = fe_spec(&cfg, &top)?;
     let words_set = setting(&cfg, &top, "id2word.mapping_filepath")?;
-    let words = kwcfg::words(&words_set.path())?;
+    let words = kwcfg::words(&path_key(&cfg, &top, "id2word.mapping_filepath")?)?;
     let words_name = Path::new(&words_set.value).file_name().unwrap_or_default().to_string_lossy().into_owned();
-    let kw = setting(&cfg, &top, "keyword_spotter.config_filepath")?.path();
+    let kw = path_key(&cfg, &top, "keyword_spotter.config_filepath")?;
     let mut b = Builder { dir, fe_bins: fe.bins, stages: Vec::new(), published: Vec::new(), components: Vec::new() };
 
     let spotters = if davs {
         let spotters = kwcfg::spotters(&kw, None, &words_name)?;
-        let enc = Doc::load(&setting(&cfg, &top, "scorer.single.config_filepath")?.path())?;
+        let enc = Doc::load(&path_key(&cfg, &top, "scorer.single.config_filepath")?)?;
         let list = kwcfg::scorers(&enc)?;
         let [e] = &list[..] else {
             return Err(enc.unsup(format!("{} scorers (one encoder implemented)", list.len())));
         };
         let e = kwcfg::scorer(&enc, e)?;
-        let n = kwcfg::nemort(&e.nemort)?;
+        let n = kwcfg::nemort(&inside(dir, e.nemort.clone(), &enc.path, "scorer.model_filepath")?)?;
         if n.input.1.is_some() {
             return Err(unsupported(&n.file, "an encoder that reads an artifact"));
         }
         b.stage(&e.name, n, e.frames, e.feat_dim, Some((e.outputs, &enc.path)))?;
-        let dec = Doc::load(&setting(&cfg, &top, "scorer.multi.config_filepath")?.path())?;
+        let dec = Doc::load(&path_key(&cfg, &top, "scorer.multi.config_filepath")?)?;
         let list = kwcfg::scorers(&dec)?;
         for s in &spotters {
             if !list.iter().any(|o| dec.str(o, "name").ok() == Some(s.scorer.as_str())) {
@@ -356,9 +364,15 @@ pub fn load_set(dir: &Path) -> Result<SetSpec, Error> {
             // decoders no spotter reads (DVAD, speaker ID) are never opened
             if spotters.iter().any(|s| s.scorer == name) {
                 let c = kwcfg::scorer(&dec, o)?;
-                let n = kwcfg::nemort(&c.nemort)?;
+                let key = format!("{}.scorer.model_filepath", c.name);
+                let n = kwcfg::nemort(&inside(dir, c.nemort.clone(), &dec.path, &key)?)?;
                 b.stage(&c.name, n, c.frames, c.feat_dim, Some((c.outputs, &dec.path)))?;
             }
+        }
+        let list_file = path_key(&cfg, &top, "search.tensor_artifacts_list_file")?;
+        let listed = kwcfg::tensor_artifacts(&list_file)?;
+        if let Some((a, _)) = b.published.iter().find(|(a, _)| !listed.contains(a)) {
+            return Err(unsupported(&list_file, format!("artifact {a} is published but not in tensor_artifacts")));
         }
         spotters
     } else {
@@ -369,7 +383,7 @@ pub fn load_set(dir: &Path) -> Result<SetSpec, Error> {
             let what = format!("{k} = {} with frame_count {frames} (implemented: frame_count - 1)", skip.value);
             return Err(unsupported(&skip.file, what));
         }
-        let n = kwcfg::nemort(&setting(&cfg, &top, "scorer.nemort_config_json_filepath")?.path())?;
+        let n = kwcfg::nemort(&path_key(&cfg, &top, "scorer.nemort_config_json_filepath")?)?;
         if n.input.1.is_some() {
             return Err(unsupported(&n.file, "a single-graph set whose graph reads an artifact"));
         }
@@ -379,9 +393,9 @@ pub fn load_set(dir: &Path) -> Result<SetSpec, Error> {
     b.check_spotters(&kw, &spotters, &words)?;
 
     let machine = match cfg.get("keyword_spotter.op_config_filepath") {
-        Some(s) => {
+        Some(_) => {
             let keywords: Vec<&str> = spotters.iter().filter(|s| !s.auxiliary).map(|s| s.name.as_str()).collect();
-            Some(kwcfg::machine(&s.path(), &keywords)?)
+            Some(kwcfg::machine(&path_key(&cfg, &top, "keyword_spotter.op_config_filepath")?, &keywords)?)
         }
         None => None,
     };
@@ -389,10 +403,11 @@ pub fn load_set(dir: &Path) -> Result<SetSpec, Error> {
         Some(p) => read_text(p)?.trim().to_string(),
         None => fnv_tree(dir)?,
     };
-    Ok(SetSpec { dir: dir.to_path_buf(), checksum, fe, stages: b.stages, spotters, words, machine })
+    Ok(SetSpec { dir: given.to_path_buf(), checksum, fe, stages: b.stages, spotters, words, machine })
 }
 
 /// FNV-1a-64 over every regular file under `dir`, by sorted relative path: the path's bytes, then the file's.
+/// Symlinks are refused, as the loader refuses them, so the hash covers exactly what can be read.
 fn fnv_tree(dir: &Path) -> Result<String, Error> {
     fn walk(root: &Path, d: &Path, out: &mut Vec<(String, PathBuf)>) -> Result<(), Error> {
         let io = |source| Error::Io { path: d.to_path_buf(), source };
@@ -401,6 +416,8 @@ fn fnv_tree(dir: &Path) -> Result<String, Error> {
             let t = std::fs::symlink_metadata(&p).map_err(|source| Error::Io { path: p.clone(), source })?.file_type();
             if t.is_dir() {
                 walk(root, &p, out)?;
+            } else if t.is_symlink() {
+                return Err(unsupported(&p, "symlink in the set (checksum covers regular files only)"));
             } else if t.is_file() {
                 out.push((rel(root, &p), p));
             }

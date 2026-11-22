@@ -40,6 +40,27 @@ pub(crate) fn unsupported(file: &Path, what: impl Into<String>) -> Error {
     Error::Unsupported { file: file.to_path_buf(), what: what.into() }
 }
 
+/// `path` (folded by `join`) must lie under `dir` with no symlink below `dir`; `file` and `key` name the reference.
+pub(crate) fn inside(dir: &Path, path: PathBuf, file: &Path, key: &str) -> Result<PathBuf, Error> {
+    use std::path::Component;
+    let bad = |why: &str| unsupported(file, format!("{key} = {}: {why}", rel(dir, &path)));
+    let r = path.strip_prefix(dir).map_err(|_| bad("outside the set directory"))?;
+    if r.as_os_str().is_empty() || r.components().any(|c| !matches!(c, Component::Normal(_))) {
+        return Err(bad("outside the set directory"));
+    }
+    let mut p = dir.to_path_buf();
+    for c in r.components() {
+        p.push(c);
+        match std::fs::symlink_metadata(&p) {
+            Ok(m) if m.file_type().is_symlink() => return Err(bad("reached through a symlink (not followed)")),
+            Ok(_) => {}
+            // a missing file is reported by the read that follows
+            Err(_) => break,
+        }
+    }
+    Ok(path)
+}
+
 pub(crate) struct Manifest {
     pub model: String,
     pub config: PathBuf,
@@ -47,7 +68,7 @@ pub(crate) struct Manifest {
 }
 
 pub(crate) fn read_manifest(dir: &Path) -> Result<Manifest, Error> {
-    let d = Doc::load(&dir.join("pryon.manifest"))?;
+    let d = Doc::load(&inside(dir, dir.join("pryon.manifest"), dir, "pryon.manifest")?)?;
     let top = d.top(&["checksum", "default_model_name", "models", "object_type_name", "object_type_version"])?;
     d.pin_str(&top, "object_type_name", &["ModelSetManifest"], false)?;
     d.pin_num(&top, "object_type_version", 1.0, false)?;
@@ -55,10 +76,12 @@ pub(crate) fn read_manifest(dir: &Path) -> Result<Manifest, Error> {
     // other entries of `models` name models that are never loaded
     let models = d.get(&top, "models")?.obj("models").ok_or_else(|| d.bad("models is not an object"))?;
     let entry = d.sub(&models, model, &["config_file_path"])?;
+    let config = join(dir, d.str(&entry, "config_file_path")?);
+    let checksum = d.opt_str(&top, "checksum")?.map(|c| inside(dir, join(dir, c), &d.path, "checksum")).transpose()?;
     Ok(Manifest {
         model: model.to_string(),
-        config: join(dir, d.str(&entry, "config_file_path")?),
-        checksum: d.opt_str(&top, "checksum")?.map(|c| join(dir, c)),
+        config: inside(dir, config, &d.path, &entry.at("config_file_path"))?,
+        checksum,
     })
 }
 
@@ -123,7 +146,7 @@ impl PConfig {
                 continue;
             }
             if let Some(rest) = line.strip_prefix("INCLUDE").filter(|r| r.starts_with(char::is_whitespace)) {
-                let target = join(base(path), unquote(rest.trim()));
+                let target = inside(&self.dir, join(base(path), unquote(rest.trim())), path, "INCLUDE")?;
                 self.include(&target, stack)?;
                 continue;
             }
