@@ -56,6 +56,8 @@ pub struct SpotterSpec {
     pub lock: u32,
     pub notify_lock: u32,
     pub prob_lock: u32,
+    /// Routes results to libpryon's local-command callback and metrics; detections are the same.
+    pub local_command: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -410,7 +412,6 @@ const COMPONENT_KEYS: &[&str] = &[
 fn spotter(d: &Doc, e: &Obj, single: Option<&str>) -> Result<SpotterSpec, Error> {
     let s = d.sub(e, "spotter", SPOTTER_KEYS)?;
     d.pin_str(&s, "spotter-type", &["DETECTION_AUXILIARY"], false)?;
-    d.pin_bool(&s, "is-local-command", false, false)?;
     let wca = d.items(&s, "word-component-array", COMPONENT_KEYS)?;
     let components = wca.iter().map(|w| component(d, w)).collect::<Result<Vec<_>, _>>()?;
     if components.is_empty() {
@@ -449,6 +450,9 @@ fn spotter(d: &Doc, e: &Obj, single: Option<&str>) -> Result<SpotterSpec, Error>
     };
     let (notify_lock, prob_lock) = (sub_lock("notify-lock-period")?, sub_lock("probabilistic-accept-lock-period")?);
     let kw_window = d.int(&s, "keyword-feature-window-length")?;
+    // libpryon defaults it on for a spotter named STOP (0x9b7460)
+    let name = d.str(e, "name")?;
+    let local_command = d.opt_bool(&s, "is-local-command")?.unwrap_or(name == "STOP");
     if kw_window == 0 {
         return Err(d.unsup(format!("{} = 0", s.at("keyword-feature-window-length"))));
     }
@@ -464,6 +468,7 @@ fn spotter(d: &Doc, e: &Obj, single: Option<&str>) -> Result<SpotterSpec, Error>
         lock,
         notify_lock,
         prob_lock,
+        local_command,
     })
 }
 

@@ -1,7 +1,7 @@
 //! `validate`: libpryon (qemu) and pryon-rs on the same clips, every difference printed, validated sets recorded.
 
 use pryon::wake::{load_set, Detection, DetectionKind, Spotter, SpotterModel, SpotterOptions};
-use pryon_testkit::compare::{compare, pushed, Diff, Ev, Limits, Tally};
+use pryon_testkit::compare::{compare, pad_clip, pushed, Diff, Ev, Limits, Tally, LEAD_MS, TAIL_MS};
 use pryon_testkit::oracle::{parse_wake, OracleCmd, OracleEnv, OracleEvent, OracleKind};
 use pryon_testkit::fnv1a64;
 use std::collections::BTreeMap;
@@ -19,6 +19,9 @@ struct Args {
     exact: bool,
     speed: f64,
     jobs: usize,
+    /// Digital silence added before and after every clip, for both engines.
+    lead_ms: u32,
+    tail_ms: u32,
     /// (sample, name, value).
     props: Vec<(u64, String, i32)>,
     model: PathBuf,
@@ -34,6 +37,8 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         exact: false,
         speed: 1.0,
         jobs: std::thread::available_parallelism().map_or(4, |n| n.get()),
+        lead_ms: LEAD_MS,
+        tail_ms: TAIL_MS,
         props: Vec::new(),
         model: PathBuf::new(),
         clips: Vec::new(),
@@ -56,6 +61,10 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
                 Ok(n) if n > 0 => a.jobs = n,
                 _ => return Err("--jobs needs a positive integer".into()),
             },
+            "--lead-ms" | "--tail-ms" => {
+                let ms = val()?.parse::<u32>().map_err(|_| format!("{o} needs milliseconds"))?;
+                if o == "--lead-ms" { a.lead_ms = ms } else { a.tail_ms = ms }
+            }
             "-p" => {
                 let v = val()?;
                 let (assign, at) = v.split_once('@').map_or((v.as_str(), Some(0)), |(x, s)| (x, s.parse::<u64>().ok()));
@@ -208,9 +217,16 @@ struct Ctx<'a> {
     scratch: PathBuf,
 }
 
+/// Properties at clip sample `at`; one at 0 still lands before the audio.
+fn shifted(c: &Ctx) -> Vec<(u64, String, i32)> {
+    let lead = u64::from(c.args.lead_ms) * 16;
+    c.args.props.iter().map(|(at, n, v)| (if *at == 0 { 0 } else { at + lead }, n.clone(), *v)).collect()
+}
+
+/// `pcm` is the padded clip; `fnv` its hash.
 fn oracle_text(c: &Ctx, path: &Path, pcm: &[i16], fnv: u64) -> Result<String, String> {
     let cmds: Vec<OracleCmd> =
-        c.args.props.iter().map(|(at, name, value)| OracleCmd::Property { at: *at, name: name.clone(), value: *value }).collect();
+        shifted(c).into_iter().map(|(at, name, value)| OracleCmd::Property { at, name, value }).collect();
     // Properties and a non-default speed change the output, so they are part of the key.
     let mut key = fnv;
     if !cmds.is_empty() || c.args.speed != 1.0 {
@@ -221,7 +237,8 @@ fn oracle_text(c: &Ctx, path: &Path, pcm: &[i16], fnv: u64) -> Result<String, St
         return Ok(t);
     }
     let env = c.env.as_ref().ok_or("no cached oracle output and no oracle (--oracle-rootfs and --pryon-test, or PRYON_ORACLE_ROOTFS and PRYON_PRYON_TEST)")?;
-    let is_raw = path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("raw"));
+    let padded = c.args.lead_ms > 0 || c.args.tail_ms > 0;
+    let is_raw = !padded && path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("raw"));
     let tmp_raw;
     let clip = if is_raw {
         path.to_path_buf()
@@ -244,16 +261,24 @@ fn oracle_text(c: &Ctx, path: &Path, pcm: &[i16], fnv: u64) -> Result<String, St
 
 fn one_clip(c: &Ctx, path: &Path) -> Result<ClipOut, String> {
     let name = path.display().to_string();
-    let pcm = read_pcm(path)?;
-    let fnv = fnv1a64(&raw_bytes(&pcm));
-    let text = oracle_text(c, path, &pcm, fnv)?;
-    let oracle = parse_wake(&text).map_err(|e| format!("oracle output: {e}"))?;
+    let clip = read_pcm(path)?;
+    let fnv = fnv1a64(&raw_bytes(&clip));
+    let pcm = pad_clip(&clip, c.args.lead_ms, c.args.tail_ms);
+    let text = oracle_text(c, path, &pcm, fnv1a64(&raw_bytes(&pcm)))?;
+    let lead = u64::from(c.args.lead_ms) * 16;
+    let mut oracle = parse_wake(&text).map_err(|e| format!("oracle output: {e}"))?;
+    for e in &mut oracle {
+        (e.begin, e.end) = (e.begin.saturating_sub(lead), e.end.saturating_sub(lead));
+    }
     let mut notes = Vec::new();
     let fed = pushed(&text).unwrap_or(pcm.len()).min(pcm.len());
     if fed < pcm.len() {
         notes.push(format!("NOTE restart {name} oracle fed {fed} of {} samples; Rust fed the same", pcm.len()));
     }
-    let engine = run_rust(&c.model, &pcm[..fed], &c.args.props)?;
+    let mut engine = run_rust(&c.model, &pcm[..fed], &shifted(c))?;
+    for e in &mut engine {
+        (e.begin, e.end) = (e.begin.saturating_sub(lead), e.end.saturating_sub(lead));
+    }
     let mut keywords: Vec<String> = c.model.keywords().to_vec();
     keywords.extend(oracle.iter().map(|e| e.keyword.clone()));
     keywords.sort();
@@ -384,8 +409,9 @@ pub fn run(args: &[String]) -> Result<ExitCode, (bool, String)> {
         for (k, t) in totals.iter().filter(|(_, t)| t.accepts > 0) {
             let f = a.records.join(format!("{checksum}.{k}.rec"));
             let body = format!(
-                "set={checksum}\nkeyword={k}\nclips={ok_clips}\nclips_digest={digest:016x}\naccepts={}\nnear_misses={}\ndate={date}\npryon_rs={rev}\n",
-                t.accepts, t.near_misses
+                "set={checksum}\nkeyword={k}\nclips={ok_clips}\nclips_digest={digest:016x}\nlead_ms={}\ntail_ms={}\n\
+                 accepts={}\nnear_misses={}\ndate={date}\npryon_rs={rev}\n",
+                a.lead_ms, a.tail_ms, t.accepts, t.near_misses
             );
             std::fs::write(&f, body).map_err(|e| (false, format!("{}: {e}", f.display())))?;
             println!("RECORD {}", f.display());

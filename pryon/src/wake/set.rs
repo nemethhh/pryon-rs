@@ -262,7 +262,19 @@ impl Builder<'_> {
         }
         let mut outs = Vec::new();
         for o in &n.outputs {
-            let classes = output(&o.component)?.dims.last().copied().flatten();
+            let dims = &output(&o.component)?.dims;
+            // lanes-first decoders behind an encoder exist only in the de-DE sets, which are out of scope
+            if let (Some(_), [Some(l), Some(1), _]) = (artifact, &dims[..]) {
+                if *l > 1 {
+                    let what = format!(
+                        "output {} {} of a decoder reading a tensor artifact (implemented: [1, lanes, classes])",
+                        o.component,
+                        dims_str(dims)
+                    );
+                    return Err(unsupported(&n.graph, what));
+                }
+            }
+            let classes = dims.last().copied().flatten();
             if let Some(a) = &o.artifact {
                 if self.published.iter().any(|(x, _)| x == a) {
                     return Err(unsupported(&n.file, format!("artifact {a} published twice")));

@@ -245,6 +245,19 @@ pub fn compare(
     t
 }
 
+/// Leading digital silence for both engines: the firmware oracle scores nothing in its first ~1.7 s.
+pub const LEAD_MS: u32 = 2500;
+/// Trailing digital silence: libpryon reports an accept ~120 ms after the keyword ends, never at the clip end.
+pub const TAIL_MS: u32 = 1000;
+
+/// `pcm` between `lead_ms` and `tail_ms` of digital silence (16 kHz).
+pub fn pad_clip(pcm: &[i16], lead_ms: u32, tail_ms: u32) -> Vec<i16> {
+    let (lead, tail) = (lead_ms as usize * 16, tail_ms as usize * 16);
+    let mut out = vec![0i16; lead + pcm.len() + tail];
+    out[lead..lead + pcm.len()].copy_from_slice(pcm);
+    out
+}
+
 /// Samples pryon_test fed (`pushed N samples`); it stops early when libpryon restarts its decoder.
 pub fn pushed(text: &str) -> Option<usize> {
     let l = text.lines().find_map(|l| l.strip_prefix("pushed "))?;
@@ -263,6 +276,14 @@ mod tests {
         let (mut d, mut p) = (Vec::new(), Vec::new());
         let t = compare(o, &[], limits, false, &mut d, &mut p);
         (t, d, p)
+    }
+
+    #[test]
+    fn pad_clip_silence_both_sides() {
+        assert_eq!(pad_clip(&[1, -2], 0, 0), [1, -2]);
+        let p = pad_clip(&[1, -2], 1, 2);
+        assert_eq!(p.len(), 16 + 2 + 32);
+        assert_eq!((&p[15..19], p.iter().filter(|&&x| x != 0).count()), (&[0, 1, -2, 0][..], 2));
     }
 
     #[test]

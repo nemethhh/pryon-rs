@@ -202,6 +202,14 @@ impl Doc {
         }
     }
 
+    pub fn opt_bool(&self, o: &Obj, key: &str) -> Result<Option<bool>, Error> {
+        match o.get(key) {
+            None => Ok(None),
+            Some(Json::Bool(b)) => Ok(Some(*b)),
+            Some(v) => Err(self.bad(format!("{} is {}, not a boolean", o.at(key), v.kind()))),
+        }
+    }
+
     pub fn pin_bool(&self, o: &Obj, key: &str, want: bool, required: bool) -> Result<(), Error> {
         match o.get(key) {
             None if required => Err(self.bad(format!("missing {}", o.at(key)))),

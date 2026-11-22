@@ -502,15 +502,6 @@ mod tests {
         assert_eq!(Thr::new(0.4, Some(0.5), Some(0.45)), Thr { accept: 0.4, prob: 0.4, notify: 0.4 });
     }
 
-    #[test]
-    fn min_max_accept_do_not_bound_overrides() {
-        // min/max-accept-threshold only bound a client sensitivity setting, which the API does not have
-        let mut s = spot(0, false, 0.9, None, None, 100);
-        s.overrides = vec![(0, 1, Thr::new(0.5, None, None))];
-        let mut o = Orchestra { spots: vec![s], props: vec![("AlarmState".into(), 0)] };
-        o.set_property("AlarmState", 1);
-        assert_eq!(run(&mut o, &[(0.6, 0.0)], 8).len(), 1);
-    }
 
     #[test]
     fn deadline_between_steps() {

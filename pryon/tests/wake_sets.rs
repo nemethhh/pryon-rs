@@ -389,22 +389,27 @@ fn real_sets_load() {
 }
 
 #[test]
-fn de_sets_served_or_refused() {
+fn de_sets_refused() {
     let Some(root) = env_dir("PRYON_WAKE_SETS_DIR") else { return };
-    // alexa-de-DE only differed by the spotter-level probabilistic-accept-lock-period libpryon reads (Task 11)
-    let de = root.join("alexa-de-DE");
-    if de.join("pryon.manifest").is_file() {
-        load_set(&de).unwrap();
+    let expect = [
+        (
+            "alexa-de-DE",
+            "alexa-wakeworddecoder/alexa.streaming.fixed.int8.onnx",
+            "output ww_scores [16, 1, 3] of a decoder reading a tensor artifact (implemented: [1, lanes, classes])",
+        ),
+        ("amazon-de-DE", "pryon.config", "key scorer.initialize.publish_frame_count"),
+    ];
+    for (set, file, what) in expect {
+        let dir = root.join(set);
+        if !dir.join("pryon.manifest").is_file() {
+            println!("skipped: {set} not extracted under PRYON_WAKE_SETS_DIR");
+            continue;
+        }
+        let (f, w) = unsupported(load_set(&dir));
+        println!("{set}: {}: unsupported {w}", f.display());
+        assert_eq!(f, dir.join(file), "{set}");
+        assert_eq!(w, what, "{set}");
     }
-    let dir = root.join("amazon-de-DE");
-    if !dir.join("pryon.manifest").is_file() {
-        println!("skipped: amazon-de-DE not extracted under PRYON_WAKE_SETS_DIR");
-        return;
-    }
-    let (f, w) = unsupported(load_set(&dir));
-    println!("amazon-de-DE: {}: unsupported {w}", f.display());
-    assert_eq!(f, dir.join("pryon.config"));
-    assert_eq!(w, "key scorer.initialize.publish_frame_count");
 }
 
 #[test]
@@ -481,6 +486,20 @@ fn spotter_defaults_from_libpryon() {
     assert_eq!((a.lock, a.notify_lock, a.prob_lock), (25, 25, 25));
     let v = spotter(&s, "ALEXA", true);
     assert_eq!((v.lock, v.notify_lock, v.prob_lock), (100, 100, 100));
+    assert!(spotter(&s, "STOP", false).local_command && !a.local_command);
+}
+
+#[test]
+fn local_command_explicit() {
+    let d = davs("local");
+    let kw = d.join("BDPGeneratedFiles/kw.cfg.json");
+    let at = r#""lock-period": 132 } },"#;
+    edit(&kw, at, r#""lock-period": 132, "is-local-command": true } },"#);
+    assert!(spotter(&load_set(&d).unwrap(), "ALEXA", false).local_command);
+    let d = davs("local-stop");
+    let kw = d.join("BDPGeneratedFiles/kw.cfg.json");
+    edit(&kw, r#""accept-threshold": 0.6 },"#, r#""accept-threshold": 0.6 }, "is-local-command": false,"#);
+    assert!(!spotter(&load_set(&d).unwrap(), "STOP", false).local_command);
 }
 
 #[test]

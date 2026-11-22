@@ -158,6 +158,22 @@ mod tests {
     }
 
     #[test]
+    fn min_max_accept_do_not_bound_overrides() {
+        // ALEXA: accept 0.92 within [min 0.85, max 0.93]; the AlarmState override 0.7 lies outside and still applies
+        // (libpryon prints active_threshold=0.7 on this set at --force 0.8 with -p AlarmState=1)
+        let (_d, m) = model(false, 0.8);
+        let t = &m.set.spec.spotters.iter().find(|s| s.name == "ALEXA" && !s.auxiliary).unwrap().thresholds;
+        assert_eq!((t.min_accept, t.max_accept), (Some(0.85), Some(0.93)));
+        assert!(t.overrides.iter().any(|o| o.prop == "AlarmState" && o.accept < 0.85));
+        let mut sp = Spotter::new(m.clone(), SpotterOptions::default()).unwrap();
+        sp.set_property("AlarmState", 1);
+        let mut out = Vec::new();
+        sp.feed(&synth(Clip::Noise)[..16000], &mut out);
+        let d = out.iter().find(|d| d.keyword == 0).unwrap();
+        assert_eq!((d.kind, d.score, d.end_sample), (DetectionKind::Accept, 0.8, 1280));
+    }
+
+    #[test]
     fn property_selects_override() {
         // ALEXA accept 0.92, verifier 0.9; AlarmState=1 lowers the primary to 0.7
         let (_d, m) = model(false, 0.8);

@@ -374,17 +374,34 @@ fn oracle_corpus_pypryon_level() {
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
 
-/// One synthetic set with kw.cfg edits (`(from, to, all occurrences)`), as `local/probe11.sh` wrote it, against
-/// libpryon's events on `Clip::Noise` (-x 1). Only ALEXA is compared: STOP and HEY_DISNEY follow the op.cfg machine.
-fn synth_variant(name: &str, fw: bool, force: f32, edits: &[(&str, &str, bool)]) {
+/// How a probe edited kw.cfg: replace every occurrence, the first one, or cut from the first string up to the second.
+#[derive(Clone, Copy)]
+enum Edit<'a> {
+    All(&'a str, &'a str),
+    Once(&'a str, &'a str),
+    Cut(&'a str, &'a str),
+}
+
+/// One synthetic set with one kw.cfg field changed, as `local/probe11*.sh` wrote it, against libpryon's events on
+/// `Clip::Noise` (-x 1, two identical runs). Only ALEXA is compared: STOP and HEY_DISNEY follow the op.cfg machine.
+fn synth_variant(name: &str, fw: bool, force: f32, edits: &[Edit]) {
     let d = TempDir::new(&format!("variant-{name}"));
     let o = WakeSetOpts { seed: 1, force_score: Some(force) };
     if fw { write_fw_set(&d, &o) } else { write_davs_set(&d, &o) }
     let kw = if fw { d.join("kw.cfg.json") } else { d.join("BDPGeneratedFiles/kw.cfg.json") };
     let mut text = std::fs::read_to_string(&kw).unwrap();
-    for &(from, to, all) in edits {
-        assert!(text.contains(from), "{name}: no {from}");
-        text = if all { text.replace(from, to) } else { text.replacen(from, to, 1) };
+    for e in edits {
+        let (Edit::All(a, _) | Edit::Once(a, _) | Edit::Cut(a, _)) = *e;
+        assert!(text.contains(a), "{name}: no {a}");
+        text = match *e {
+            Edit::All(a, b) => text.replace(a, b),
+            Edit::Once(a, b) => text.replacen(a, b, 1),
+            Edit::Cut(a, b) => {
+                let i = text.find(a).unwrap();
+                let j = i + text[i..].find(b).unwrap();
+                format!("{}{}", &text[..i], &text[j..])
+            }
+        };
     }
     std::fs::write(&kw, text).unwrap();
     let m = Arc::new(SpotterModel::load(&d).unwrap());
@@ -394,11 +411,21 @@ fn synth_variant(name: &str, fw: bool, force: f32, edits: &[(&str, &str, bool)])
     let pcm = synth(Clip::Noise);
     let pcm = &pcm[..pushed(&fixture).unwrap().min(pcm.len())];
     let rust: Vec<Ev> = spot(&m, pcm, 1600).into_iter().filter(|e| e.keyword == "ALEXA").collect();
-    let mut diffs = Vec::new();
-    let t = compare(&oracle, &rust, &thresholds(&d), &mut diffs);
+    let (mut diff, mut prob) = (Vec::new(), Vec::new());
+    let t = compare_events(&oracle, &rust, &thresholds(&d), true, &mut diff, &mut prob);
     println!("{name}: {}", t.line());
-    assert!(t.clean() && t.matched == oracle.len(), "{name}:\n{}", diffs.join("\n"));
+    let diffs: Vec<String> = diff.iter().map(Diff::to_string).collect();
+    assert!(t.clean() && t.matched == oracle.len() && t.engine == rust.len(), "{name}:\n{}", diffs.join("\n"));
 }
+
+/// The ALEXA verifier spotter, up to the end of the spotter list.
+const VERIFIER: Edit = Edit::Cut(
+    concat!(
+        ",\n    { \"classifier\": { \"type\": \"moving-average-max-pool\", \"window-size\": 1 },\n",
+        "      \"name\": \"ALEXA\", \"scorers\""
+    ),
+    "\n  ] }",
+);
 
 #[test]
 fn synth_variant_fw_notify_rising_only() {
@@ -406,20 +433,42 @@ fn synth_variant_fw_notify_rising_only() {
 }
 
 #[test]
+fn synth_variant_fw_notify_removed() {
+    synth_variant("fw_f08_nonotify", true, 0.8, &[Edit::Once(r#", "notify-threshold": 0.7"#, "")]);
+}
+
+#[test]
 fn synth_variant_fw_notify_lock_period() {
-    let lock = (r#""lock-period": 100 } },"#, r#""lock-period": 100, "notify-lock-period": 40 } },"#, false);
+    let lock = Edit::Once(r#""lock-period": 100 } },"#, r#""lock-period": 100, "notify-lock-period": 40 } },"#);
     synth_variant("fw_nlock40", true, 0.8, &[lock]);
 }
 
 #[test]
-fn synth_variant_fw_trim_tail_0_window_1() {
-    let c = (r#""trim-tail": 8, "window-size": 3"#, r#""trim-tail": 0, "window-size": 1"#, true);
-    synth_variant("fw_trim0_w1", true, 0.99, &[c]);
+fn synth_variant_fw_notify_lock_period_0_freezes() {
+    let lock = Edit::Once(r#""lock-period": 100 } },"#, r#""lock-period": 100, "notify-lock-period": 0 } },"#);
+    synth_variant("fw_nlock0", true, 0.8, &[lock]);
+}
+
+#[test]
+fn synth_variant_fw_trim_tail_0() {
+    let c = Edit::Once(r#""trim-tail": 8, "window-size": 3"#, r#""trim-tail": 0, "window-size": 3"#);
+    synth_variant("fw_trim0", true, 0.99, &[c]);
+}
+
+#[test]
+fn synth_variant_fw_window_1() {
+    let c = Edit::Once(r#""trim-tail": 8, "window-size": 3"#, r#""trim-tail": 8, "window-size": 1"#);
+    synth_variant("fw_window1", true, 0.99, &[c]);
 }
 
 #[test]
 fn synth_variant_fw_lock_50() {
-    synth_variant("fw_lock50", true, 0.99, &[(r#""lock-period": 100"#, r#""lock-period": 50"#, true)]);
+    synth_variant("fw_lock50", true, 0.99, &[Edit::All(r#""lock-period": 100"#, r#""lock-period": 50"#)]);
+}
+
+#[test]
+fn synth_variant_fw_lock_0_freezes() {
+    synth_variant("fw_lock0", true, 0.99, &[Edit::Once(r#""lock-period": 100"#, r#""lock-period": 0"#)]);
 }
 
 #[test]
@@ -428,19 +477,23 @@ fn synth_variant_davs_probabilistic_near_miss() {
 }
 
 #[test]
+fn synth_variant_davs_probabilistic_lock_0_freezes() {
+    let lock = Edit::Once(
+        r#""lock-period": 132 } },"#,
+        r#""lock-period": 132, "probabilistic-accept-lock-period": 0 } },"#,
+    );
+    synth_variant("davs_plock0", false, 0.8, &[lock]);
+}
+
+#[test]
 fn synth_variant_davs_notify_rising_only() {
-    let p = (r#""probabilistic-accept-threshold": 0.5"#, r#""probabilistic-accept-threshold": 0.95"#, true);
+    let p = Edit::All(r#""probabilistic-accept-threshold": 0.5"#, r#""probabilistic-accept-threshold": 0.95"#);
     synth_variant("davs_f08_noprob", false, 0.8, &[p]);
 }
 
 #[test]
 fn synth_variant_davs_notify_removed() {
-    let n = (
-        r#""notify-threshold": 0.3, "probabilistic-accept-threshold": 0.5"#,
-        r#""probabilistic-accept-threshold": 0.95"#,
-        true,
-    );
-    synth_variant("davs_nonotify", false, 0.8, &[n]);
+    synth_variant("davs_f08_nonotify", false, 0.8, &[Edit::Once(r#""notify-threshold": 0.3, "#, "")]);
 }
 
 #[test]
@@ -449,6 +502,11 @@ fn synth_variant_davs_verifier_accepts() {
 }
 
 #[test]
+fn synth_variant_davs_verifier_removed() {
+    synth_variant("davs_noverifier", false, 0.91, &[VERIFIER]);
+}
+
+#[test]
 fn synth_variant_davs_lock_50() {
-    synth_variant("davs_lock50", false, 0.99, &[(r#""lock-period": 132"#, r#""lock-period": 50"#, true)]);
+    synth_variant("davs_lock50", false, 0.99, &[Edit::All(r#""lock-period": 132"#, r#""lock-period": 50"#)]);
 }
