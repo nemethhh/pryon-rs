@@ -2,6 +2,7 @@
 //! returns a runtime [`Op`] holding whatever it precomputed at load.
 
 mod elementwise;
+mod reduce;
 mod shape;
 
 use super::proto::{AttrValue, NodeProto};
@@ -30,15 +31,20 @@ pub(crate) type BuildFn = fn(&NodeProto, &mut Attrs, &[Value], i64) -> Result<Bu
 /// Default-domain operators; adding one is a builder plus a line here.
 pub(crate) static OPS: &[(&str, BuildFn)] = &[
     ("Add", elementwise::binary::<elementwise::Add>),
+    ("BatchNormalization", reduce::batch_norm),
     ("Cast", shape::cast),
     ("Concat", shape::concat),
     ("Gather", shape::gather),
     ("Mul", elementwise::binary::<elementwise::Mul>),
+    ("MaxPool", reduce::max_pool),
     ("Neg", elementwise::unary::<elementwise::Neg>),
+    ("ReduceMax", reduce::reduce::<reduce::Max>),
+    ("ReduceSum", reduce::reduce::<reduce::Sum>),
     ("Relu", elementwise::unary::<elementwise::Relu>),
     ("Reshape", shape::reshape),
     ("Shape", shape::shape),
     ("Slice", shape::slice),
+    ("Softmax", reduce::softmax),
     ("Squeeze", shape::squeeze),
     ("Sub", elementwise::binary::<elementwise::Sub>),
     ("Tile", shape::tile),
@@ -141,6 +147,22 @@ impl Attrs {
             None => Ok(None),
             Some(AttrValue::Ints(v)) => Ok(Some(v)),
             Some(_) => Err(self.wrong(name, "a list of ints")),
+        }
+    }
+
+    pub fn float(&mut self, name: &str) -> Result<Option<f32>, String> {
+        match self.take(name) {
+            None => Ok(None),
+            Some(AttrValue::Float(v)) => Ok(Some(v)),
+            Some(_) => Err(self.wrong(name, "a float")),
+        }
+    }
+
+    pub fn string(&mut self, name: &str) -> Result<Option<String>, String> {
+        match self.take(name) {
+            None => Ok(None),
+            Some(AttrValue::Str(v)) => Ok(Some(String::from_utf8_lossy(&v).into_owned())),
+            Some(_) => Err(self.wrong(name, "a string")),
         }
     }
 

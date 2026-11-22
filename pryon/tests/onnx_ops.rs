@@ -418,3 +418,160 @@ fn non_float_inputs_refused() {
     let e = unsupported(load(unused, &[("x", &[2]), ("n", &[2])], &[]));
     assert!(e.contains("non-float runtime tensor n (graph input)"), "{e}");
 }
+
+fn close(got: &[f32], want: &[f32], tol: f32) {
+    assert_eq!(got.len(), want.len());
+    for (g, w) in got.iter().zip(want) {
+        assert!((g - w).abs() <= tol * w.abs().max(1e-3), "{got:?} vs {want:?}");
+    }
+}
+
+fn softmax_ref(x: &[f32]) -> Vec<f32> {
+    let m = x.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+    let e: Vec<f64> = x.iter().map(|&v| ((v - m) as f64).exp()).collect();
+    let s: f64 = e.iter().sum();
+    e.iter().map(|&v| (v / s) as f32).collect()
+}
+
+#[test]
+fn softmax_opset11_flattens() {
+    let x: Vec<f32> = (0..12).map(|i| (i as f32 * 0.37).sin() * 3.0).collect();
+    let m = ModelBuilder::new(6, 11)
+        .input("x", F, &d(&[2, 2, 3]))
+        .output("y", F, &d(&[2, 2, 3]))
+        .node("Softmax", &["x"], &["y"], &[("axis", Attr::Int(1))]);
+    let g = load(m, &[("x", &[2, 2, 3])], &[]).unwrap();
+    assert_eq!(shape_of(&g, "y"), [2, 2, 3]);
+    let (o, _) = run(g, &[("x", &x)], &["y"]);
+    let want = [softmax_ref(&x[..6]), softmax_ref(&x[6..])].concat();
+    close(&o[0], &want, 1e-6);
+    assert!((o[0][..6].iter().sum::<f32>() - 1.0).abs() < 1e-6);
+}
+
+#[test]
+fn softmax_opset13_axis() {
+    let x: Vec<f32> = (0..12).map(|i| (i as f32 * 0.37).cos() * 2.0).collect();
+    let mk = |axis: Option<i64>| {
+        let attrs: Vec<(&str, Attr)> = axis.map(|a| ("axis", Attr::Int(a))).into_iter().collect();
+        let m = ModelBuilder::new(8, 13)
+            .input("x", F, &d(&[2, 2, 3]))
+            .output("y", F, &d(&[2, 2, 3]))
+            .node("Softmax", &["x"], &["y"], &attrs);
+        run(load(m, &[("x", &[2, 2, 3])], &[]).unwrap(), &[("x", &x)], &["y"]).0.remove(0)
+    };
+    let last = mk(None);
+    close(&last, &(0..4).flat_map(|r| softmax_ref(&x[r * 3..r * 3 + 3])).collect::<Vec<_>>(), 1e-6);
+    assert_eq!(mk(Some(-1)), last);
+    let mid = mk(Some(1));
+    let mut want = vec![0.0; 12];
+    for (o, i) in (0..2).flat_map(|o| (0..3).map(move |i| (o, i))) {
+        let col: Vec<f32> = (0..2).map(|k| x[(o * 2 + k) * 3 + i]).collect();
+        for (k, v) in softmax_ref(&col).into_iter().enumerate() {
+            want[(o * 2 + k) * 3 + i] = v;
+        }
+    }
+    close(&mid, &want, 1e-6);
+}
+
+#[test]
+fn reduce_keepdims_and_axes_input() {
+    let x = [1.0, 5.0, 3.0, 4.0, 2.0, 6.0];
+    let m = ModelBuilder::new(6, 11)
+        .input("x", F, &d(&[2, 3]))
+        .output("s", F, &d(&[2, 1]))
+        .output("m", F, &d(&[3]))
+        .output("all", F, &d(&[1, 1]))
+        .node("ReduceSum", &["x"], &["s"], &[("axes", Attr::Ints(vec![1]))])
+        .node("ReduceMax", &["x"], &["m"], &[("axes", Attr::Ints(vec![0])), ("keepdims", Attr::Int(0))])
+        .node("ReduceSum", &["x"], &["all"], &[]);
+    let g = load(m, &[("x", &[2, 3])], &[]).unwrap();
+    assert_eq!((shape_of(&g, "s"), shape_of(&g, "m"), shape_of(&g, "all")), (vec![2, 1], vec![3], vec![1, 1]));
+    let (o, _) = run(g, &[("x", &x)], &["s", "m", "all"]);
+    assert_eq!((&o[0][..], &o[1][..], &o[2][..]), (&[9.0, 12.0][..], &[4.0, 5.0, 6.0][..], &[21.0][..]));
+
+    let m13 = ModelBuilder::new(8, 18)
+        .input("x", F, &d(&[2, 3]))
+        .output("s", F, &d(&[2]))
+        .init_i64("ax", &[1], &[-1])
+        .node("ReduceSum", &["x", "ax"], &["s"], &[("keepdims", Attr::Int(0))]);
+    let g = load(m13, &[("x", &[2, 3])], &[]).unwrap();
+    assert_eq!(shape_of(&g, "s"), [2]);
+    assert_eq!(run(g, &[("x", &x)], &["s"]).0[0], [9.0, 12.0]);
+
+    let noop = ModelBuilder::new(8, 18)
+        .input("x", F, &d(&[2, 3]))
+        .output("s", F, &d(&[2, 3]))
+        .node("ReduceSum", &["x"], &["s"], &[("noop_with_empty_axes", Attr::Int(1))]);
+    let e = unsupported(load(noop, &[("x", &[2, 3])], &[]));
+    assert!(e.contains("noop_with_empty_axes"), "{e}");
+}
+
+#[test]
+fn maxpool_kernel_stride() {
+    let x: Vec<f32> = (0..16).map(|i| ((i * 7) % 16) as f32).collect();
+    let m = ModelBuilder::new(6, 11)
+        .input("x", F, &d(&[1, 1, 4, 4]))
+        .output("y", F, &d(&[1, 1, 2, 2]))
+        .node("MaxPool", &["x"], &["y"], &[("kernel_shape", Attr::Ints(vec![2, 2])), ("strides", Attr::Ints(vec![2, 2]))]);
+    let g = load(m, &[("x", &[1, 1, 4, 4])], &[]).unwrap();
+    assert_eq!(shape_of(&g, "y"), [1, 1, 2, 2]);
+    let (o, _) = run(g, &[("x", &x)], &["y"]);
+    let at = |r: usize, c: usize| x[r * 4 + c];
+    let want: Vec<f32> = [(0, 0), (0, 2), (2, 0), (2, 2)]
+        .iter()
+        .map(|&(r, c)| at(r, c).max(at(r, c + 1)).max(at(r + 1, c)).max(at(r + 1, c + 1)))
+        .collect();
+    assert_eq!(o[0], want);
+}
+
+#[test]
+fn maxpool_pads_refused() {
+    for (name, attr) in [
+        ("pads", Attr::Ints(vec![1, 1, 1, 1])),
+        ("dilations", Attr::Ints(vec![2, 2])),
+        ("ceil_mode", Attr::Int(1)),
+        ("auto_pad", Attr::Str("SAME_UPPER".into())),
+    ] {
+        let m = ModelBuilder::new(6, 11)
+            .input("x", F, &d(&[1, 1, 4, 4]))
+            .output("y", F, &d(&[1, 1, 2, 2]))
+            .node("MaxPool", &["x"], &["y"], &[("kernel_shape", Attr::Ints(vec![2, 2])), (name, attr)]);
+        let e = unsupported(load(m, &[("x", &[1, 1, 4, 4])], &[]));
+        assert!(e.contains(name), "{e}");
+    }
+}
+
+#[test]
+fn batchnorm_values() {
+    let x: Vec<f32> = (0..12).map(|i| i as f32 - 3.0).collect();
+    let (g, b, mu, var) = ([2.0f32, 0.5], [0.25f32, -1.0], [1.0f32, -2.0], [4.0f32, 0.25]);
+    let m = ModelBuilder::new(6, 11)
+        .input("x", F, &d(&[2, 2, 3]))
+        .output("y", F, &d(&[2, 2, 3]))
+        .init_f32("g", &[2], &g)
+        .init_f32("b", &[2], &b)
+        .init_f32("mu", &[2], &mu)
+        .init_f32("var", &[2], &var)
+        .node("BatchNormalization", &["x", "g", "b", "mu", "var"], &["y"], &[("epsilon", Attr::Float(0.0))]);
+    let gr = load(m, &[("x", &[2, 2, 3])], &[]).unwrap();
+    let (o, _) = run(gr, &[("x", &x)], &["y"]);
+    let want: Vec<f32> = (0..12)
+        .map(|i| {
+            let c = (i / 3) % 2;
+            let s = g[c] / var[c].sqrt();
+            x[i] * s + (b[c] - mu[c] * s)
+        })
+        .collect();
+    assert_eq!(o[0], want);
+
+    let t = ModelBuilder::new(6, 11)
+        .input("x", F, &d(&[2, 2, 3]))
+        .output("y", F, &d(&[2, 2, 3]))
+        .init_f32("g", &[2], &g)
+        .init_f32("b", &[2], &b)
+        .init_f32("mu", &[2], &mu)
+        .init_f32("var", &[2], &var)
+        .node("BatchNormalization", &["x", "g", "b", "mu", "var"], &["y"], &[("training_mode", Attr::Int(1))]);
+    let e = unsupported(load(t, &[("x", &[2, 2, 3])], &[]));
+    assert!(e.contains("training_mode"), "{e}");
+}
