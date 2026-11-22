@@ -3,52 +3,82 @@ mod armv7;
 #[cfg(any(test, not(all(pryon_neon, target_arch = "arm"))))]
 mod portable;
 
-/// Matrix-vector product of int8-range weights (rows of `stride`, a multiple of 8) with u8 activations.
+/// `out[r] = Σ_c W[r][c] k[c]` over `c < stride` for weights in the `block_index` layout; `out.len()` is a multiple
+/// of 4, `w.len() == out.len() * stride`, `stride` a multiple of 8, `k.len() >= stride`.
 #[cfg(all(pryon_neon, target_arch = "arm"))]
 pub(crate) use armv7::dot_rows;
 #[cfg(not(all(pryon_neon, target_arch = "arm")))]
 pub(crate) use portable::dot_rows;
-#[cfg(all(test, pryon_neon, target_arch = "arm"))]
-use armv7::dot_i16_u8;
-#[cfg(all(test, not(all(pryon_neon, target_arch = "arm"))))]
-use portable::dot_i16_u8;
+
+/// Position of `W[r][c]`: blocks of four rows by eight columns (row-major inside), so the kernel streams one run.
+pub(crate) fn block_index(r: usize, c: usize, stride: usize) -> usize {
+    (r / 4) * 4 * stride + (c / 8) * 32 + (r % 4) * 8 + c % 8
+}
 
 #[cfg(test)]
 mod tests {
+    use super::block_index;
+
+    #[cfg(all(pryon_neon, target_arch = "arm"))]
+    fn xorshift(mut s: u32) -> impl FnMut() -> u32 {
+        move || {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            s
+        }
+    }
+
+    fn blocked(rows: usize, stride: usize, v: impl Fn(usize, usize) -> i8) -> Vec<i8> {
+        let mut w = vec![0i8; rows * stride];
+        for r in 0..rows {
+            for c in 0..stride {
+                w[block_index(r, c, stride)] = v(r, c);
+            }
+        }
+        w
+    }
+
     #[test]
-    fn dot_portable() {
-        let w: Vec<i16> = (0..40).map(|i| ((i * 37) % 256 - 128) as i16).collect();
-        let k: Vec<u8> = (0..40).map(|i| ((i * 91) % 256) as u8).collect();
-        let want: i32 = (0..40).map(|i| w[i] as i32 * k[i] as i32).sum();
-        assert_eq!(super::dot_i16_u8(&w, &k), want);
-        let want8: i32 = (0..8).map(|i| w[i] as i32 * k[i] as i32).sum();
-        assert_eq!(super::dot_i16_u8(&w[..8], &k), want8);
+    fn block_index_is_a_permutation() {
+        let mut seen = vec![false; 8 * 24];
+        for r in 0..8 {
+            for c in 0..24 {
+                assert!(!std::mem::replace(&mut seen[block_index(r, c, 24)], true));
+            }
+        }
     }
 
     #[test]
     fn dot_rows_each_row() {
-        let w: Vec<i16> = (0..7 * 24).map(|i| ((i * 37) % 256 - 128) as i16).collect();
-        let k: Vec<u8> = (0..24).map(|i| ((i * 91) % 256) as u8).collect();
-        let mut out = [0i32; 7];
-        super::dot_rows(&w, 24, &k, &mut out);
+        let (rows, stride) = (8, 24);
+        let w = blocked(rows, stride, |r, c| ((r * 24 + c) * 37 % 256) as u8 as i8);
+        let k: Vec<u8> = (0..stride).map(|i| ((i * 91) % 256) as u8).collect();
+        let mut out = [0i32; 8];
+        super::dot_rows(&w, stride, &k, &mut out);
         for (r, &o) in out.iter().enumerate() {
-            assert_eq!(o, (0..24).map(|i| w[r * 24 + i] as i32 * k[i] as i32).sum::<i32>(), "row {r}");
+            let want: i32 = (0..stride).map(|c| w[block_index(r, c, stride)] as i32 * k[c] as i32).sum();
+            assert_eq!(o, want, "row {r}");
         }
+    }
+
+    #[test]
+    fn dot_rows_extremes() {
+        let k = vec![255u8; 384];
+        let mut out = [0i32; 4];
+        super::dot_rows(&vec![-128i8; 4 * 384], 384, &k, &mut out);
+        assert_eq!(out, [-12_533_760; 4]);
+        super::dot_rows(&vec![127i8; 4 * 384], 384, &k, &mut out);
+        assert_eq!(out, [127 * 255 * 384; 4]);
     }
 
     #[cfg(all(pryon_neon, target_arch = "arm"))]
     #[test]
     fn dot_rows_asm_equals_portable() {
-        let mut s = 0x9e37_79b9u32;
-        let mut next = move || {
-            s ^= s << 13;
-            s ^= s >> 17;
-            s ^= s << 5;
-            s
-        };
-        for rows in 1..=13 {
+        let mut next = xorshift(0x9e37_79b9);
+        for rows in [4, 8, 12, 256, 384] {
             for stride in [8, 16, 24, 64, 96, 104, 512] {
-                let w: Vec<i16> = (0..rows * stride).map(|_| (next() % 256) as i16 - 128).collect();
+                let w: Vec<i8> = (0..rows * stride).map(|_| next() as u8 as i8).collect();
                 let k: Vec<u8> = (0..stride + 8).map(|_| next() as u8).collect();
                 let (mut a, mut b) = (vec![0i32; rows], vec![1i32; rows]);
                 super::dot_rows(&w, stride, &k, &mut a);
@@ -56,30 +86,5 @@ mod tests {
                 assert_eq!(a, b, "rows={rows} stride={stride}");
             }
         }
-        let (w, k) = (vec![-128i16; 4 * 384], vec![255u8; 384]);
-        let mut out = [0i32; 4];
-        super::dot_rows(&w, 384, &k, &mut out);
-        assert_eq!(out, [-12_533_760; 4]);
-    }
-
-    #[cfg(all(pryon_neon, target_arch = "arm"))]
-    #[test]
-    fn dot_asm_equals_portable() {
-        let mut s = 0x1234_5678u32;
-        let mut next = move || {
-            s ^= s << 13;
-            s ^= s >> 17;
-            s ^= s << 5;
-            s
-        };
-        for n in (8..=512).step_by(8) {
-            let w: Vec<i16> = (0..n).map(|_| (next() % 256) as i16 - 128).collect();
-            let k: Vec<u8> = (0..n).map(|_| next() as u8).collect();
-            assert_eq!(super::dot_i16_u8(&w, &k), super::portable::dot_i16_u8(&w, &k), "n={n}");
-        }
-        let (w, k) = (vec![-128i16; 384], vec![255u8; 384]);
-        assert_eq!(super::dot_i16_u8(&w, &k), -12_533_760);
-        let (w, k) = (vec![127i16; 384], vec![255u8; 384]);
-        assert_eq!(super::dot_i16_u8(&w, &k), 127 * 255 * 384);
     }
 }

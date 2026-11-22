@@ -8,7 +8,7 @@ use std::sync::Arc;
 const LEVELS: f32 = 129.0;
 
 /// `y = bias + (y + W x)` for one input row, `y` holding `y_old` on entry; scratch `k` holds at least `m.stride8`,
-/// `acc` at least `m.rows`.
+/// `acc` at least `m.padded_rows()`.
 fn qaffine(x: &[f32], m: &QMatrix, bias: &[f32], y: &mut [f32], k: &mut [u8], acc: &mut [i32]) {
     let (lo, hi) = x.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &v| (lo.min(v), hi.max(v)));
     let inv = if hi == lo { LEVELS } else { LEVELS / (hi - lo) };
@@ -18,7 +18,7 @@ fn qaffine(x: &[f32], m: &QMatrix, bias: &[f32], y: &mut [f32], k: &mut [u8], ac
     k[x.len()..].fill(0);
     let sx = neon_sum(x);
     let rinv = 1.0 / inv;
-    let acc = &mut acc[..m.rows];
+    let acc = &mut acc[..m.padded_rows()];
     dot_rows(&m.w, m.stride8, k, acc);
     for (r, (&d, yr)) in acc.iter().zip(y.iter_mut()).enumerate() {
         let mut t = (rinv * d as f32) * m.rs[r];
@@ -43,7 +43,7 @@ impl QLstm {
     pub fn new(p: QLstmParams) -> Self {
         let n = p.cell;
         let k = vec![0; p.wx.stride8.max(p.wh.stride8)];
-        let acc = vec![0; p.wx.rows.max(p.wh.rows)];
+        let acc = vec![0; p.wx.padded_rows().max(p.wh.padded_rows())];
         QLstm { h: vec![0.0; n], c: vec![0.0; n], z: vec![0.0; 4 * n], k, acc, p: Arc::new(p) }
     }
 

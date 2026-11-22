@@ -1,22 +1,10 @@
-pub(crate) fn dot_i16_u8(w: &[i16], k: &[u8]) -> i32 {
-    w.iter().zip(k).map(|(&a, &b)| a as i32 * b as i32).sum()
-}
-
-pub(crate) fn dot_rows(w: &[i16], stride: usize, k: &[u8], out: &mut [i32]) {
-    for (row, o) in w.chunks_exact(stride).zip(out.iter_mut()) {
-        *o = dot_i16_u8(row, &k[..stride]);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn dot_portable() {
-        let w: Vec<i16> = (0..37).map(|i| ((i * 37) % 256 - 128) as i16).collect();
-        let k: Vec<u8> = (0..37).map(|i| ((i * 91) % 256) as u8).collect();
-        let want: i32 = (0..37).map(|i| w[i] as i32 * k[i] as i32).sum();
-        assert_eq!(super::dot_i16_u8(&w, &k), want);
-        let want5: i32 = (0..5).map(|i| w[i] as i32 * k[i] as i32).sum();
-        assert_eq!(super::dot_i16_u8(&w[..5], &k), want5);
+pub(crate) fn dot_rows(w: &[i8], stride: usize, k: &[u8], out: &mut [i32]) {
+    for (group, o) in w.chunks_exact(4 * stride).zip(out.chunks_exact_mut(4)) {
+        o.fill(0);
+        for (block, kc) in group.chunks_exact(32).zip(k[..stride].chunks_exact(8)) {
+            for (row, acc) in block.chunks_exact(8).zip(o.iter_mut()) {
+                *acc += row.iter().zip(kc).map(|(&a, &b)| a as i32 * b as i32).sum::<i32>();
+            }
+        }
     }
 }

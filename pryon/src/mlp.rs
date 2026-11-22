@@ -1,5 +1,6 @@
 //! dnnrt `.mlp` reader: Kaldi-style tokens, `dynamic_quant_int_8_lstm` and `affinetransform`.
 
+use crate::kernels::block_index;
 use crate::Error;
 
 pub struct QMatrix {
@@ -7,12 +8,23 @@ pub struct QMatrix {
     pub cols: usize,
     /// `cols` rounded up to a multiple of 8.
     pub stride8: usize,
-    /// int8 weights widened to i16, `rows * stride8`, each row zero-padded past `cols`.
-    pub w: Vec<i16>,
+    /// int8 weights in the dot kernel's blocked layout, zero-padded to a multiple of 4 rows and to `stride8` columns.
+    pub w: Vec<i8>,
     /// 1/s per row.
     pub rs: Vec<f32>,
     pub a: Vec<f32>,
     pub b: Vec<f32>,
+}
+
+impl QMatrix {
+    /// `rows` rounded up to the kernel's four-row groups.
+    pub fn padded_rows(&self) -> usize {
+        self.rows.div_ceil(4) * 4
+    }
+
+    pub fn weight(&self, r: usize, c: usize) -> i8 {
+        self.w[block_index(r, c, self.stride8)]
+    }
 }
 
 pub struct QLstmParams {
@@ -113,10 +125,11 @@ impl<'a> Cur<'a> {
         let Some(total) = rows.checked_mul(stride) else { return fmt_err("length overflow") };
         let raw = self.take(total)?;
         let stride8 = cols.div_ceil(8) * 8;
-        let mut w = Vec::with_capacity(rows * stride8);
-        for row in raw.chunks_exact(stride) {
-            w.extend(row[..cols].iter().map(|&x| x as i8 as i16));
-            w.resize(w.len() + stride8 - cols, 0);
+        let mut w = vec![0i8; rows.div_ceil(4) * 4 * stride8];
+        for (r, row) in raw.chunks_exact(stride).enumerate() {
+            for (c, &x) in row[..cols].iter().enumerate() {
+                w[block_index(r, c, stride8)] = x as i8;
+            }
         }
         let rs = s.iter().map(|&x| 1.0f32 / x).collect();
         Ok(QMatrix { rows, cols, stride8, w, rs, a, b })
@@ -194,10 +207,11 @@ mod tests {
         for _ in 0..3 * 256 {
             rng.next_u32();
         }
-        let draws: Vec<i16> = (0..256 * 20).map(|_| (rng.next_u32() % 255) as i16 - 127).collect();
+        let draws: Vec<i8> = (0..256 * 20).map(|_| ((rng.next_u32() % 255) as i16 - 127) as i8).collect();
         assert_eq!(l0.wx.stride8, 24);
         assert_eq!(l0.wx.w.len(), 256 * 24);
-        for (row, want) in l0.wx.w.chunks_exact(24).zip(draws.chunks_exact(20)) {
+        for (r, want) in draws.chunks_exact(20).enumerate() {
+            let row: Vec<i8> = (0..24).map(|c| l0.wx.weight(r, c)).collect();
             assert_eq!(&row[..20], want);
             assert!(row[20..].iter().all(|&v| v == 0));
         }
