@@ -1,6 +1,6 @@
 //! dnnrt `.mlp` reader: Kaldi-style tokens, `dynamic_quant_int_8_lstm` and `affinetransform`.
 
-use crate::kernels::block_index;
+use crate::kernels::{block_index, load_weight, store_weight};
 use crate::Error;
 
 pub struct QMatrix {
@@ -8,8 +8,9 @@ pub struct QMatrix {
     pub cols: usize,
     /// `cols` rounded up to a multiple of 8.
     pub stride8: usize,
-    /// int8 weights in the dot kernel's blocked layout, zero-padded to a multiple of 4 rows and to `stride8` columns.
-    pub w: Vec<i8>,
+    /// int8 weights as the dot kernel stores them (`weight` reads one back), zero-padded to a multiple of 4 rows and
+    /// to `stride8` columns.
+    pub w: Vec<u8>,
     /// 1/s per row.
     pub rs: Vec<f32>,
     pub a: Vec<f32>,
@@ -23,7 +24,7 @@ impl QMatrix {
     }
 
     pub fn weight(&self, r: usize, c: usize) -> i8 {
-        self.w[block_index(r, c, self.stride8)]
+        load_weight(self.w[block_index(r, c, self.stride8)])
     }
 }
 
@@ -125,10 +126,10 @@ impl<'a> Cur<'a> {
         let Some(total) = rows.checked_mul(stride) else { return fmt_err("length overflow") };
         let raw = self.take(total)?;
         let stride8 = cols.div_ceil(8) * 8;
-        let mut w = vec![0i8; rows.div_ceil(4) * 4 * stride8];
+        let mut w = vec![store_weight(0); rows.div_ceil(4) * 4 * stride8];
         for (r, row) in raw.chunks_exact(stride).enumerate() {
             for (c, &x) in row[..cols].iter().enumerate() {
-                w[block_index(r, c, stride8)] = x as i8;
+                w[block_index(r, c, stride8)] = store_weight(x as i8);
             }
         }
         let rs = s.iter().map(|&x| 1.0f32 / x).collect();

@@ -3,8 +3,8 @@ mod armv7;
 #[cfg(any(test, not(all(pryon_neon, target_arch = "arm"))))]
 mod portable;
 
-/// `out[r] = Σ_c W[r][c] k[c]` over `c < stride` for weights in the `block_index` layout; `out.len()` is a multiple
-/// of 4, `w.len() == out.len() * stride`, `stride` a multiple of 8, `k.len() >= stride`.
+/// `out[r] = Σ_c W[r][c] k[c]` over `c < stride` for weights stored by `store_weight` in the `block_index` layout;
+/// `out.len()` is a multiple of 4, `w.len() == out.len() * stride`, `stride` a multiple of 8, `k.len() >= stride`.
 #[cfg(all(pryon_neon, target_arch = "arm"))]
 pub(crate) use armv7::dot_rows;
 #[cfg(not(all(pryon_neon, target_arch = "arm")))]
@@ -24,6 +24,15 @@ pub(crate) use armv7::{sigmoid_inplace, tanh_inplace};
 #[cfg(not(all(pryon_neon, target_arch = "arm")))]
 pub(crate) use portable::{sigmoid_inplace, tanh_inplace};
 
+/// int8 weight as stored: offset binary (w + 128).
+pub(crate) fn store_weight(w: i8) -> u8 {
+    w as u8 ^ 0x80
+}
+
+pub(crate) fn load_weight(w: u8) -> i8 {
+    (w ^ 0x80) as i8
+}
+
 /// Position of `W[r][c]`: blocks of four rows by eight columns (row-major inside), so the kernel streams one run.
 pub(crate) fn block_index(r: usize, c: usize, stride: usize) -> usize {
     (r / 4) * 4 * stride + (c / 8) * 32 + (r % 4) * 8 + c % 8
@@ -31,7 +40,7 @@ pub(crate) fn block_index(r: usize, c: usize, stride: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::block_index;
+    use super::{block_index, load_weight, store_weight};
 
     #[cfg(all(pryon_neon, target_arch = "arm"))]
     fn xorshift(mut s: u32) -> impl FnMut() -> u32 {
@@ -43,14 +52,20 @@ mod tests {
         }
     }
 
-    fn blocked(rows: usize, stride: usize, v: impl Fn(usize, usize) -> i8) -> Vec<i8> {
-        let mut w = vec![0i8; rows * stride];
+    fn blocked(rows: usize, stride: usize, v: impl Fn(usize, usize) -> i8) -> Vec<u8> {
+        let mut w = vec![0u8; rows * stride];
         for r in 0..rows {
             for c in 0..stride {
-                w[block_index(r, c, stride)] = v(r, c);
+                w[block_index(r, c, stride)] = store_weight(v(r, c));
             }
         }
         w
+    }
+
+    #[test]
+    fn weight_store_roundtrip() {
+        assert_eq!((store_weight(-128), store_weight(0), store_weight(127)), (0, 128, 255));
+        assert!((-128..=127).all(|w| load_weight(store_weight(w)) == w));
     }
 
     #[test]
@@ -71,7 +86,7 @@ mod tests {
         let mut out = [0i32; 8];
         super::dot_rows(&w, stride, &k, &mut out);
         for (r, &o) in out.iter().enumerate() {
-            let want: i32 = (0..stride).map(|c| w[block_index(r, c, stride)] as i32 * k[c] as i32).sum();
+            let want: i32 = (0..stride).map(|c| load_weight(w[block_index(r, c, stride)]) as i32 * k[c] as i32).sum();
             assert_eq!(o, want, "row {r}");
         }
     }
@@ -80,10 +95,12 @@ mod tests {
     fn dot_rows_extremes() {
         let k = vec![255u8; 384];
         let mut out = [0i32; 4];
-        super::dot_rows(&vec![-128i8; 4 * 384], 384, &k, &mut out);
+        super::dot_rows(&blocked(4, 384, |_, _| -128), 384, &k, &mut out);
         assert_eq!(out, [-12_533_760; 4]);
-        super::dot_rows(&vec![127i8; 4 * 384], 384, &k, &mut out);
+        super::dot_rows(&blocked(4, 384, |_, _| 127), 384, &k, &mut out);
         assert_eq!(out, [127 * 255 * 384; 4]);
+        super::dot_rows(&blocked(4, 384, |_, _| 0), 384, &k, &mut out);
+        assert_eq!(out, [0; 4]);
     }
 
     #[cfg(all(pryon_neon, target_arch = "arm"))]
@@ -92,7 +109,7 @@ mod tests {
         let mut next = xorshift(0x9e37_79b9);
         for rows in [4, 8, 12, 256, 384] {
             for stride in [8, 16, 24, 64, 96, 104, 512] {
-                let w: Vec<i8> = (0..rows * stride).map(|_| next() as u8 as i8).collect();
+                let w: Vec<u8> = (0..rows * stride).map(|_| next() as u8).collect();
                 let k: Vec<u8> = (0..stride + 8).map(|_| next() as u8).collect();
                 let (mut a, mut b) = (vec![0i32; rows], vec![1i32; rows]);
                 super::dot_rows(&w, stride, &k, &mut a);
