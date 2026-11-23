@@ -154,8 +154,11 @@ fn score_ok(oracle: &Ev, printed_threshold: Option<f32>, engine: f32, thr: &[f32
 
 /// `x` as pryon_test prints a score: C `%g` (6 significant digits, ties to even, trailing zeros dropped).
 pub fn fmt_g(x: f32) -> String {
-    if !x.is_finite() || x == 0.0 {
-        return if x == 0.0 { "0".into() } else { format!("{x}") };
+    if x == 0.0 {
+        return if x.is_sign_negative() { "-0" } else { "0" }.into();
+    }
+    if !x.is_finite() {
+        return if x.is_nan() { "nan" } else if x < 0.0 { "-inf" } else { "inf" }.into();
     }
     // every f32 has a finite decimal expansion; 160 digits hold it, so the rounding below sees the exact value
     let full = format!("{:.160e}", f64::from(x).abs());
@@ -251,9 +254,7 @@ pub fn compare(oracle: &[OracleEvent], engine: &[Ev], limits: &Limits, exact: bo
     t
 }
 
-/// libpryon starts a firmware set's conv buffers from uninitialised heap (data-less initializers), so its scores are
-/// NaN until those values have left the network: 168 or 174 frames after a start, session end or decoder restart in
-/// the installs measured (the garbage depends on the install path). The engine starts from zeros and does not model it.
+/// Largest firmware start gate observed (168 or 174 frames, by install path): libpryon's uninitialised conv buffers.
 pub const FW_GATE_MAX_FRAMES: u64 = 174;
 
 /// Events set aside by the firmware gate allowance, per clip or summed.
@@ -279,23 +280,27 @@ impl GateTally {
     }
 }
 
-/// One clip's comparison under the gate allowance.
-pub struct Gated {
+/// One keyword's comparison under the gate allowance.
+#[derive(Default, Clone)]
+pub struct KwGated {
     pub tally: Tally,
     /// Differences the allowance does not cover.
     pub diffs: Vec<Diff>,
     pub gate: GateTally,
-    /// The first restart the engines place differently (oracle, engine), on a set without the gate: a failure.
+}
+
+/// One clip's comparison under the gate allowance.
+pub struct Gated {
+    /// Per keyword (the given ones plus any with events).
+    pub per_kw: BTreeMap<String, KwGated>,
+    /// The first restart the engines place differently, when the allowance does not cover it: a difference.
     pub restart_mismatch: Option<(Option<u64>, Option<u64>)>,
 }
 
-/// Compares one clip's events (all samples in fed-stream coordinates; `lead` is subtracted from the events reported).
-/// `gate_frames` is `Some(FW_GATE_MAX_FRAMES + longest lock)` for a set whose state libpryon leaves uninitialised:
-/// then one-sided events, or equal-kind pairs with both ends, in `[S, S + gate_frames]` after a session end or an
-/// agreed restart `S` are exempt, engine events inside `[S, S + FW_GATE_MAX_FRAMES)` that libpryon lacks are dropped,
-/// and events after the first restart the engines disagree on are not compared. Nothing else is excused.
+/// One clip in fed-stream samples; `gate_frames` (uninitialised-state sets only) enables the README's gate allowance.
 #[allow(clippy::too_many_arguments)]
 pub fn compare_gated(
+    keywords: &[String],
     oracle: &[OracleEvent],
     engine: &[Ev],
     oracle_restarts: &[u64],
@@ -306,32 +311,64 @@ pub fn compare_gated(
     limits: &Limits,
     exact: bool,
 ) -> Gated {
-    let mut oracle = oracle.to_vec();
-    let mut engine = engine.to_vec();
-    let mut gate = GateTally::default();
     let agree = oracle_restarts.iter().zip(engine_restarts).take_while(|(a, b)| a == b).count();
-    let (o_next, e_next) = (oracle_restarts.get(agree).copied(), engine_restarts.get(agree).copied());
-    let mut restart_mismatch = None;
-    let cut = match (o_next, e_next) {
-        (None, None) => u64::MAX,
-        (a, b) if gate_frames.is_none() => {
-            restart_mismatch = Some((a, b));
-            u64::MAX
-        }
-        (a, b) => a.unwrap_or(u64::MAX).min(b.unwrap_or(u64::MAX)),
-    };
-    let n = oracle.len() + engine.len();
-    oracle.retain(|e| e.end < cut);
-    engine.retain(|e| e.end < cut);
-    gate.after_restart = n - oracle.len() - engine.len();
+    let next = (oracle_restarts.get(agree).copied(), engine_restarts.get(agree).copied());
     let mut starts = session_ends.to_vec();
     starts.extend_from_slice(&oracle_restarts[..agree]);
+    let run = |cut: u64| -> BTreeMap<String, KwGated> {
+        let mut kws: Vec<String> = keywords.to_vec();
+        kws.extend(oracle.iter().map(|e| e.keyword.clone()));
+        kws.extend(engine.iter().map(|e| e.keyword.clone()));
+        kws.sort();
+        kws.dedup();
+        kws.into_iter()
+            .map(|k| {
+                let o: Vec<OracleEvent> = oracle.iter().filter(|e| e.keyword == k).cloned().collect();
+                let e: Vec<Ev> = engine.iter().filter(|e| e.keyword == k).cloned().collect();
+                let g = gate_keyword(&o, &e, &starts, cut, gate_frames, lead, limits, exact);
+                (k, g)
+            })
+            .collect()
+    };
+    match next {
+        (None, None) => Gated { per_kw: run(u64::MAX), restart_mismatch: None },
+        (a, b) if gate_frames.is_some() => {
+            let cut = a.unwrap_or(u64::MAX).min(b.unwrap_or(u64::MAX));
+            let per_kw = run(cut);
+            // ruling X2: only a gate event excused before it can explain the engines parting at a restart
+            let excused: usize = per_kw.values().map(|g| g.gate.window + g.gate.inside).sum();
+            if excused > 0 {
+                Gated { per_kw, restart_mismatch: None }
+            } else {
+                Gated { per_kw: run(u64::MAX), restart_mismatch: Some((a, b)) }
+            }
+        }
+        (a, b) => Gated { per_kw: run(u64::MAX), restart_mismatch: Some((a, b)) },
+    }
+}
+
+/// One keyword's events: those ending at or after `cut` are set aside, the gate windows follow `starts`.
+#[allow(clippy::too_many_arguments)]
+fn gate_keyword(
+    oracle: &[OracleEvent],
+    engine: &[Ev],
+    starts: &[u64],
+    cut: u64,
+    gate_frames: Option<u64>,
+    lead: u64,
+    limits: &Limits,
+    exact: bool,
+) -> KwGated {
+    let n = oracle.len() + engine.len();
+    let mut oracle: Vec<OracleEvent> = oracle.iter().filter(|e| e.end < cut).cloned().collect();
+    let mut engine: Vec<Ev> = engine.iter().filter(|e| e.end < cut).cloned().collect();
+    let mut gate = GateTally { after_restart: n - oracle.len() - engine.len(), ..GateTally::default() };
     let mut windows = Vec::new();
     if let Some(frames) = gate_frames {
         let inside = FW_GATE_MAX_FRAMES * 160;
         let n = engine.len();
         // an engine event libpryon also has (same kind and end) is still compared in full
-        let twin = |e: &Ev| oracle.iter().any(|o| o.keyword == e.keyword && o.kind == e.kind && o.end == e.end);
+        let twin = |e: &Ev| oracle.iter().any(|o| o.kind == e.kind && o.end == e.end);
         engine.retain(|e| twin(e) || !starts.iter().any(|&s| e.end > s && e.end < s + inside));
         gate.inside = n - engine.len();
         windows = starts.iter().map(|&s| (s.saturating_sub(lead), (s + frames * 160).saturating_sub(lead))).collect();
@@ -351,7 +388,7 @@ pub fn compare_gated(
             None => diffs.push(d),
         }
     }
-    Gated { tally, diffs, gate, restart_mismatch }
+    KwGated { tally, diffs, gate }
 }
 
 /// Events a difference may set aside under the gate: a pair needs equal kinds and both ends in one window.
@@ -422,7 +459,7 @@ mod tests {
 
     #[test]
     fn fmt_g_is_c_percent_g() {
-        let cases: [(f32, &str); 12] = [
+        let cases: [(f32, &str); 14] = [
             (0.99, "0.99"),
             (0.633601, "0.633601"),
             (1.0, "1"),
@@ -435,6 +472,8 @@ mod tests {
             (0.9999996, "1"),
             (0.00012345678, "0.000123457"),
             (9.1552734375e-05, "9.15527e-05"),
+            (-0.0, "-0"),
+            (0.0, "0"),
         ];
         for (x, want) in cases {
             assert_eq!(fmt_g(x), want, "{x:e}");
@@ -479,9 +518,8 @@ mod tests {
         assert_eq!(gate_exempt(&one, &[]), None);
     }
 
-    #[test]
-    fn gated_comparison_counts_each_allowance() {
-        let oe = |end| OracleEvent {
+    fn oe(end: u64) -> OracleEvent {
+        OracleEvent {
             keyword: "ALEXA".into(),
             kind: OracleKind::Accept,
             score: "0.9".into(),
@@ -489,20 +527,56 @@ mod tests {
             begin: end - 8000,
             end,
             afe: None,
-        };
+        }
+    }
+
+    fn sum(g: &Gated) -> (GateTally, usize, usize) {
+        let mut t = GateTally::default();
+        let (mut diffs, mut matched) = (0, 0);
+        for k in g.per_kw.values() {
+            t.add(&k.gate);
+            diffs += k.diffs.len();
+            matched += k.tally.matched;
+        }
+        (t, diffs, matched)
+    }
+
+    #[test]
+    fn gated_comparison_counts_each_allowance() {
         let e = |end| ev(OracleKind::Accept, end).unwrap();
-        let lim = Limits::default();
+        let (lim, kw) = (Limits::default(), ["ALEXA".to_string(), "STOP".to_string()]);
         let gate = Some(FW_GATE_MAX_FRAMES + 50);
         // session end at 100 000: the engine's 110 000 lies inside the gate, the oracle's 130 000 in the window
         let oracle = [oe(50_000), oe(130_000), oe(900_000)];
         let engine = [e(50_000), e(110_000), e(950_000)];
-        let g = compare_gated(&oracle, &engine, &[800_000], &[850_000], &[100_000], gate, 0, &lim, true);
-        assert_eq!(g.gate, GateTally { window: 1, inside: 1, after_restart: 2 });
-        assert!(g.diffs.is_empty() && g.restart_mismatch.is_none());
-        assert_eq!(g.tally.matched, 1);
+        let g = compare_gated(&kw, &oracle, &engine, &[800_000], &[850_000], &[100_000], gate, 0, &lim, true);
+        assert_eq!(sum(&g), (GateTally { window: 1, inside: 1, after_restart: 2 }, 0, 1));
+        assert!(g.restart_mismatch.is_none() && g.per_kw.contains_key("STOP"));
         // without the gate every one of them is a difference and the restart disagreement is reported
-        let g = compare_gated(&oracle, &engine, &[800_000], &[850_000], &[100_000], None, 0, &lim, true);
-        assert_eq!((g.gate.total(), g.diffs.len(), g.restart_mismatch), (0, 4, Some((Some(800_000), Some(850_000)))));
+        let g = compare_gated(&kw, &oracle, &engine, &[800_000], &[850_000], &[100_000], None, 0, &lim, true);
+        assert_eq!((sum(&g).0.total(), sum(&g).1), (0, 4));
+        assert_eq!(g.restart_mismatch, Some((Some(800_000), Some(850_000))));
+    }
+
+    /// Ruling X2: the engines may part at a restart only after an excused gate event; otherwise it is a difference.
+    #[test]
+    fn diverging_restart_needs_an_excused_gate_event() {
+        let e = |end| ev(OracleKind::Accept, end).unwrap();
+        let (lim, kw) = (Limits::default(), ["ALEXA".to_string()]);
+        let gate = Some(FW_GATE_MAX_FRAMES + 50);
+        // no session end and nothing excused before the restarts at 800 000 / 850 000
+        let oracle = [oe(50_000), oe(900_000)];
+        let engine = [e(50_000), e(950_000)];
+        let g = compare_gated(&kw, &oracle, &engine, &[800_000], &[850_000], &[], gate, 0, &lim, true);
+        assert_eq!(g.restart_mismatch, Some((Some(800_000), Some(850_000))));
+        assert_eq!(sum(&g), (GateTally::default(), 2, 1));
+        // an engine event inside the gate after an agreed restart (300 000) explains the later parting
+        let oracle = [oe(50_000), oe(900_000)];
+        let engine = [e(50_000), e(310_000), e(950_000)];
+        let (o_rs, e_rs) = ([300_000, 800_000], [300_000, 850_000]);
+        let g = compare_gated(&kw, &oracle, &engine, &o_rs, &e_rs, &[], gate, 0, &lim, true);
+        assert_eq!(g.restart_mismatch, None);
+        assert_eq!(sum(&g), (GateTally { window: 0, inside: 1, after_restart: 2 }, 0, 1));
     }
 
     #[test]

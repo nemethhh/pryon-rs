@@ -163,6 +163,15 @@ fn records_only_for_named_keywords() {
 }
 
 #[test]
+fn record_of_an_unserved_keyword_refused() {
+    let f = Fixture::new("record-typo");
+    let o = f.validate(&["--exact", "--record", "ALEXAA"]);
+    assert_eq!(o.status.code(), Some(2), "{}", text(&o));
+    assert!(text(&o).contains("--record ALEXAA"), "{}", text(&o));
+    assert!(f.records().is_empty());
+}
+
+#[test]
 fn exact_compares_the_printed_score() {
     let f = Fixture::new("printed");
     let t = std::fs::read_to_string(&f.cache_file).unwrap();

@@ -480,25 +480,23 @@ fn reduce_keepdims_and_axes_input() {
     let x = [1.0, 5.0, 3.0, 4.0, 2.0, 6.0];
     let m = ModelBuilder::new(6, 11)
         .input("x", F, &d(&[2, 3]))
-        .output("s", F, &d(&[2, 1]))
+        .output("s", F, &d(&[1, 3]))
         .output("m", F, &d(&[3]))
-        .output("all", F, &d(&[1, 1]))
-        .node("ReduceSum", &["x"], &["s"], &[("axes", Attr::Ints(vec![1]))])
-        .node("ReduceMax", &["x"], &["m"], &[("axes", Attr::Ints(vec![0])), ("keepdims", Attr::Int(0))])
-        .node("ReduceSum", &["x"], &["all"], &[]);
+        .node("ReduceSum", &["x"], &["s"], &[("axes", Attr::Ints(vec![0]))])
+        .node("ReduceMax", &["x"], &["m"], &[("axes", Attr::Ints(vec![-2])), ("keepdims", Attr::Int(0))]);
     let g = load(m, &[("x", &[2, 3])], &[]).unwrap();
-    assert_eq!((shape_of(&g, "s"), shape_of(&g, "m"), shape_of(&g, "all")), (vec![2, 1], vec![3], vec![1, 1]));
-    let (o, _) = run(g, &[("x", &x)], &["s", "m", "all"]);
-    assert_eq!((&o[0][..], &o[1][..], &o[2][..]), (&[9.0, 12.0][..], &[4.0, 5.0, 6.0][..], &[21.0][..]));
+    assert_eq!((shape_of(&g, "s"), shape_of(&g, "m")), (vec![1, 3], vec![3]));
+    let (o, _) = run(g, &[("x", &x)], &["s", "m"]);
+    assert_eq!((&o[0][..], &o[1][..]), (&[5.0, 7.0, 9.0][..], &[4.0, 5.0, 6.0][..]));
 
     let m13 = ModelBuilder::new(8, 18)
         .input("x", F, &d(&[2, 3]))
-        .output("s", F, &d(&[2]))
-        .init_i64("ax", &[1], &[-1])
+        .output("s", F, &d(&[3]))
+        .init_i64("ax", &[1], &[0])
         .node("ReduceSum", &["x", "ax"], &["s"], &[("keepdims", Attr::Int(0))]);
     let g = load(m13, &[("x", &[2, 3])], &[]).unwrap();
-    assert_eq!(shape_of(&g, "s"), [2]);
-    assert_eq!(run(g, &[("x", &x)], &["s"]).0[0], [9.0, 12.0]);
+    assert_eq!(shape_of(&g, "s"), [3]);
+    assert_eq!(run(g, &[("x", &x)], &["s"]).0[0], [5.0, 7.0, 9.0]);
 
     let noop = ModelBuilder::new(8, 18)
         .input("x", F, &d(&[2, 3]))
@@ -506,6 +504,23 @@ fn reduce_keepdims_and_axes_input() {
         .node("ReduceSum", &["x"], &["s"], &[("noop_with_empty_axes", Attr::Int(1))]);
     let e = unsupported(load(noop, &[("x", &[2, 3])], &[]));
     assert!(e.contains("noop_with_empty_axes"), "{e}");
+}
+
+/// libpryon runs other reductions with other kernels (an all-axes NEON lane sum, a VFP chain per row): refused.
+#[test]
+fn reduce_other_axes_refused() {
+    let cases: [(&str, &[usize], Vec<(&str, Attr)>); 4] = [
+        ("ReduceSum", &[2, 3], vec![("axes", Attr::Ints(vec![1]))]),
+        ("ReduceSum", &[2, 3], vec![]),
+        ("ReduceMax", &[2, 3], vec![("axes", Attr::Ints(vec![0, 1]))]),
+        ("ReduceMax", &[2, 2, 3], vec![("axes", Attr::Ints(vec![0]))]),
+    ];
+    for (op, dims, attrs) in cases {
+        let di: Vec<i64> = dims.iter().map(|&v| v as i64).collect();
+        let m = ModelBuilder::new(6, 11).input("x", F, &d(&di)).output("y", F, &[]).node(op, &["x"], &["y"], &attrs);
+        let e = unsupported(load(m, &[("x", dims)], &[]));
+        assert!(e.contains("only axis 0 of a 2-D input"), "{op} {dims:?}: {e}");
+    }
 }
 
 #[test]
@@ -584,16 +599,17 @@ fn float_ops_fold_constants() {
         .input("x", F, &d(&[2]))
         .output("y", F, &d(&[2]))
         .init_f32("c", &[2, 2], &[1.0, 2.0, 3.0, 4.0])
-        .node("ReduceSum", &["c"], &["s"], &[("axes", Attr::Ints(vec![1])), ("keepdims", Attr::Int(0))])
+        .node("ReduceSum", &["c"], &["s"], &[("axes", Attr::Ints(vec![0])), ("keepdims", Attr::Int(0))])
         .node("Softmax", &["c"], &["sm"], &[])
-        .node("ReduceMax", &["sm"], &["mx"], &[("keepdims", Attr::Int(0)), ("axes", Attr::Ints(vec![1]))])
+        .node("ReduceMax", &["sm"], &["mx"], &[("keepdims", Attr::Int(0)), ("axes", Attr::Ints(vec![0]))])
         .node("Add", &["x", "s"], &["t"], &[])
         .node("Add", &["t", "mx"], &["y"], &[]);
     let g = load(m, &[("x", &[2])], &[]).unwrap();
     let (o, traced) = run(g, &[("x", &[10.0, 20.0])], &["y"]);
     assert_eq!(traced, ["t", "y"]);
-    let mx = softmax_ref(&[1.0, 2.0])[1];
-    close(&o[0], &[13.0 + mx, 27.0 + mx], 1e-6);
+    // column sums 4 and 6; both softmax rows are equal (shift invariance), so the column max is either row
+    let p = softmax_ref(&[1.0, 2.0]);
+    close(&o[0], &[14.0 + p[0], 26.0 + p[1]], 1e-6);
 }
 
 #[test]
@@ -654,8 +670,12 @@ fn reduce_sum_order() {
     // -0 + -0 stays -0 (a 0 seed would make it +0); a subnormal is flushed by the add, kept by the copy
     assert_eq!(one("ReduceSum", &[2, 2], &ax, &[-0.0, tiny, -0.0, 0.0], &[]), [0x8000_0000, 0]);
     assert_eq!(one("ReduceSum", &[1, 2], &ax, &[-0.0, tiny], &[]), [0x8000_0000, 0x1000]);
-    let x = [1.0, f32::from_bits(0x3380_0000), f32::from_bits(0x3380_0000), 3.0];
-    assert_eq!(one("ReduceSum", &[4, 1], &ax, &x, &[]), [(((1.0 + x[1]) + x[2]) + 3.0f32).to_bits()]);
+    // in order 0; pairwise (1 + h) + (h - 1) gives 2^-24, reversed 2^-23
+    let h = f32::from_bits(0x3380_0000);
+    let x = [1.0, h, h, -1.0];
+    assert_ne!(((1.0f32 + h) + (h + -1.0)).to_bits(), 0);
+    assert_ne!((((-1.0f32 + h) + h) + 1.0).to_bits(), 0);
+    assert_eq!(one("ReduceSum", &[4, 1], &ax, &x, &[]), [0]);
 }
 
 /// ReduceMax over axis 0 starts from the first slice and keeps it unless `acc < x`: a NaN there stays.

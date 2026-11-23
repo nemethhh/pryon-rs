@@ -100,8 +100,9 @@ link it with the native libraries rustc lists for the target
   firmware set; not the DAVS sets), and only there, validate sets aside and counts (`GATE` lines, `GATE ALLOWANCE`,
   the record's `gate_exempt`): one-sided events, or pairs of equal kind, whose ends lie within 174 frames plus the
   set's longest lock period after a session end or a restart both engines agree on; engine events inside the gate
-  that libpryon lacks; and the events after the first restart the two engines place differently (a gate-hidden
-  accept moves the engine's restart point). Everything else is a difference. `-p` sets a client
+  that libpryon lacks; and, when such an event was excused before it in the clip, the events after the first
+  restart the two engines place differently (a gate-hidden accept moves the engine's restart point); without one,
+  a restart placed differently is a difference. Everything else is a difference. `-p` sets a client
   property and `-e` ends the session (`Spotter::reset`, libpryon's `PryonDecoder_SessionEnd`) before the given clip
   sample, in both engines. libpryon's probabilistic accept (a random accept of a near miss, drawn from a
   clock-seeded generator) is switched off for the oracle only: it runs a copy of the set whose
@@ -111,7 +112,8 @@ link it with the native libraries rustc lists for the target
   oracle outputs as `<set checksum>/<key>.txt`, the key covering the padded clip, the commands, the speed and the
   harness version. On a clean `--exact` run (every event's kind, begin and end equal, and the engine's score printed
   as `pryon_test` prints it, C `%g`, equal to the oracle's string) it writes `validated/<checksum>.<KEYWORD>.rec`
-  for each keyword the oracle accepted at least once (only the `--record` keywords when given): the set, the
+  for each keyword the oracle accepted at least once, also one accepted only on synthetic clips (HEY_DISNEY on the
+  TTS clips); `--record KEYWORD` (a keyword the set serves) limits it to the keywords chosen: the set, the
   keyword, the clip count and digest, the padding, accept and near-miss counts, the events the gate allowance set
   aside, date and pryon-rs commit. A clip the oracle did not hear to the end is an error, so it never yields a
   record.

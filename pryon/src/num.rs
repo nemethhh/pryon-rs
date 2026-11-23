@@ -290,9 +290,7 @@ pub(crate) fn cpunk_max(x: &[f32]) -> f32 {
     x.iter().fold(f32::MIN, |m, &v| vmax(m, v))
 }
 
-/// CPUNK SoftmaxImpl<CortexA15> on one row (0x124af60; the four-row kernel 0x124b8d0 keeps the same order):
-/// `e = exp(x - max)`, the sum in four lanes seeded with the `len % 4` tail and then the vectors last to first,
-/// `inv = 1 / ((l0 + l2) + (l1 + l3))` (VFP), `y = inv·e`.
+/// CPUNK SoftmaxImpl<CortexA15> on one row (0x124af60; 0x124b8d0 for four rows sums in the same order).
 pub(crate) fn cpunk_softmax(x: &[f32], y: &mut [f32]) {
     let m = cpunk_max(x);
     for (o, &v) in y.iter_mut().zip(x) {

@@ -26,7 +26,9 @@ const USAGE: &str = "usage:
       --exact compares every event and printed score; its one allowance, counted on GATE lines, is libpryon's start
       gate on sets whose conv buffers it leaves uninitialised (firmware): one-sided events or equal-kind pairs ending
       within 174 frames plus the longest lock after a session end or agreed restart, engine events inside the gate,
-      and events after a restart the two engines place differently";
+      and, once such an event was excused, the events after a restart the two engines place differently.
+      A clean --exact run records every keyword the oracle accepted, synthetic-only evidence included (e.g.
+      HEY_DISNEY on TTS clips); --record KEYWORD limits the records to keywords with recorded-clip evidence";
 
 enum Fail {
     Usage(String),

@@ -2,10 +2,10 @@
 
 use pryon::wake::{load_set, Detection, DetectionKind, Spotter, SpotterModel, SpotterOptions};
 use pryon_testkit::compare::{
-    compare_gated, oracle_cache_key, pad_clip, pushed, Diff, Ev, GateTally, Limits, Tally, FW_GATE_MAX_FRAMES, LEAD_MS,
-    TAIL_MS,
+    compare_gated, oracle_cache_key, pad_clip, pushed, Ev, GateTally, KwGated, Limits, Tally, FW_GATE_MAX_FRAMES,
+    LEAD_MS, TAIL_MS,
 };
-use pryon_testkit::oracle::{deterministic_set, parse_wake, restarts, OracleCmd, OracleEnv, OracleEvent, OracleKind};
+use pryon_testkit::oracle::{deterministic_set, parse_wake, restarts, OracleCmd, OracleEnv, OracleKind};
 use pryon_testkit::fnv1a64;
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -237,9 +237,8 @@ fn run_rust(
 
 struct ClipOut {
     name: String,
-    /// Per keyword: tally, differences and the events the start-gate allowance set aside.
-    per_kw: BTreeMap<String, (Tally, Vec<Diff>, GateTally)>,
-    /// The first restart the engines place differently, on a set without the start gate.
+    per_kw: BTreeMap<String, KwGated>,
+    /// The first restart the engines place differently, when the gate allowance does not cover it.
     restart_mismatch: Option<(Option<u64>, Option<u64>)>,
     fnv: u64,
 }
@@ -315,22 +314,10 @@ fn one_clip(c: &Ctx, index: usize, path: &Path) -> Result<ClipOut, String> {
     let cmds = shifted(c);
     let (engine, engine_restarts) = run_rust(&c.model, &pcm, &cmds)?;
     let ends: Vec<u64> = cmds.iter().filter(|(_, x)| x.is_none()).map(|(at, _)| *at).collect();
-    let oracle_restarts = restarts(&text);
-    let mut keywords: Vec<String> = c.model.keywords().to_vec();
-    keywords.extend(oracle.iter().map(|e| e.keyword.clone()));
-    keywords.sort();
-    keywords.dedup();
-    let mut per_kw = BTreeMap::new();
-    let mut restart_mismatch = None;
-    for k in keywords {
-        let o: Vec<OracleEvent> = oracle.iter().filter(|e| e.keyword == k).cloned().collect();
-        let r: Vec<Ev> = engine.iter().filter(|e| e.keyword == k).cloned().collect();
-        let (gate, exact) = (c.gate_frames, c.args.exact);
-        let g = compare_gated(&o, &r, &oracle_restarts, &engine_restarts, &ends, gate, lead, &c.limits, exact);
-        restart_mismatch = g.restart_mismatch;
-        per_kw.insert(k, (g.tally, g.diffs, g.gate));
-    }
-    Ok(ClipOut { name, per_kw, restart_mismatch, fnv })
+    let (kws, gate, exact) = (c.model.keywords(), c.gate_frames, c.args.exact);
+    let o_restarts = restarts(&text);
+    let g = compare_gated(kws, &oracle, &engine, &o_restarts, &engine_restarts, &ends, gate, lead, &c.limits, exact);
+    Ok(ClipOut { name, per_kw: g.per_kw, restart_mismatch: g.restart_mismatch, fnv })
 }
 
 /// Runs `f(index, item)` over `items` on `jobs` threads, results in order.
@@ -390,6 +377,9 @@ pub fn run(args: &[String]) -> Result<ExitCode, (bool, String)> {
     let a = parse_args(args).map_err(|e| (true, e))?;
     let model_dir = std::fs::canonicalize(&a.model).map_err(|e| (false, format!("{}: {e}", a.model.display())))?;
     let model = Arc::new(SpotterModel::load(&model_dir).map_err(|e| (false, format!("{}: {e}", a.model.display())))?);
+    if let Some(k) = a.record_only.iter().find(|k| !model.keywords().contains(k)) {
+        return Err((true, format!("--record {k}: the set serves {:?}", model.keywords())));
+    }
     let mut limits = Limits::default();
     let spec = load_set(&model_dir).map_err(|e| (false, e.to_string()))?;
     let gate_frames = spec.uninitialised_state().then(|| FW_GATE_MAX_FRAMES + spec.longest_lock());
@@ -439,7 +429,7 @@ pub fn run(args: &[String]) -> Result<ExitCode, (bool, String)> {
                     let s = |x: Option<u64>| x.map_or("-".to_string(), |v| v.to_string());
                     println!("DIFF {} restart oracle={} rust={}", c.name, s(o), s(e));
                 }
-                for (k, (t, diffs, g)) in &c.per_kw {
+                for (k, KwGated { tally: t, diffs, gate: g }) in &c.per_kw {
                     differences += diffs.len();
                     for d in diffs {
                         println!("DIFF {} {}", c.name, d);

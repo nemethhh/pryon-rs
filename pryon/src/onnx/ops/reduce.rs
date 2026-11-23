@@ -1,9 +1,9 @@
 //! Float operators that combine elements: Softmax, ReduceSum/Max, MaxPool, BatchNormalization, in libpryon's order.
 
-use super::{arg, axes_of, axis, fold_numel, opt_arg, strides, Attrs, Built, Op, Value};
+use super::{arg, axes_of, axis, fold_numel, opt_arg, Attrs, Built, Op, Value};
 use crate::num::{cpunk_softmax, fmaf, vadd, vmul, vsub, zdiv, zsqrt};
 use crate::onnx::proto::NodeProto;
-use crate::onnx::tensor::{numel, Data, DType, Tensor, MAX_RANK};
+use crate::onnx::tensor::{numel, Data, DType, Tensor};
 
 /// Folds when every input is a constant f32 tensor, otherwise stays a runtime op.
 fn finish(op: Box<dyn Op>, ins: &[Value], dims: Vec<usize>) -> Result<Built, String> {
@@ -96,32 +96,22 @@ impl RedKind for Max {
     }
 }
 
+/// Axis 0 of a 2-D tensor, the one reduction read in libpryon; rows of `cols` values.
 struct Reduce<K> {
-    dims: Vec<usize>,
-    /// Output stride of each input axis, 0 on reduced ones.
-    ostride: Vec<usize>,
+    cols: usize,
     k: std::marker::PhantomData<K>,
 }
 
 impl<K: RedKind> Op for Reduce<K> {
     fn run(&self, ins: &[&[f32]], outs: &mut [&mut [f32]]) {
-        let mut idx = [0usize; MAX_RANK];
-        let mut off = 0;
-        // reduced axes at a nonzero index: 0 marks an output's first contribution
-        let mut moved = 0usize;
-        for &x in ins[0] {
-            outs[0][off] = if moved == 0 { x } else { K::step(outs[0][off], x) };
-            for k in (0..self.dims.len()).rev() {
-                let red = self.ostride[k] == 0 && self.dims[k] > 1;
-                idx[k] += 1;
-                off += self.ostride[k];
-                if idx[k] < self.dims[k] {
-                    moved += usize::from(red && idx[k] == 1);
-                    break;
-                }
-                off -= self.ostride[k] * self.dims[k];
-                idx[k] = 0;
-                moved -= usize::from(red);
+        let mut rows = ins[0].chunks_exact(self.cols);
+        let y = &mut *outs[0];
+        if let Some(first) = rows.next() {
+            y.copy_from_slice(first);
+        }
+        for row in rows {
+            for (o, &x) in y.iter_mut().zip(row) {
+                *o = K::step(*o, x);
             }
         }
     }
@@ -130,9 +120,6 @@ impl<K: RedKind> Op for Reduce<K> {
 pub(super) fn reduce<K: RedKind>(_: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -> Result<Built, String> {
     let x = float_arg(ins, 0)?;
     let dims = x.dims().to_vec();
-    if dims.len() > MAX_RANK {
-        return Err(format!("input of rank {}", dims.len()));
-    }
     let keep = a.int("keepdims")?.unwrap_or(1) != 0;
     if a.int("noop_with_empty_axes")?.unwrap_or(0) != 0 {
         return Err("noop_with_empty_axes set".into());
@@ -146,14 +133,16 @@ pub(super) fn reduce<K: RedKind>(_: &NodeProto, a: &mut Attrs, ins: &[Value], _:
             }
         }
     }
-    let out: Vec<usize> = (0..dims.len()).filter(|&k| keep || !red[k]).map(|k| if red[k] { 1 } else { dims[k] }).collect();
-    let kept: Vec<usize> = dims.iter().zip(&red).map(|(&d, &r)| if r { 1 } else { d }).collect();
-    let ks = strides(&kept);
-    let ostride = (0..dims.len()).map(|k| if red[k] { 0 } else { ks[k] }).collect();
-    if numel(&dims)? == 0 && numel(&out)? != 0 {
-        return Err("reduction over an empty tensor".into());
+    // other axes take other libpryon kernels (all axes: NEON lane sum 0x516e0c; axis 1: VFP chain 0xb02678)
+    if red != [true, false] {
+        let axes: Vec<usize> = (0..red.len()).filter(|&k| red[k]).collect();
+        return Err(format!("reduction over axes {axes:?} of input {dims:?} (only axis 0 of a 2-D input)"));
     }
-    finish(Box::new(Reduce::<K> { dims, ostride, k: Default::default() }), &ins[..1], out)
+    if dims.contains(&0) {
+        return Err(format!("empty input {dims:?}"));
+    }
+    let out = if keep { vec![1, dims[1]] } else { vec![dims[1]] };
+    finish(Box::new(Reduce::<K> { cols: dims[1], k: Default::default() }), &ins[..1], out)
 }
 
 struct MaxPool {

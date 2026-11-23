@@ -324,13 +324,19 @@ fn oracle_corpus_validate_cache() {
                 assert_eq!(pushed(&text), Some(pcm.len()), "{}: oracle not fed the whole clip", cached.display());
                 let oracle = parse_wake(&text).unwrap_or_else(|e| panic!("{}: {e}", cached.display()));
                 let (rust, engine_restarts) = spot_cmds(&m, &pcm, &cmds);
-                let o_restarts = restarts(&text);
-                let g = compare_gated(&oracle, &rust, &o_restarts, &engine_restarts, &ends, gate, lead, &thr, true);
-                let mut bad: Vec<String> = g.diffs.iter().map(Diff::to_string).collect();
+                let (o_restarts, kws) = (restarts(&text), m.keywords());
+                let e_restarts = &engine_restarts;
+                let g = compare_gated(kws, &oracle, &rust, &o_restarts, e_restarts, &ends, gate, lead, &thr, true);
+                let (mut t, mut skip, mut bad) = (Tally::default(), GateTally::default(), Vec::new());
+                for k in g.per_kw.values() {
+                    t.add(&k.tally);
+                    skip.add(&k.gate);
+                    bad.extend(k.diffs.iter().map(Diff::to_string));
+                }
                 if let Some((a, b)) = g.restart_mismatch {
                     bad.push(format!("restart samples differ: oracle {a:?} engine {b:?}"));
                 }
-                Some((format!("{group}/{clip}"), g.tally, bad, g.gate))
+                Some((format!("{group}/{clip}"), t, bad, skip))
             });
             let missing = results.iter().filter(|r| r.is_none()).count();
             assert!(missing < chosen.len(), "{name} [{}]: nothing cached", pass.name);
