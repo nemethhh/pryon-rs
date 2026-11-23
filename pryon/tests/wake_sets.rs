@@ -149,11 +149,12 @@ fn restart_trigger_fields() {
 #[test]
 fn multi_word_spotter_checks() {
     // libpryon's KeywordMultiWordSpotter: a smoother per component, at most two, the last remembering one frame
-    let cases: [(&str, &str, &str); 4] = [
+    let cases: [(&str, &str, &str); 5] = [
         (r#""posterior-smoothers": [ { "type": "exponential-decay", "decay-rate": 0.0 },"#, r#""posterior-smoothers": ["#, "posterior-smoothers"),
         (r#""word-score-history-size": 1, "#, r#""word-score-history-size": 2, "#, "must be 1"),
         (r#""word-score-history-size": 100, "#, "", "word-score-history-size = None"),
         (r#""word-score-history-size": 100, "#, r#""word-score-history-size": 0, "#, "word-score-history-size = Some(0)"),
+        (r#""word-score-history-size": 100, "#, r#""word-score-history-size": 1000000000000, "#, "buffer-size"),
     ];
     for (from, to, want) in cases {
         let d = davs("multi-word");

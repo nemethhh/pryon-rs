@@ -411,8 +411,12 @@ fn multi_word(d: &Doc, s: &Obj, components: &[WordComponent], smoothers: &[f32])
     }
     for (i, w) in components.iter().enumerate() {
         match w.history {
-            Some(h) if h >= 1 => {}
-            h => return Err(d.unsup(format!("{wca}[{i}].word-score-history-size = {h:?} (implemented: >= 1)"))),
+            // a history of frames longer than the orchestra's frame buffer is implausible
+            Some(h) if (1..=ORCHESTRA_FRAMES).contains(&h) => {}
+            h => {
+                let want = format!("implemented: 1 to {ORCHESTRA_FRAMES}, the keyword-orchestra buffer-size");
+                return Err(d.unsup(format!("{wca}[{i}].word-score-history-size = {h:?} ({want})")));
+            }
         }
     }
     if components.last().and_then(|w| w.history) != Some(1) {
@@ -435,6 +439,9 @@ const SPOTTER_KEYS: &[&str] = &[
     "posterior-smoothers",
     "is-local-command",
 ];
+
+/// keyword-orchestra buffer-size, in frames.
+const ORCHESTRA_FRAMES: usize = 200;
 
 const COMPONENT_KEYS: &[&str] = &[
     "scorer-index",
@@ -546,7 +553,7 @@ pub(crate) fn spotters(
         return Err(d.unsup(format!("{} = {f}, but id2word.mapping_filepath names {words_file}", wst.at("filename"))));
     }
     let orch = d.sub(&top, "keyword-orchestra", &["buffer-size", "keyword-spotters"])?;
-    d.pin_num(&orch, "buffer-size", 200.0, true)?;
+    d.pin_num(&orch, "buffer-size", ORCHESTRA_FRAMES as f32, true)?;
     let list = d.items(&orch, "keyword-spotters", &["name", "classifier", "scorers", "spotter"])?;
     if list.is_empty() {
         return Err(d.bad(format!("{} is empty", orch.at("keyword-spotters"))));
