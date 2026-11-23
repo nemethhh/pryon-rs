@@ -370,10 +370,10 @@ qemu-arm against an Echo Dot 3 root filesystem:
 
     pryon-cli synth noise noise.raw
     unshare --user --map-root-user --pid --fork --kill-child \
-      qemu-arm -L $ROOTFS aed_test -m MODEL/pryon.manifest -x 1000 -j noise.raw > noise.txt
+      qemu-arm -L $ROOTFS aed_test -m MODEL/pryon.manifest -x 1 -j noise.raw > noise.txt
 
-Each file must have floor(samples / 159680) windows; if one has fewer, rerun with a lower `-x`, because the library
-dropped audio. The tests compare the printed scores (6 decimals), the decisions, `maxEnergyLevel` and
+In real time (`-x 1`): faster, libpryon may drop audio once its backlog passes about 7 s and log `Audio backlog size
+reset`. Each file must have floor(samples / 159680) windows and no such line. The tests compare the printed scores (6 decimals), the decisions, `maxEnergyLevel` and
 `numSamplesAboveEnergyThreshold`. `davs/bits/<clip>.txt` adds the exact score bits of each window, from a Python
 reference of the recipe that matches the printed scores.
 
@@ -389,7 +389,7 @@ libpryon does on the device). No fixture is affected. Run on the device to confi
 
 `pryon/tests/fixtures/wake/{fw,alexa}/<clip>.txt` are the wake events of `pryon_test` (echo-dot-assist
 `src/tools/pryon_test.c`) for the firmware ALEXA set and alexa-en-US on the synthetic clips, run as above with
-`-m SET/pryon.manifest -x 1000`. Their tests need `PRYON_WAKE_FW_DIR` and `PRYON_WAKE_SETS_DIR`.
+`-m SET/pryon.manifest -x 1` (at `-x 1000` libpryon drops most of these 20-25 s clips). Their tests need `PRYON_WAKE_FW_DIR` and `PRYON_WAKE_SETS_DIR`.
 
 `synth-{fw,davs}/<clip>.txt` are libpryon's events for the synthetic sets of `pryon-cli synth-wake-set fw|davs DIR
 --force 0.99` on the same clips; they probe libpryon's keyword rules. They were run in real time (`-x 1`): a set
