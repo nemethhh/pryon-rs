@@ -5,9 +5,9 @@ use pryon_testkit::compare::{
     compare as compare_events, compare_gated, oracle_cache_key, pad_clip, pushed, Diff, Ev, GateTally, Limits, Tally,
     FW_GATE_MAX_FRAMES, LEAD_MS, TAIL_MS,
 };
-use pryon_testkit::oracle::{parse_wake, restarts, OracleCmd, OracleEvent, OracleKind};
+use pryon_testkit::oracle::{deterministic_set, parse_wake, restarts, OracleCmd, OracleEnv, OracleEvent, OracleKind};
 use pryon_testkit::wakeset::{write_davs_set, write_fw_set, WakeSetOpts};
-use pryon_testkit::{synth, Clip, TempDir};
+use pryon_testkit::{lsb_stream, lsb_stream_with, synth, Clip, LsbFrame, TempDir};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -420,12 +420,17 @@ fn probe_set(name: &str, fw: bool, force: f32, edits: &[(Cfg, Edit)]) -> (TempDi
 
 /// Rust's events and restart samples, the commands applied before their samples in pryon_test's order.
 fn spot_cmds(m: &Arc<SpotterModel>, pcm: &[i16], cmds: &[Cmd]) -> (Vec<Ev>, Vec<u64>) {
+    let (d, restarts) = detect_cmds(m, pcm, cmds, SpotterOptions::default());
+    (from_rust(m.keywords(), &d), restarts)
+}
+
+fn detect_cmds(m: &Arc<SpotterModel>, pcm: &[i16], cmds: &[Cmd], opts: SpotterOptions) -> (Vec<Detection>, Vec<u64>) {
     let at = |c: &Cmd| match *c {
         Cmd::Prop(s, ..) | Cmd::End(s) => s as usize,
     };
     let mut cmds: Vec<&Cmd> = cmds.iter().collect();
     cmds.sort_by_key(|c| at(c));
-    let mut sp = Spotter::new(m.clone(), SpotterOptions::default()).unwrap();
+    let mut sp = Spotter::new(m.clone(), opts).unwrap();
     let (mut out, mut restarts, mut pos, mut next) = (Vec::new(), Vec::new(), 0usize, 0usize);
     loop {
         while next < cmds.len() && at(cmds[next]) <= pos {
@@ -446,7 +451,7 @@ fn spot_cmds(m: &Arc<SpotterModel>, pcm: &[i16], cmds: &[Cmd]) -> (Vec<Ev>, Vec<
         }
         pos = end;
     }
-    (from_rust(m.keywords(), &out), restarts)
+    (out, restarts)
 }
 
 fn fixture(dir: &str, name: &str) -> String {
@@ -761,4 +766,261 @@ fn prob_accept_not_emitted() {
     let r1 = spot(&m, &synth(Clip::Noise), 1600);
     assert_eq!(r1.iter().map(ev_line).collect::<Vec<_>>(), r0.iter().map(ev_line).collect::<Vec<_>>());
     assert!(r1.iter().filter(|e| e.keyword == "ALEXA").all(|e| e.kind == OracleKind::NearMiss));
+}
+
+const ECHO: SpotterOptions = SpotterOptions { echo_stream: true };
+
+/// Frame kinds of the `mixed` AFE clip: clean lead-in, corrupt frames, every parsed version, clean gaps, a version
+/// flipping every frame (local/afe16/dump).
+fn mixed(k: usize) -> LsbFrame {
+    match k {
+        0..300 => LsbFrame::Clean,
+        300..700 if k % 3 == 0 => LsbFrame::Corrupt,
+        300..700 => LsbFrame::V3_3,
+        700..900 => LsbFrame::V2_4,
+        900..1000 => LsbFrame::V2_0,
+        1000..1100 => LsbFrame::V3_0,
+        1100..1300 => LsbFrame::V0_0,
+        1300..1500 => LsbFrame::Clean,
+        1500..1600 if k % 2 == 0 => LsbFrame::V3_3,
+        1500..1600 => LsbFrame::V2_4,
+        1600..2000 => LsbFrame::V1_0,
+        _ => LsbFrame::V3_3,
+    }
+}
+
+type AfeLine = (String, OracleKind, u64, u64, Option<(i64, i64)>);
+
+fn afe_lines(mut v: Vec<AfeLine>) -> Vec<AfeLine> {
+    v.sort_by_key(|l| (l.3, l.2, l.0.clone()));
+    v
+}
+
+/// `tests/fixtures/wake/synth-afe/<name>.txt` (libpryon on a testkit LSB clip, -x 1, two identical runs): every
+/// event as in `check_probe`, and each one's AFE times equal libpryon's META times. Returns the engine's lines.
+fn check_afe(name: &str, fw: bool, force: f32, edits: &[(Cfg, Edit)], cmds: &[Cmd], pcm: &[i16]) -> Vec<AfeLine> {
+    let (d, m) = probe_set(name, fw, force, edits);
+    let text = fixture("synth-afe", name);
+    let oracle = parse_wake(&text).unwrap();
+    assert_eq!(pushed(&text), Some(pcm.len()), "synth-afe/{name}: the oracle was not fed the whole clip");
+    let (det, restarts) = detect_cmds(&m, pcm, cmds, ECHO);
+    let mut diff = Vec::new();
+    let t = compare_events(&oracle, &from_rust(m.keywords(), &det), &thresholds(&d), true, &mut diff);
+    let diffs: Vec<String> = diff.iter().map(Diff::to_string).collect();
+    assert!(t.clean(), "synth-afe/{name}:\n{}", diffs.join("\n"));
+    let kws = m.keywords();
+    let got = afe_lines(
+        det.iter()
+            .map(|d| {
+                let afe = d.afe.map(|a| (a.start, a.end));
+                (kws[d.keyword].clone(), kind_of(d.kind), d.begin_sample, d.end_sample, afe)
+            })
+            .collect(),
+    );
+    let want = afe_lines(oracle.iter().map(|e| (e.keyword.clone(), e.kind, e.begin, e.end, e.afe)).collect());
+    // a firmware set's network runs from uninitialised state for a while after each start: libpryon's keyword end
+    // there is garbage, so only whether times exist is compared (compare_gated's window)
+    let (spec, mut excused) = (load_set(&d).unwrap(), 0);
+    let ends = cmds.iter().filter_map(|c| if let Cmd::End(at) = *c { Some(at) } else { None });
+    let starts: Vec<u64> = std::iter::once(0).chain(restarts).chain(ends).collect();
+    let gate = (FW_GATE_MAX_FRAMES + spec.longest_lock()) * 160;
+    let window = |s: u64, end: u64| end > s && end < s + gate;
+    let gated = |l: &AfeLine| spec.uninitialised_state() && starts.iter().any(|&s| window(s, l.3));
+    let blur = |v: Vec<AfeLine>, n: &mut usize| -> Vec<AfeLine> {
+        v.into_iter()
+            .map(|mut l| {
+                if gated(&l) && l.4.is_some() {
+                    l.4 = Some((-1, -1));
+                    *n += 1;
+                }
+                l
+            })
+            .collect()
+    };
+    let (got_cmp, want) = (blur(got.clone(), &mut excused), blur(want, &mut 0));
+    assert_eq!(got_cmp, want, "synth-afe/{name}");
+    println!("synth-afe/{name}: {excused} events in the firmware start window compared without times");
+    println!("synth-afe/{name}: {} events, {} with AFE times", got.len(), got.iter().filter(|l| l.4.is_some()).count());
+    got
+}
+
+fn lsb_noise(clock: u32) -> Vec<i16> {
+    lsb_stream(synth(Clip::Noise), clock)
+}
+
+#[test]
+fn afe_synth_sets_match_oracle() {
+    let fw = check_afe("fw_99", true, 0.99, &[], &[], &lsb_noise(1000));
+    assert!(fw.iter().all(|l| l.4.is_some()));
+    let wrap = check_afe("davs_99_wrap", false, 0.99, &[], &[], &lsb_noise(60000));
+    let after = wrap.iter().filter(|l| l.4.is_some_and(|(s, _)| s < 60000)).count();
+    assert!(after > 0 && after < wrap.len(), "the clock passes 65535 mid-clip");
+    // near misses and probabilistic windows carry times too
+    let nm = check_afe("davs_f08", false, 0.8, &[], &[], &lsb_noise(1000));
+    assert!(nm.iter().any(|l| l.1 == OracleKind::NearMiss && l.4.is_some()));
+    // STOP starts at sample 0: libpryon's lookup returns a zeroed record there
+    let stop = [(Cfg::Kw, Edit::Once(r#""accept-threshold": 0.5 }"#, r#""accept-threshold": 0.04 }"#))];
+    let r = check_afe("fw_stop", true, 0.91, &stop, &[], &lsb_noise(1000));
+    assert!(r.iter().any(|l| l.0 == "STOP" && l.2 == 0 && l.4.is_some_and(|(s, _)| s == 0)));
+}
+
+#[test]
+fn afe_aggregator_matches_oracle() {
+    let edits = [
+        (Cfg::Kw, Edit::Once(DISNEY_ACCEPT, r#""accept-threshold": 0.15, "notify-threshold": 0.2"#)),
+        (Cfg::Kw, Edit::Once(STOP_ACCEPT, r#""classification-thresholds": { "accept-threshold": 0.3 }"#)),
+    ];
+    let r = check_afe("hey_wakes", false, 0.4, &edits, &[], &lsb_noise(1000));
+    assert!(r.iter().any(|l| l.0 == "HEY_DISNEY" && l.4.is_some()));
+}
+
+#[test]
+fn afe_session_end_and_restart_match_oracle() {
+    // the session end flushes libpryon's decoder before the pending near miss is reported
+    let r = check_afe("fw_f08_se", true, 0.8, &[], &[Cmd::End(8080), Cmd::End(50001)], &lsb_noise(1000));
+    assert_eq!(r.iter().map(|l| (l.1, l.3, l.4)).collect::<Vec<_>>(), [(OracleKind::NearMiss, 7840, None)]);
+    let r = check_afe("davs_99_se", false, 0.99, &[], &[Cmd::End(30001)], &lsb_noise(1000));
+    assert!(r.iter().any(|l| l.3 > 30001 && l.4.is_some()));
+    let edits = [(
+        Cfg::Kw,
+        Edit::Once(
+            r#""restart-trigger": { "max-event-count": 30, "evaluation-span-msec": 180000 }"#,
+            r#""restart-trigger": { "max-event-count": 3, "evaluation-span-msec": 180000 }"#,
+        ),
+    )];
+    check_afe("rs_davs_99_3", false, 0.99, &edits, &[], &lsb_noise(1000));
+}
+
+#[test]
+fn afe_frame_kinds_match_oracle() {
+    let pcm = lsb_stream_with(synth(Clip::Noise), 0, mixed);
+    for (name, fw) in [("fw_99_mixed", true), ("davs_99_mixed", false)] {
+        let r = check_afe(name, fw, 0.99, &[], &[], &pcm);
+        assert!(r.iter().any(|l| l.4.is_none()) && r.iter().any(|l| l.4.is_some()), "{name}");
+    }
+}
+
+#[test]
+fn afe_clean_audio_matches_oracle() {
+    // the low bits of this clean clip pass for a frame without a clock: libpryon reports times of 0
+    let pcm = synth(Clip::QuietTones);
+    for (name, fw) in [("fw_99_quiet_tones", true), ("davs_99_quiet_tones", false)] {
+        let r = check_afe(name, fw, 0.99, &[], &[], &pcm);
+        assert!(r.iter().any(|l| l.4 == Some((0, 0))) && r.iter().any(|l| l.4.is_none()), "{name}");
+    }
+}
+
+#[test]
+fn afe_off_by_default() {
+    let pcm = lsb_noise(1000);
+    for fw in [true, false] {
+        let (_d, m) = synth_model(fw, Some(0.99), "afe-off");
+        let plain = run(&mut Spotter::new(m.clone(), SpotterOptions::default()).unwrap(), &pcm, 1600);
+        assert!(!plain.is_empty() && plain.iter().all(|d| d.afe.is_none()), "fw {fw}");
+        let echo = run(&mut Spotter::new(m.clone(), ECHO).unwrap(), &pcm, 1600);
+        assert!(echo.iter().all(|d| d.afe.is_some()), "fw {fw}");
+        let strip = |d: &[Detection]| d.iter().map(|x| Detection { afe: None, ..x.clone() }).collect::<Vec<_>>();
+        assert_eq!(strip(&echo), plain, "fw {fw}: the option changes nothing else");
+    }
+}
+
+#[test]
+fn afe_none_on_clean_audio() {
+    let (_d, m) = synth_model(true, Some(0.99), "afe-clean");
+    let out = run(&mut Spotter::new(m, ECHO).unwrap(), &synth(Clip::Noise), 1600);
+    assert!(!out.is_empty() && out.iter().all(|d| d.afe.is_none()));
+}
+
+#[test]
+fn afe_chunking_invariant() {
+    let pcm = &lsb_stream_with(synth(Clip::Noise), 65000, mixed)[..16000 * 12 + 77];
+    for fw in [true, false] {
+        let (_d, m) = synth_model(fw, Some(0.99), "afe-chunks");
+        let whole = run(&mut Spotter::new(m.clone(), ECHO).unwrap(), pcm, pcm.len());
+        assert!(whole.iter().any(|d| d.afe.is_some()), "fw {fw}");
+        for chunk in [1, 7, 128, 160, 1280, 3333] {
+            let got = run(&mut Spotter::new(m.clone(), ECHO).unwrap(), pcm, chunk);
+            assert_eq!(bits(&got), bits(&whole), "fw {fw} chunk {chunk}");
+        }
+    }
+}
+
+#[test]
+fn afe_after_reset() {
+    let pcm = lsb_noise(0);
+    let (_d, m) = synth_model(false, Some(0.99), "afe-reset");
+    let mut sp = Spotter::new(m, ECHO).unwrap();
+    let mut out = run(&mut sp, &pcm[..48000], 1600);
+    sp.reset(&mut out);
+    let before = out.len();
+    sp.feed(&pcm[48000..96000], &mut out);
+    // the first frame after the session end decodes at 48128: later starts read their own frames again
+    assert!(out.len() > before);
+    for d in &out[before..] {
+        let start = d.afe.map(|a| a.start);
+        assert_eq!(start, Some((d.begin_sample / 128 * 8) as i64), "{d:?}");
+        assert!(d.begin_sample >= 48000 + 160);
+    }
+}
+
+/// `PRYON_AFE_CLIP`: an Echo `micAsr` capture (16 kHz s16le `.raw`, or a directory of them) through libpryon and
+/// the engine; every oracle accept has an engine accept with the same keyword, begin, end and META times.
+#[test]
+fn afe_matches_oracle_meta() {
+    let Some(clip) = env_dir("PRYON_AFE_CLIP") else { return };
+    let Some(env) = OracleEnv::from_env() else {
+        println!("skipped: set PRYON_ORACLE_ROOTFS and PRYON_PRYON_TEST");
+        return;
+    };
+    let clips: Vec<PathBuf> = if clip.is_dir() {
+        let mut v: Vec<PathBuf> = std::fs::read_dir(&clip).unwrap().map(|e| e.unwrap().path()).collect();
+        v.retain(|p| p.extension().is_some_and(|e| e == "raw"));
+        v.sort();
+        v
+    } else {
+        vec![clip]
+    };
+    let sets: Vec<(&str, PathBuf)> = ["fw", "alexa"].iter().filter_map(|s| real_set(s).map(|d| (*s, d))).collect();
+    assert!(!sets.is_empty(), "set PRYON_WAKE_FW_DIR or PRYON_WAKE_SETS_DIR");
+    let work = TempDir::new("afe-oracle");
+    let (mut accepts, mut timed) = (0, 0);
+    for (name, dir) in &sets {
+        let m = Arc::new(SpotterModel::load(dir).unwrap());
+        // libpryon's firmware-set events in its start window are garbage-dependent (compare_gated): not compared
+        let spec = load_set(dir).unwrap();
+        let gate = spec.uninitialised_state().then(|| (FW_GATE_MAX_FRAMES + spec.longest_lock()) * 160);
+        let oracle_set = deterministic_set(dir, &work.join(name)).unwrap();
+        let manifest = oracle_set.join("pryon.manifest");
+        let results = par_map(&clips, |path| {
+            let text = env.run_wake(&manifest, path, &[]).unwrap();
+            assert_eq!(pushed(&text), Some(read_clip(path).len()), "{}: oracle not fed the whole clip", path.display());
+            let oracle = parse_wake(&text).unwrap();
+            let rust = run(&mut Spotter::new(m.clone(), ECHO).unwrap(), &read_clip(path), 1600);
+            let kws = m.keywords();
+            let mut bad = Vec::new();
+            let (mut n, mut t) = (0, 0);
+            let outside = |o: &&OracleEvent| gate.is_none_or(|g| o.end >= g);
+            for o in oracle.iter().filter(|o| o.kind != OracleKind::NearMiss).filter(outside) {
+                n += 1;
+                t += usize::from(o.afe.is_some());
+                let r = rust.iter().find(|d| {
+                    let same = (d.begin_sample, d.end_sample) == (o.begin, o.end);
+                    kws[d.keyword] == o.keyword && kind_of(d.kind) == o.kind && same
+                });
+                let got = r.map(|d| d.afe.map(|a| (a.start, a.end)));
+                if got != Some(o.afe) {
+                    let (k, b, e) = (&o.keyword, o.begin, o.end);
+                    bad.push(format!("{k} {:?} {b}..{e}: oracle {:?}, engine {got:?}", o.kind, o.afe));
+                }
+            }
+            (path.display().to_string(), n, t, bad)
+        });
+        for (path, n, t, bad) in results {
+            println!("{name} {path}: {n} accepts, {t} with AFE times");
+            assert!(bad.is_empty(), "{name} {path}:\n{}", bad.join("\n"));
+            (accepts, timed) = (accepts + n, timed + t);
+        }
+    }
+    assert!(accepts > 0, "no accept in {} clip(s)", clips.len());
+    assert!(timed > 0, "no accept with AFE times: the clip carries no front-end metadata");
 }

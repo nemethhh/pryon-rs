@@ -4,6 +4,7 @@
 mod classifier;
 mod machine;
 
+use super::afe::AfeClock;
 use super::kwcfg::{ClassifierSpec, RestartSpec, SpotterSpec};
 use super::pipeline::{LoadedSet, StepOut};
 use super::{Detection, DetectionKind};
@@ -20,10 +21,14 @@ const FRAME_MS: u32 = 10;
 const PREROLL_MS: f32 = 500.0;
 /// Lowest start-alignment score libpryon accepts as valid (predicted_index_calculator.cpp).
 const START_FLOOR: f32 = -0.25;
+/// Highest end-alignment score libpryon accepts as valid (predicted_index_calculator.cpp).
+const END_CAP: f32 = 1.25;
 /// Keywords per set the machine's masks hold.
 const MAX_KEYWORDS: usize = 64;
 /// Word components of a multi-word spotter (libpryon asserts at most two).
 const MAX_WORDS: usize = 2;
+/// Bound on the AFE frames kept for lookups (about 8.4 s).
+const MAX_AFE_RECORDS: usize = 1 << 16;
 
 /// Active thresholds after libpryon's clamps (keyword_spotter_thresholds.cpp, 0x9c2468).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -63,18 +68,22 @@ enum State {
     Held(u64),
 }
 
-/// Score and keyword start frame (the spotter's own count) of a candidate detection.
+/// Score and keyword start and end frames (the spotter's own count) of a candidate detection.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Cand {
     score: f32,
     start: u64,
+    /// kwSampleEndIndex's frame: only the AFE clock reads it.
+    end: u64,
 }
+
+const NO_CAND: Cand = Cand { score: 0.0, start: 1, end: 2 };
 
 /// How a spotter turns a step into a score and a keyword start.
 #[derive(Debug)]
 enum Scorer {
-    /// KeywordSingleStageSpotter: one class column through its smoother; the start row at the smoother's index.
-    Single { col: Column, se: Column, smoother: Smoother },
+    /// KeywordSingleStageSpotter: one class column through its smoother; the start/end row at the smoother's index.
+    Single { col: Column, se: StartEnd, smoother: Smoother },
     /// KeywordMultiWordSpotter: word components under a weighted geometric average; the start is the first
     /// component's best entry's.
     Words { words: Vec<Word>, exps: Vec<Exp>, inv: Exp },
@@ -111,18 +120,40 @@ enum Action {
     Notify,
 }
 
-/// Keyword start frame for a step ending at frame `f` (predicted_index_calculator.cpp, 0x9dee6c).
-fn start_frame(kw_window: u32, cap: f32, s: f32, f: u64) -> u64 {
+/// The keyword-start-end-component's start and end columns.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct StartEnd {
+    start: Column,
+    end: Column,
+}
+
+/// Keyword start and end frames for a step ending at frame `f` from the start and end alignment scores `s`, `e`
+/// (predicted_index_calculator.cpp, 0x9dee6c).
+fn kw_frames(kw_window: u32, cap: f32, s: f32, e: f32, f: u64) -> (u64, u64) {
     let s = if s >= START_FLOOR && cap >= s {
         s
     } else {
         let a = if s > START_FLOOR { s } else { START_FLOOR };
         if a < cap { a } else { cap }
     };
+    // NaN takes the clamping branch, as libpryon's compares do
+    let e = if e >= 0.0 && s < e && e <= END_CAP {
+        e
+    } else {
+        let b = if e > 0.0 { e } else { 0.0 };
+        let b = if b < END_CAP { b } else { END_CAP };
+        if s < b { b } else { s }
+    };
     let n = kw_window as f32;
-    let p = s * n;
-    let start = (p - n) as i64 + f as i64 + 1;
-    if start <= 0 { 1 } else { start as u64 }
+    let start = ((s * n) - n) as i64 + f as i64 + 1;
+    let start = if start <= 0 { 1 } else { start };
+    let end = ((e * n) - n) as i64 + f as i64;
+    let end = if end < 0 || start >= end { start + 1 } else { end };
+    (start as u64, end as u64)
+}
+
+fn start_frame(kw_window: u32, cap: f32, s: f32, f: u64) -> u64 {
+    kw_frames(kw_window, cap, s, 1.0, f).0
 }
 
 impl Spot {
@@ -138,7 +169,8 @@ impl Spot {
         match &mut self.scorer {
             Scorer::Single { col, se, smoother } => {
                 let (score, at) = smoother.score(col, values, t);
-                Cand { score, start: start_frame(n, cap, se.at(values, t, at), own) }
+                let (start, end) = kw_frames(n, cap, se.start.at(values, t, at), se.end.at(values, t, at), own);
+                Cand { score, start, end }
             }
             Scorer::Words { words, exps, inv } => {
                 let mut best = [0.0f32; MAX_WORDS];
@@ -150,7 +182,10 @@ impl Spot {
                 }
                 let k = words.len();
                 let start = words[0].track.max().map_or(1, |e| e.start);
-                Cand { score: aggregate(&best[..k], exps, *inv), start }
+                // the end keeps the single-stage computation the start overrides (0x9b01f8 after 0x9b3f04)
+                let se = words[0].se_end;
+                let end = kw_frames(n, cap, words[0].se.get(values, 0), se.get(values, 0), own).1;
+                Cand { score: aggregate(&best[..k], exps, *inv), start, end }
             }
         }
     }
@@ -245,13 +280,18 @@ impl Orchestra {
                             return Err(what("no keyword-start-end-component".into()));
                         };
                         let se = column(s, se_name, c.start_index)?;
+                        let se_end = column(s, se_name, c.end_index)?;
                         // libpryon reads row 0 of each word's output (0x9afa78)
                         if col.lanes != 1 || se.lanes != 1 {
                             return Err(what(format!("word component over {} lanes (implemented: 1)", col.lanes)));
                         }
+                        // the keyword end comes from one component's start/end row (0x9b3f04): all must agree
+                        if words.first().is_some_and(|w: &Word| (w.se, w.se_end) != (se, se_end)) {
+                            return Err(what("word components with different keyword start/end columns".into()));
+                        }
                         let decay = Smoother::Decay { rate, state: 0.0 };
                         let track = Tracker::new(c.history.unwrap_or(1));
-                        words.push(Word { col, se, decay, track });
+                        words.push(Word { col, se, se_end, decay, track });
                     }
                     Scorer::Words { words, exps, inv }
                 }
@@ -274,8 +314,9 @@ impl Orchestra {
                     let Some(se_name) = &c.start_end else {
                         return Err(what("no keyword-start-end-component".into()));
                     };
-                    let se = column(s, se_name, c.start_index)?;
-                    if se.lanes != col.lanes {
+                    let (start, end) = (column(s, se_name, c.start_index)?, column(s, se_name, c.end_index)?);
+                    let se = StartEnd { start, end };
+                    if se.start.lanes != col.lanes {
                         return Err(what("start/end lanes differ from score lanes".into()));
                     }
                     match smoother {
@@ -315,7 +356,7 @@ impl Orchestra {
                 kw_window: s.kw_window,
                 start_cap: if cap > 1.0 { 1.0 } else { cap },
                 state: State::Idle,
-                cand: Cand { score: 0.0, start: 1 },
+                cand: NO_CAND,
                 prev: -f32::MAX,
                 sibling: None,
                 own: 0,
@@ -381,11 +422,11 @@ impl Orchestra {
 
     /// Session end at stream sample `origin`: a pending notify near miss is reported, every spotter restarts (its
     /// rising-score memory aside), the machine returns to its initial state and frames count from `origin`.
-    pub fn reset(&mut self, origin: u64, out: &mut Vec<Detection>) {
+    pub fn reset(&mut self, origin: u64, afe: Option<&AfeClock>, out: &mut Vec<Detection>) {
         for i in 0..self.spots.len() {
             let sp = &self.spots[i];
             if let (true, false, State::Notify(_)) = (self.machine.allows(sp.keyword), sp.aux, sp.state) {
-                out.push(self.detection(i, DetectionKind::NearMiss, sp.cand, self.frame));
+                out.push(self.detection(i, DetectionKind::NearMiss, sp.cand, self.frame, afe));
                 self.count(sp.keyword, self.frame);
             }
         }
@@ -417,7 +458,7 @@ impl Orchestra {
     }
 
     /// One front-end frame (`f` frames since the origin), scored when it completes a step; appends its detections.
-    pub fn tick(&mut self, f: u64, step: Option<&StepOut>, out: &mut Vec<Detection>) {
+    pub fn tick(&mut self, f: u64, step: Option<&StepOut>, afe: Option<&AfeClock>, out: &mut Vec<Detection>) {
         self.frame = f;
         self.apply_pending((f - 1) * FRAME_SAMPLES);
         // the machine runs before the orchestra counts the frame (0x9bd990)
@@ -428,9 +469,9 @@ impl Orchestra {
                 continue;
             }
             self.spots[i].own += 1;
-            self.deadline(i, f, out);
+            self.deadline(i, f, afe, out);
             if let Some(s) = step {
-                self.score(i, f, s, out);
+                self.score(i, f, s, afe, out);
             }
             // the restart throws out of the frame: later spotters do not run
             if self.restart_due {
@@ -452,27 +493,41 @@ impl Orchestra {
         }
     }
 
-    fn detection(&self, i: usize, kind: DetectionKind, c: Cand, f: u64) -> Detection {
+    fn detection(&self, i: usize, kind: DetectionKind, c: Cand, f: u64, afe: Option<&AfeClock>) -> Detection {
         let sp = &self.spots[i];
-        let begin = c.start + f - sp.own;
-        Detection {
-            keyword: sp.keyword,
-            kind,
-            score: c.score,
-            begin_sample: self.origin + begin * FRAME_SAMPLES,
-            end_sample: self.origin + f * FRAME_SAMPLES,
-            afe: None,
-        }
+        let sample = |own: u64| self.origin + (own + f - sp.own) * FRAME_SAMPLES;
+        let (begin_sample, end_sample) = (sample(c.start), self.origin + f * FRAME_SAMPLES);
+        let afe = afe.and_then(|a| a.times(begin_sample, sample(c.end), end_sample));
+        Detection { keyword: sp.keyword, kind, score: c.score, begin_sample, end_sample, afe }
+    }
+
+    /// AFE frames (128 samples) back to the oldest keyword start a detection can report: 1.25 keyword windows
+    /// before its candidate frame, a near-miss lock period and a word-score history before the report.
+    pub fn afe_records(&self) -> usize {
+        let frames = self
+            .spots
+            .iter()
+            .map(|sp| {
+                let history = match &sp.scorer {
+                    Scorer::Words { words, .. } => words.iter().map(|w| w.track.cap() as u64).max().unwrap_or(0),
+                    Scorer::Single { .. } => 0,
+                };
+                (u64::from(sp.kw_window) * 5).div_ceil(4) + 2 + sp.notify_lock.max(sp.prob_lock) + history
+            })
+            .max()
+            .unwrap_or(0);
+        // libpryon delivers no start older than its history; ours stops here
+        (frames * FRAME_SAMPLES / 128 + 4).min(MAX_AFE_RECORDS as u64) as usize
     }
 
     /// State update at the start of the spotter's frame (keyword_spotter.cpp, 0x9b5488).
-    fn deadline(&mut self, i: usize, f: u64, out: &mut Vec<Detection>) {
+    fn deadline(&mut self, i: usize, f: u64, afe: Option<&AfeClock>, out: &mut Vec<Detection>) {
         let sp = &self.spots[i];
         match sp.state {
             State::Notify(d) | State::Prob(d) if d == sp.own => {
                 // a verifier's near miss is dropped by libpryon's result builder ("Unexpected detection event type")
                 if !sp.aux {
-                    out.push(self.detection(i, DetectionKind::NearMiss, sp.cand, f));
+                    out.push(self.detection(i, DetectionKind::NearMiss, sp.cand, f, afe));
                     self.count(sp.keyword, f);
                 }
                 self.spots[i].state = State::Idle;
@@ -484,7 +539,7 @@ impl Orchestra {
 
     /// keyword_single_stage_spotter.cpp (0x9b362c, shared by the multi-word spotter) and the action it returns
     /// (keyword_spotter.cpp, 0x9b5248).
-    fn score(&mut self, i: usize, f: u64, step: &StepOut, out: &mut Vec<Detection>) {
+    fn score(&mut self, i: usize, f: u64, step: &StepOut, afe: Option<&AfeClock>, out: &mut Vec<Detection>) {
         let thr = self.spots[i].active(&self.props);
         let sp = &mut self.spots[i];
         if let State::Held(_) = sp.state {
@@ -519,7 +574,7 @@ impl Orchestra {
                 if let Some(j) = sibling {
                     self.spots[j].state = State::Held(until);
                 }
-                out.push(self.detection(i, kind, cur, f));
+                out.push(self.detection(i, kind, cur, f, afe));
                 self.accepted(keyword, f);
             }
             Some(Action::Prob) => {
@@ -571,7 +626,10 @@ mod tests {
             aux,
             scorer: Scorer::Single {
                 col: Column { comp: 0, lanes: LANES, classes: 2, class: 1 },
-                se: Column { comp: 1, lanes: LANES, classes: 2, class: 0 },
+                se: StartEnd {
+                    start: Column { comp: 1, lanes: LANES, classes: 2, class: 0 },
+                    end: Column { comp: 1, lanes: LANES, classes: 2, class: 1 },
+                },
                 smoother: Smoother::MaxPool { window: 1, trim: 0 },
             },
             thr: Thr::new(accept, prob, notify),
@@ -582,7 +640,7 @@ mod tests {
             kw_window: 10,
             start_cap: 1.0,
             state: State::Idle,
-            cand: Cand { score: 0.0, start: 1 },
+            cand: NO_CAND,
             prev: -f32::MAX,
             sibling: None,
             own: 0,
@@ -599,7 +657,7 @@ mod tests {
             let e: Vec<f32> = (0..LANES).flat_map(|_| [a, 1.0]).collect();
             let vals: [&[f32]; 2] = [&v, &e];
             let so = st.map(|t| StepOut { step: t, frames: f, values: &vals });
-            o.tick(f, so.as_ref(), &mut out);
+            o.tick(f, so.as_ref(), None, &mut out);
         }
         out.iter().map(|d| (d.kind, d.keyword, d.score, d.begin_sample / 160, d.end_sample / 160)).collect()
     }
@@ -645,6 +703,23 @@ mod tests {
         let mut steps = vec![(0.1, 0.0); 12];
         steps[11] = (0.95, 0.3);
         assert_eq!(run(&mut o, &steps, 96), [(Accept, 0, 0.95, 96 + 1 - 70, 96)]);
+    }
+
+    #[test]
+    fn end_from_start_end_component() {
+        // end = f + trunc(100 * e - 100) for start < e <= 1.25, else e clamped to [0, 1.25] and raised to the start;
+        // an end before the stream or not after the start becomes start + 1
+        let end = |s: f32, e: f32, f: u64| kw_frames(100, 0.5, s, e, f).1;
+        assert_eq!(end(0.3, 0.97, 200), 197);
+        assert_eq!(end(0.3, 1.165, 200), 216);
+        assert_eq!(end(0.3, 1.3, 200), 225, "above 1.25");
+        assert_eq!(end(0.6, 1.3, 200), 225, "the start's value is the preroll cap");
+        // the start's own value 0.3 puts the end at 130, before the start 131
+        assert_eq!(end(0.3, 0.2, 200), 132, "not after the start");
+        assert_eq!(end(0.3, -0.5, 200), 132, "negative");
+        assert_eq!(end(0.3, f32::NAN, 200), 132, "NaN is clamped");
+        assert_eq!(end(0.3, 0.73, 6), 2, "before the stream: start 1 + 1");
+        assert_eq!(kw_frames(100, 0.5, 0.3, 0.31, 200), (131, 132), "inside the start's frame");
     }
 
     #[test]
@@ -741,7 +816,10 @@ mod tests {
         let mut v = spot(0, true, 0.9, None, None, 16);
         v.scorer = Scorer::Single {
             col: Column { comp: 0, lanes: 1, classes: 2, class: 1 },
-            se: Column { comp: 1, lanes: 1, classes: 2, class: 0 },
+            se: StartEnd {
+                start: Column { comp: 1, lanes: 1, classes: 2, class: 0 },
+                end: Column { comp: 1, lanes: 1, classes: 2, class: 1 },
+            },
             smoother: Smoother::Decay { rate: 0.5, state: 0.0 },
         };
         p.thr = Thr::new(0.5, None, None);

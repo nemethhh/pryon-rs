@@ -1,5 +1,6 @@
 //! Wake word engine: model sets in the firmware and DAVS layouts, streamed through [`Spotter`].
 
+mod afe;
 mod kwcfg;
 mod pconfig;
 mod pipeline;
@@ -16,6 +17,7 @@ pub use pipeline::{ComponentRef, LoadedSet, Pipeline, StepOut};
 pub use set::{describe, load_set, SetSpec, StageInput, StageSpec};
 
 use crate::Error;
+use afe::AfeClock;
 use rules::Orchestra;
 use std::path::Path;
 use std::sync::Arc;
@@ -48,7 +50,8 @@ impl SpotterModel {
 
 #[derive(Default, Clone)]
 pub struct SpotterOptions {
-    /// The stream carries the Echo's LSB timing marks.
+    /// The stream carries the Echo front end's metadata in its lowest bits (an Echo's `micAsr`): detections get
+    /// [`Detection::afe`] as libpryon reports it. Off: no per-sample work.
     pub echo_stream: bool,
 }
 
@@ -60,10 +63,13 @@ pub enum DetectionKind {
     NearMiss,
 }
 
-/// AFE clock times of a detection on an Echo stream.
+/// The Echo front end's clock (ms, 16 bit, wrapping) at a detection's keyword start and end: libpryon's
+/// `timestamp_before_ww_start` / `timestamp_before_ww_end`, each the clock of the newest metadata frame decoded by the
+/// detection that starts at or before that sample (0 if none, or for sample 0).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct AfeTimes {
     pub start: i64,
+    /// Read at libpryon's keyword end index, which may lie after [`Detection::end_sample`].
     pub end: i64,
 }
 
@@ -76,7 +82,8 @@ pub struct Detection {
     /// Samples since the spotter was created; [`Spotter::reset`] does not restart the count.
     pub begin_sample: u64,
     pub end_sample: u64,
-    /// AFE clock times; not produced yet, so always `None`.
+    /// With [`SpotterOptions::echo_stream`], once a metadata frame has decoded since the spotter's creation, last
+    /// [`Spotter::reset`] or decoder restart (libpryon's `has_audio_lsb_metadata`); otherwise `None`.
     pub afe: Option<AfeTimes>,
 }
 
@@ -85,6 +92,7 @@ pub struct Spotter {
     model: Arc<SpotterModel>,
     pipeline: Pipeline,
     orchestra: Orchestra,
+    afe: Option<AfeClock>,
     /// Samples fed since creation.
     fed: u64,
 }
@@ -93,10 +101,11 @@ const WINDOW: u64 = crate::lfbe::FL as u64;
 const HOP: u64 = crate::lfbe::HOP as u64;
 
 impl Spotter {
-    pub fn new(model: Arc<SpotterModel>, _opts: SpotterOptions) -> Result<Spotter, Error> {
+    pub fn new(model: Arc<SpotterModel>, opts: SpotterOptions) -> Result<Spotter, Error> {
         let pipeline = Pipeline::new(&model.set);
         let orchestra = Orchestra::new(&model.set)?;
-        Ok(Spotter { model, pipeline, orchestra, fed: 0 })
+        let afe = opts.echo_stream.then(|| AfeClock::new(orchestra.afe_records()));
+        Ok(Spotter { model, pipeline, orchestra, afe, fed: 0 })
     }
 
     pub fn keywords(&self) -> &[String] {
@@ -111,13 +120,19 @@ impl Spotter {
             let since = self.fed - self.orchestra.origin();
             let next = if since < WINDOW { WINDOW } else { since + HOP - (since - WINDOW) % HOP };
             let n = rest.len().min((next - since) as usize);
-            let orchestra = &mut self.orchestra;
-            self.pipeline.push_frames(&rest[..n], &mut |f, s| orchestra.tick(f, s, out));
+            if let Some(a) = &mut self.afe {
+                a.push(&rest[..n]);
+            }
+            let (orchestra, afe) = (&mut self.orchestra, self.afe.as_ref());
+            self.pipeline.push_frames(&rest[..n], &mut |f, s| orchestra.tick(f, s, afe, out));
             self.fed += n as u64;
             rest = &rest[n..];
             if self.orchestra.restart_due() {
                 self.pipeline.reset();
                 self.orchestra.restart(self.fed);
+                if let Some(a) = &mut self.afe {
+                    a.flush();
+                }
             }
         }
     }
@@ -136,10 +151,14 @@ impl Spotter {
     }
 
     /// Session end: a pending near miss is reported into `out`, then the front end, network, rings, rules and
-    /// operating state restart; client properties stay and the sample clock keeps counting.
+    /// operating state restart; client properties stay and the sample clock keeps counting. The Echo metadata
+    /// decoder restarts first, so that near miss has no [`Detection::afe`] (libpryon flushes it before).
     pub fn reset(&mut self, out: &mut Vec<Detection>) {
         self.pipeline.reset();
-        self.orchestra.reset(self.fed, out);
+        if let Some(a) = &mut self.afe {
+            a.flush();
+        }
+        self.orchestra.reset(self.fed, self.afe.as_ref(), out);
     }
 }
 
@@ -161,17 +180,18 @@ mod tests {
     #[test]
     fn feed_allocates_nothing() {
         use crate::sound::allocs;
-        for fw in [true, false] {
+        for (fw, echo_stream) in [(true, false), (false, false), (true, true), (false, true)] {
             let (_d, m) = model(fw, 0.99);
-            let mut sp = Spotter::new(m, SpotterOptions::default()).unwrap();
-            let pcm = synth(Clip::Noise);
+            let mut sp = Spotter::new(m, SpotterOptions { echo_stream }).unwrap();
+            let pcm = pryon_testkit::lsb_stream(synth(Clip::Noise), 0);
             let mut out = Vec::with_capacity(1000);
             let before = allocs();
             for c in pcm.chunks(1280) {
                 sp.feed(c, &mut out);
             }
-            assert_eq!(allocs(), before, "fw {fw}: feed allocated");
+            assert_eq!(allocs(), before, "fw {fw} echo {echo_stream}: feed allocated");
             assert!(out.len() > 10, "fw {fw}: {} detections", out.len());
+            assert_eq!(out.iter().all(|d| d.afe.is_some()), echo_stream);
         }
     }
 

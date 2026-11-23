@@ -128,6 +128,89 @@ pub fn synth(clip: Clip) -> Vec<i16> {
     }
 }
 
+/// One 128-sample frame of the Echo's LSB metadata (echo-dot-assist docs/re-vad.md §2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LsbFrame {
+    /// Version 3.3, as both Dots write it.
+    V3_3,
+    /// 3.3 with its checksum off by one.
+    Corrupt,
+    V3_0,
+    V2_0,
+    V2_4,
+    /// No clock field.
+    V1_0,
+    /// No clock field.
+    V0_0,
+    /// The base audio's own low bits.
+    Clean,
+}
+
+/// `base` with the Echo front end's marks in its lowest bits: version 3.3 frames from sample 0, frame `k` carrying
+/// the clock `clock_start + 8 k` (ms, mod 65536) and the frame counter `k mod 64`.
+pub fn lsb_stream(base: Vec<i16>, clock_start: u32) -> Vec<i16> {
+    lsb_stream_with(base, clock_start, |_| LsbFrame::V3_3)
+}
+
+/// As [`lsb_stream`] with frame `k` written as `kind(k)`.
+pub fn lsb_stream_with(mut base: Vec<i16>, clock_start: u32, kind: impl Fn(usize) -> LsbFrame) -> Vec<i16> {
+    for k in 0..base.len() / 128 {
+        let clock = clock_start.wrapping_add(8 * k as u32) & 0xffff;
+        let mut b = Bits(Vec::with_capacity(128));
+        match kind(k) {
+            LsbFrame::Clean => continue,
+            f @ (LsbFrame::V3_3 | LsbFrame::Corrupt | LsbFrame::V3_0) => {
+                let v33 = f != LsbFrame::V3_0;
+                b.put(0xa5, 8).put(if v33 { 0x63 } else { 0x60 }, 8).put(if v33 { 104 } else { 59 }, 7);
+                // counter, clock, ERLE, its flag, RMS, six state bits and the volume
+                b.put(k as u32 % 64, 6).put(clock, 16).put(0, 8).put(1, 1).put(200, 8).put(0, 6).put(60, 7);
+                if v33 {
+                    // mute, ARA, AEC, UED, ES, four spare bits, SSL angle and probability, face angle and
+                    // probability, DNN VAD, five spare bits
+                    b.put(0, 1).put(255, 8).put(0, 5).put(5, 5).put(0, 5).put(0, 4).put(0, 3).put(2, 2);
+                    b.put(0, 3).put(2, 2).put(0, 2).put(0, 5);
+                }
+            }
+            f @ (LsbFrame::V2_0 | LsbFrame::V2_4) => {
+                let v24 = f == LsbFrame::V2_4;
+                b.put(0xa5, 8).put(if v24 { 0x44 } else { 0x40 }, 8).put(if v24 { 104 } else { 73 }, 7);
+                b.put(3, 8).put(1, 1).put(5, 4).put(9, 7).put(60, 7);
+                if v24 {
+                    b.put(200, 8).put(1, 1).put(2, 3);
+                } else {
+                    b.put(6, 6).put(7, 6);
+                }
+                b.put(777, 10).put(clock, 16).put(1, 1);
+                if v24 {
+                    b.put(5, 3).put(321, 10).put(1, 1).put(100, 8).put(50, 8).put(1, 1);
+                }
+            }
+            LsbFrame::V1_0 => {
+                b.put(0xa5, 8).put(0x20, 8).put(77, 8).put(1, 1);
+            }
+            LsbFrame::V0_0 => {
+                b.put(0xa5, 8).put(0, 8).put(0x1234_5678 ^ k as u32, 32);
+            }
+        }
+        let ones = b.0.iter().filter(|&&x| x == 1).count() as u32;
+        b.put(if kind(k) == LsbFrame::Corrupt { ones ^ 1 } else { ones }, 8);
+        for (s, &bit) in base[128 * k..].iter_mut().zip(&b.0) {
+            *s = (*s & !1) | i16::from(bit);
+        }
+    }
+    base
+}
+
+/// Bits, most significant first.
+struct Bits(Vec<u8>);
+
+impl Bits {
+    fn put(&mut self, v: u32, n: u32) -> &mut Bits {
+        self.0.extend((0..n).rev().map(|i| (v >> i & 1) as u8));
+        self
+    }
+}
+
 fn rf(rng: &mut Rng, lo: f32, hi: f32) -> f32 {
     lo + (rng.next_u32() >> 8) as f32 / 16_777_216.0 * (hi - lo)
 }

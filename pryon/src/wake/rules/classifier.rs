@@ -176,6 +176,10 @@ impl Tracker {
         (self.len > 0).then(|| *self.at(self.max))
     }
 
+    pub fn cap(&self) -> usize {
+        self.ring.len()
+    }
+
     pub fn reset(&mut self) {
         (self.head, self.len, self.max) = (0, 0, 0);
     }
@@ -230,6 +234,8 @@ pub(crate) fn aggregator(weights: &[f32]) -> Option<(Vec<Exp>, Exp)> {
 pub(crate) struct Word {
     pub col: Column,
     pub se: Column,
+    /// The keyword-start-end-component's end column.
+    pub se_end: Column,
     pub decay: Smoother,
     pub track: Tracker,
 }

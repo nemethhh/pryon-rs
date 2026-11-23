@@ -215,8 +215,16 @@ that fires on every step makes libpryon fall behind at `-x 1000`, and then the e
 `synth-variants/` and `synth-scripts/` are the same sets with single kw.cfg/op.cfg edits, client properties and
 session ends at given samples (the probes of the keyword rules, the operating-state machine, HEY_DISNEY's
 aggregator, the restart trigger); every one was run twice with identical events.
+`synth-afe/` are such runs on clips carrying the Echo front end's metadata in their lowest bits (testkit
+`lsb_stream`: clocks that wrap, corrupt frames, every metadata version libpryon parses, clean gaps; also the clean
+`quiet_tones`, whose low bits libpryon reads as a frame without a clock); their tests compare
+`SpotterOptions::echo_stream`'s `Detection::afe` with libpryon's `timestamp_before_ww_start/end`. On the firmware
+set the keyword end of events in libpryon's start window comes from uninitialised network state, so only whether
+times exist is compared there. Env-gated `afe_matches_oracle_meta` runs libpryon and the engine on `PRYON_AFE_CLIP`
+(an Echo `micAsr` capture, or a directory of `.raw` clips) with `PRYON_ORACLE_ROOTFS`, `PRYON_PRYON_TEST` and the
+real sets.
 In all wake fixtures the `META` lines keep only the `kw*` fields, `activeKeywords`, `clientProperties` (which also
-carries libpryon's `PryonLastReceivedSampleIndex`) and the LSB-metadata flags.
+carries libpryon's `PryonLastReceivedSampleIndex`), the LSB-metadata flags and, in `synth-afe/`, the AFE times.
 
 ## Third-party notices
 
