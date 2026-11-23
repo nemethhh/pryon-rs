@@ -112,7 +112,7 @@ impl Spotter {
         &self.model.keywords
     }
 
-    /// Feeds PCM of any length; appends the detections it completes.
+    /// Feeds PCM of any length; appends the detections it completes. Bit-exact only under the default FPSCR on ARM.
     pub fn feed(&mut self, pcm: &[i16], out: &mut Vec<Detection>) {
         let mut rest = pcm;
         while !rest.is_empty() {

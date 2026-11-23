@@ -26,7 +26,8 @@
  * chunk, so real-time threads should feed from a worker thread. A trailing partial
  * window yields nothing.
  *
- * A panic inside the library (a bug) fails that call and poisons the handle:
+ * Results are bit-exact only with the calling thread's default FPSCR on ARM (no flush-to-zero,
+ * round to nearest). A panic inside the library (a bug) fails that call and poisons the handle:
  * later feed and set_property calls return -1 and reset does nothing; close it.
  */
 #ifndef PRYON_H
@@ -118,13 +119,15 @@ void pryon_sound_close(pryon_sound *s);
 /* Flag for pryon_spotter_open: the stream carries the Echo front end's metadata in its lowest bits. */
 #define PRYON_SPOTTER_ECHO_STREAM 1u
 
+/* ACCEPT_AUXILIARY is an accept by the keyword's verifier spotter; libpryon reports both accept kinds as an accept. */
 enum { PRYON_DETECTION_ACCEPT = 0, PRYON_DETECTION_ACCEPT_AUXILIARY = 1, PRYON_DETECTION_NEAR_MISS = 2 };
 
 /*
  * One detection. keyword indexes pryon_spotter_keyword_name(); kind is a PRYON_DETECTION_* value;
  * begin_sample/end_sample are stream sample positions. afe_known is 1 only with
  * PRYON_SPOTTER_ECHO_STREAM and when the front end's times are known; then afe_start/afe_end are
- * the raw front-end clock values, otherwise all three are 0.
+ * the raw front-end clock values (16-bit, wrapping, in ms; afe_end may lie after end_sample),
+ * otherwise all three are 0.
  */
 struct pryon_detection {
     int32_t keyword, kind;

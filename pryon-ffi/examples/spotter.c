@@ -18,7 +18,9 @@ _Static_assert(sizeof(struct pryon_detection) == 56, "detection size");
 static const char *kinds[] = {"ACCEPT", "ACCEPT_AUXILIARY", "NEAR_MISS"};
 
 static void print(pryon_spotter *s, const struct pryon_detection *d) {
-    printf("%s %s %.4f begin %llu end %llu", pryon_spotter_keyword_name(s, d->keyword), kinds[d->kind],
+    const char *name = pryon_spotter_keyword_name(s, d->keyword);
+    const char *kind = d->kind >= 0 && d->kind <= PRYON_DETECTION_NEAR_MISS ? kinds[d->kind] : "?";
+    printf("%s %s %.4f begin %llu end %llu", name ? name : "?", kind,
            d->score, (unsigned long long)d->begin_sample, (unsigned long long)d->end_sample);
     if (d->afe_known) printf(" afe %lld %lld", (long long)d->afe_start, (long long)d->afe_end);
     printf("\n");
