@@ -7,29 +7,50 @@ fn profile_dir() -> PathBuf {
     exe.parent().unwrap().parent().unwrap().to_path_buf()
 }
 
-#[test]
-fn c_example_runs() {
+// Builds the cdylib and compiles examples/<name>.c into `work`; None when the host cc cannot run it.
+fn build_example(name: &str, work: &pryon_testkit::TempDir) -> Option<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let prof = profile_dir();
     // Only the host cc can build and run the example.
     if env!("PRYON_FFI_HOST") != env!("PRYON_FFI_TARGET") {
         eprintln!("skipped: cross-target run ({})", env!("PRYON_FFI_TARGET"));
-        return;
+        return None;
     }
     let target_dir = prof.parent().unwrap();
     // Integration tests only link the rlib; build the cdylib (and keep it fresh).
-    let name = prof.file_name().unwrap().to_str().unwrap();
+    let profile = prof.file_name().unwrap().to_str().unwrap();
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".into());
     let st = Command::new(cargo)
         .args(["build", "-q", "-p", "pryon-ffi", "--lib", "--manifest-path"])
         .arg(root.join("Cargo.toml"))
         .arg("--target-dir")
         .arg(target_dir)
-        .args(["--profile", if name == "debug" { "dev" } else { name }])
+        .args(["--profile", if profile == "debug" { "dev" } else { profile }])
         .status()
         .unwrap();
     assert!(st.success(), "cargo build failed");
+    let exe = work.join(name);
+    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
+    let st = Command::new(cc)
+        .args(["-std=c11", "-Wall", "-Werror", "-I"])
+        .arg(root.join("include"))
+        .arg(root.join(format!("examples/{name}.c")))
+        .arg("-L")
+        .arg(&prof)
+        .arg("-lpryon_ffi")
+        .arg(format!("-Wl,-rpath,{}", prof.display()))
+        .arg("-o")
+        .arg(&exe)
+        .status()
+        .expect("system C compiler");
+    assert!(st.success(), "C compile failed");
+    Some(exe)
+}
+
+#[test]
+fn c_example_runs() {
     let work = pryon_testkit::TempDir::new("c-example");
+    let Some(exe) = build_example("sound", &work) else { return };
     let model = work.join("model");
     std::fs::create_dir_all(&model).unwrap();
     pryon_testkit::write_model_dir(&model, 7, 0.5);
@@ -42,22 +63,6 @@ fn c_example_runs() {
     let clip = work.join("noise.s16");
     std::fs::write(&clip, pcm.iter().flat_map(|s| s.to_le_bytes()).collect::<Vec<u8>>()).unwrap();
 
-    let exe = work.join("sound");
-    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".into());
-    let st = Command::new(cc)
-        .args(["-std=c11", "-Wall", "-Werror", "-I"])
-        .arg(root.join("include"))
-        .arg(root.join("examples/sound.c"))
-        .arg("-L")
-        .arg(&prof)
-        .arg("-lpryon_ffi")
-        .arg(format!("-Wl,-rpath,{}", prof.display()))
-        .arg("-o")
-        .arg(&exe)
-        .status()
-        .expect("system C compiler");
-    assert!(st.success(), "C compile failed");
-
     let out = Command::new(&exe).arg(&model).arg(&clip).output().unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(out.status.success(), "exit {:?}: {}", out.status, String::from_utf8_lossy(&out.stderr));
@@ -65,4 +70,22 @@ fn c_example_runs() {
     assert_eq!(lines.len(), 2, "{stdout}");
     assert!(lines[0].starts_with("window 0 end 159680 "), "{}", lines[0]);
     assert!(lines[1].starts_with("window 1 end 319360 "), "{}", lines[1]);
+}
+
+#[test]
+fn c_example_spotter_runs() {
+    let work = pryon_testkit::TempDir::new("c-example-spotter");
+    let Some(exe) = build_example("spotter", &work) else { return };
+    let set = work.join("set");
+    std::fs::create_dir_all(&set).unwrap();
+    let o = pryon_testkit::wakeset::WakeSetOpts { seed: 1, force_score: Some(0.99) };
+    pryon_testkit::wakeset::write_davs_set(&set, &o);
+    let clip = work.join("noise.s16");
+    let pcm = pryon_testkit::synth(pryon_testkit::Clip::Noise);
+    std::fs::write(&clip, pcm.iter().flat_map(|s| s.to_le_bytes()).collect::<Vec<u8>>()).unwrap();
+
+    let out = Command::new(&exe).arg(&set).arg(&clip).output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "exit {:?}: {}", out.status, String::from_utf8_lossy(&out.stderr));
+    assert!(stdout.lines().any(|l| l.starts_with("ALEXA ACCEPT 0.9900 begin 160 end 1280")), "{stdout}");
 }

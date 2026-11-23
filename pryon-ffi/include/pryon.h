@@ -1,5 +1,6 @@
 /*
- * pryon.h - C API of pryon-rs, a streaming sound-event (AED) detector.
+ * pryon.h - C API of pryon-rs: a streaming sound-event (AED) detector (pryon_sound_*) and a
+ * wake word spotter (pryon_spotter_*, below).
  *
  * Minimal use:
  *
@@ -96,6 +97,80 @@ void pryon_sound_reset(pryon_sound *s);
 
 /* Frees the handle; NULL is ignored. */
 void pryon_sound_close(pryon_sound *s);
+
+/*
+ * ---- Wake word spotter ----
+ *
+ *   pryon_spotter *w = pryon_spotter_open("/path/to/set", 0, err, sizeof err);
+ *   struct pryon_detection d[8];
+ *   int n = pryon_spotter_feed(w, pcm, nsamples, d, 8);   // 16 kHz mono s16 PCM
+ *   for (int i = 0; i < n; i++)
+ *       if (d[i].kind == PRYON_DETECTION_ACCEPT) printf("%s\n", pryon_spotter_keyword_name(w, d[i].keyword));
+ *   pryon_spotter_close(w);
+ *
+ * Same conventions as the sound API: opaque handle, one thread at a time, no global state, files
+ * read at open only. Sample positions count samples fed since open; reset does not restart them.
+ */
+
+/* Flag for pryon_spotter_open: the stream carries the Echo front end's metadata in its lowest bits. */
+#define PRYON_SPOTTER_ECHO_STREAM 1u
+
+enum { PRYON_DETECTION_ACCEPT = 0, PRYON_DETECTION_ACCEPT_AUXILIARY = 1, PRYON_DETECTION_NEAR_MISS = 2 };
+
+/*
+ * One detection. keyword indexes pryon_spotter_keyword_name(); kind is a PRYON_DETECTION_* value;
+ * begin_sample/end_sample are stream sample positions. afe_known is 1 only with
+ * PRYON_SPOTTER_ECHO_STREAM and when the front end's times are known; then afe_start/afe_end are
+ * the raw front-end clock values, otherwise all three are 0.
+ */
+struct pryon_detection {
+    int32_t keyword, kind;
+    float score;
+    uint64_t begin_sample, end_sample;
+    int32_t afe_known;
+    int64_t afe_start, afe_end;
+};
+
+typedef struct pryon_spotter pryon_spotter;
+
+/*
+ * Opens the wake set whose pryon.manifest is in model_dir. flags is 0 or PRYON_SPOTTER_ECHO_STREAM;
+ * any other bit is an error. A set the engine does not fully understand is refused: the error
+ * message names the unsupported element. Returns NULL on error and, if err is non-NULL and
+ * errlen > 0, writes a NUL-terminated message truncated to errlen-1 bytes.
+ */
+pryon_spotter *pryon_spotter_open(const char *model_dir, unsigned flags, char *err, size_t errlen);
+
+/*
+ * Feeds n samples of 16 kHz mono s16 PCM. Writes up to max detections to out and returns how
+ * many; detections beyond max stay queued and come first on the next call (n 0 drains).
+ * Returns -1 on error: s NULL, pcm NULL with n > 0, out NULL with max > 0, or negative max.
+ */
+int pryon_spotter_feed(pryon_spotter *s, const int16_t *pcm, size_t n, struct pryon_detection *out, int max);
+
+/*
+ * Sets a client property (e.g. a kw.cfg threshold override condition); it takes effect from the
+ * next 10 ms frame. An unknown or non-UTF-8 name is ignored. Returns 0, or -1 if s or name is NULL.
+ */
+int pryon_spotter_set_property(pryon_spotter *s, const char *name, int value);
+
+/*
+ * Session end: restarts the network and rules; client properties stay and sample counting
+ * continues. A pending near miss is queued and returned by the next feed call (n 0 suffices).
+ */
+void pryon_spotter_reset(pryon_spotter *s);
+
+/* Number of served keywords; -1 if s is NULL. */
+int pryon_spotter_keyword_count(const pryon_spotter *s);
+
+/* Name of keyword i (0 <= i < count), NUL-terminated, valid until close; NULL if out of range. */
+const char *pryon_spotter_keyword_name(const pryon_spotter *s, int i);
+
+/* The set's checksum string, valid until close; NULL if s is NULL. */
+const char *pryon_spotter_checksum(const pryon_spotter *s);
+
+/* Frees the handle; NULL is ignored. */
+void pryon_spotter_close(pryon_spotter *s);
 
 /* Library version, a static NUL-terminated string. */
 const char *pryon_version(void);
