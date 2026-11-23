@@ -65,6 +65,13 @@ pub(crate) use armv7::cpunk_deq;
 #[cfg(not(all(pryon_neon, target_arch = "arm")))]
 pub(crate) use portable::cpunk_deq;
 
+/// `num::cpunk_sigmoid_of` / `num::cpunk_tanh_of` over a slice in place (VFP division under FZ, whatever the
+/// caller's FPSCR).
+#[cfg(all(pryon_neon, target_arch = "arm"))]
+pub(crate) use armv7::{cpunk_sigmoid_of_inplace, cpunk_tanh_of_inplace};
+#[cfg(not(all(pryon_neon, target_arch = "arm")))]
+pub(crate) use portable::{cpunk_sigmoid_of_inplace, cpunk_tanh_of_inplace};
+
 /// int8 weight as stored: offset binary (w + 128).
 pub(crate) fn store_weight(w: i8) -> u8 {
     w as u8 ^ 0x80
@@ -440,6 +447,44 @@ mod tests {
                     for r in 0..n {
                         let b = bias.is_some();
                         assert!(same(ya[r], yb[r]), "n={n} r={r} bias={b} s={s:?}: {} vs {}", ya[r], yb[r]);
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(all(pryon_neon, target_arch = "arm"))]
+    #[test]
+    fn cpunk_act_of_asm_equals_portable() {
+        let mut next = xorshift(0x5be0_cd19);
+        let c = f32::from_bits;
+        let mut e = cpunk_inputs(&mut next, 20_000);
+        // exp outputs as the LSTM feeds them, and quotients at FLT_MIN (FZ judges the exact quotient)
+        let mut x: Vec<f32> = (0..20_000).map(|_| ((next() % 36_000) as f32 - 18_000.0) * 0.005).collect();
+        super::portable::cpunk_exp_inplace(&mut x);
+        e.extend(x);
+        e.extend([c(0x0080_0000), c(0x0100_0000), c(0x0080_0001), c(0x00FF_FFFF), -1.0, -2.0, c(0xBF80_0001)]);
+        e.extend((0..2000u32).map(|i| c(0x0080_0000 + i * 4099)));
+        // the caller's FPSCR as found, then with DN, FZ and round-towards-zero set
+        for bits in [0, 0x03C0_0000] {
+            for n in [1, 2, 3, 5, 6, 7, e.len()] {
+                for tanh in [false, true] {
+                    let (mut a, mut b) = (e[..n].to_vec(), e[..n].to_vec());
+                    with_fpscr(bits, || {
+                        if tanh {
+                            super::cpunk_tanh_of_inplace(&mut a)
+                        } else {
+                            super::cpunk_sigmoid_of_inplace(&mut a)
+                        }
+                    });
+                    if tanh {
+                        super::portable::cpunk_tanh_of_inplace(&mut b)
+                    } else {
+                        super::portable::cpunk_sigmoid_of_inplace(&mut b)
+                    }
+                    for i in 0..n {
+                        assert!(same(a[i], b[i]), "fpscr|={bits:#x} tanh={tanh} e={:e} ({:#010x}): {:e} vs {:e}",
+                            e[i], e[i].to_bits(), a[i], b[i]);
                     }
                 }
             }

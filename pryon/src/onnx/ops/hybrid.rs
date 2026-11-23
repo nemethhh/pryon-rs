@@ -2,8 +2,8 @@
 
 use super::{arg, opt_arg, Attrs, Built, Op, Value};
 use crate::cpunk::{qmatmul_row, QWeights, MAX_COLS};
-use crate::kernels::{cpunk_exp_inplace, fmaf_inplace};
-use crate::num::{cpunk_sigmoid_of, cpunk_tanh_of, vadd, vmul};
+use crate::kernels::{cpunk_exp_inplace, cpunk_sigmoid_of_inplace, cpunk_tanh_of_inplace, fmaf_inplace};
+use crate::num::{vadd, vmul};
 use crate::onnx::proto::NodeProto;
 use crate::onnx::tensor::{numel, Data, DType};
 
@@ -226,18 +226,20 @@ impl Op for Lstm {
                     *v = vadd(*v, *v);
                 }
                 cpunk_exp_inplace(&mut g[..g4]);
-                for u in 0..hid {
-                    g[u] = cpunk_sigmoid_of(g[u]);
-                    g[3 * hid + u] = cpunk_tanh_of(g[3 * hid + u]);
-                    cl[u] = vmul(cpunk_sigmoid_of(g[2 * hid + u]), cl[u]);
+                // i, o and f to sigmoids, c to tanh, in place (g is scratch)
+                cpunk_sigmoid_of_inplace(&mut g[..3 * hid]);
+                cpunk_tanh_of_inplace(&mut g[3 * hid..g4]);
+                for (cv, &f) in cl.iter_mut().zip(&g[2 * hid..3 * hid]) {
+                    *cv = vmul(f, *cv);
                 }
                 fmaf_inplace(&g[..hid], &g[3 * hid..g4], cl);
                 for (hv, &cv) in hl.iter_mut().zip(cl.iter()) {
                     *hv = vadd(cv, cv);
                 }
                 cpunk_exp_inplace(hl);
-                for (u, hv) in hl.iter_mut().enumerate() {
-                    *hv = vmul(cpunk_sigmoid_of(g[hid + u]), cpunk_tanh_of(*hv));
+                cpunk_tanh_of_inplace(hl);
+                for (hv, &o) in hl.iter_mut().zip(&g[hid..2 * hid]) {
+                    *hv = vmul(o, *hv);
                 }
                 o[0][(t * lanes + l) * hid..][..hid].copy_from_slice(hl);
             }

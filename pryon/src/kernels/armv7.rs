@@ -510,3 +510,64 @@ pub(crate) fn cpunk_deq(dot: &[i32], w: [&[f32]; 3], bias: Option<&[f32]>, s: [f
         super::portable::cpunk_deq(&dot[n4..], [&zw[n4..], &sums[n4..], &sw[n4..]], b, s, &mut y[n4..]);
     }
 }
+
+pub(crate) fn cpunk_sigmoid_of_inplace(e: &mut [f32]) {
+    cpunk_act_of(e, false);
+}
+
+pub(crate) fn cpunk_tanh_of_inplace(e: &mut [f32]) {
+    cpunk_act_of(e, true);
+}
+
+/// `e / (e + 1)`, or `(e − 1) / (e + 1)` for tanh: NEON adds, VFP division under FZ as libpryon's CortexA15 build.
+fn cpunk_act_of(e: &mut [f32], tanh: bool) {
+    let n4 = e.len() & !3;
+    if n4 > 0 {
+        cpunk_act_of4(e.as_mut_ptr(), n4, tanh);
+    }
+    if n4 < e.len() {
+        let mut t = [1f32; 4];
+        let tail = &mut e[n4..];
+        t[..tail.len()].copy_from_slice(tail);
+        cpunk_act_of4(t.as_mut_ptr(), 4, tanh);
+        tail.copy_from_slice(&t[..tail.len()]);
+    }
+}
+
+/// Over `n` (a nonzero multiple of 4) floats at `p`.
+fn cpunk_act_of4(p: *mut f32, n: usize, tanh: bool) {
+    // SAFETY: the callers pass n <= the length of the slice at p; reads and writes p[..n]; FPSCR is restored.
+    unsafe {
+        asm!(
+            // VFP vdiv honours FPSCR: FZ on, DN and RMode off (nearest), as the division libpryon runs
+            "vmrs {old}, fpscr",
+            "bic {t}, {old}, #0x03C00000",
+            "orr {t}, {t}, #0x01000000",
+            "vmsr fpscr, {t}",
+            "vmov.f32 q8, #1.0",
+            "vmov.f32 q9, #-1.0",
+            "2:",
+            "vld1.32 {{d0-d1}}, [{p}]",
+            "vadd.f32 q1, q0, q8",
+            "cmp {tanh}, #0",
+            "beq 3f",
+            "vadd.f32 q0, q0, q9",
+            "3:",
+            "vdiv.f32 s0, s0, s4",
+            "vdiv.f32 s1, s1, s5",
+            "vdiv.f32 s2, s2, s6",
+            "vdiv.f32 s3, s3, s7",
+            "vst1.32 {{d0-d1}}, [{p}]!",
+            "subs {n}, {n}, #4",
+            "bne 2b",
+            "vmsr fpscr, {old}",
+            old = out(reg) _,
+            t = out(reg) _,
+            p = inout(reg) p => _,
+            n = inout(reg) n => _,
+            tanh = in(reg) u32::from(tanh),
+            out("q0") _, out("q1") _, out("q8") _, out("q9") _,
+            options(nostack),
+        );
+    }
+}

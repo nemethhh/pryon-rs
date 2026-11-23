@@ -74,3 +74,11 @@ pub(crate) fn cpunk_deq(dot: &[i32], w: [&[f32]; 3], bias: Option<&[f32]>, [c, z
         };
     }
 }
+
+pub(crate) fn cpunk_sigmoid_of_inplace(e: &mut [f32]) {
+    e.iter_mut().for_each(|v| *v = crate::num::cpunk_sigmoid_of(*v));
+}
+
+pub(crate) fn cpunk_tanh_of_inplace(e: &mut [f32]) {
+    e.iter_mut().for_each(|v| *v = crate::num::cpunk_tanh_of(*v));
+}
