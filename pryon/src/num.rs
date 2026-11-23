@@ -271,7 +271,7 @@ fn round_scaled(m: u64, neg: bool, e: i32, ftz: bool) -> f32 {
 }
 
 /// CPUNK's NEON exp (SigmoidImpl/TanhImpl<CortexA15>, 0x1249cb0/0x124d500): Cody-Waite, degree-5 fused polynomial.
-fn cpunk_exp(x: f32) -> f32 {
+pub(crate) fn cpunk_exp(x: f32) -> f32 {
     let c = f32::from_bits;
     let x = vmax(vmin(x, c(0x42B1_7217)), c(0xC2AE_AC4F));
     let t = vmla(12582912.0, x, c(0x3FB8_AA3B));
@@ -317,16 +317,24 @@ pub(crate) fn cpunk_softmax(x: &[f32], y: &mut [f32]) {
     }
 }
 
-/// libpryon's CPUNK sigmoid: `e / (e + 1)` with `e = exp(x)`.
-pub(crate) fn cpunk_sigmoid(x: f32) -> f32 {
-    let e = cpunk_exp(x);
+/// libpryon's CPUNK sigmoid of `x` from `e = exp(x)`: `e / (e + 1)`.
+pub(crate) fn cpunk_sigmoid_of(e: f32) -> f32 {
     zdiv(e, vadd(e, 1.0))
 }
 
-/// libpryon's CPUNK tanh: `(e − 1) / (e + 1)` with `e = exp(2x)`.
-pub(crate) fn cpunk_tanh(x: f32) -> f32 {
-    let e = cpunk_exp(vadd(x, x));
+/// libpryon's CPUNK tanh of `x` from `e = exp(2x)`: `(e − 1) / (e + 1)`.
+pub(crate) fn cpunk_tanh_of(e: f32) -> f32 {
     zdiv(vadd(e, -1.0), vadd(e, 1.0))
+}
+
+#[cfg(test)]
+pub(crate) fn cpunk_sigmoid(x: f32) -> f32 {
+    cpunk_sigmoid_of(cpunk_exp(x))
+}
+
+#[cfg(test)]
+pub(crate) fn cpunk_tanh(x: f32) -> f32 {
+    cpunk_tanh_of(cpunk_exp(vadd(x, x)))
 }
 
 /// OpenBLAS ARMv7 sdot_vfp order: two accumulators over blocks of four, remainder into the first.

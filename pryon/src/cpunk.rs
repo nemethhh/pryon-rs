@@ -16,7 +16,9 @@ const BLOCK: usize = 16;
 pub(crate) struct QWeights {
     pub rows: usize,
     pub cols: usize,
-    pub w: Vec<i8>,
+    /// `cols` rounded up to 16: `w` holds rows of `stride`, zero-padded, and is zero-padded to a multiple of 4 rows.
+    stride: usize,
+    w: Vec<i8>,
     pub sw: Vec<f32>,
     zw: Vec<f32>,
     sums: Vec<f32>,
@@ -36,7 +38,12 @@ impl QWeights {
             return Err(format!("sums input is not the weight row sum (row {r}: {} vs {})", sums[r], own[r]));
         }
         let zw = zw.iter().map(|&z| z as f32).collect();
-        Ok(QWeights { rows, cols, w, sw, zw, sums: own.iter().map(|&v| v as f32).collect() })
+        let stride = cols.next_multiple_of(16);
+        let mut wp = vec![0i8; rows.next_multiple_of(4) * stride];
+        for (p, r) in wp.chunks_exact_mut(stride).zip(w.chunks_exact(cols)) {
+            p[..cols].copy_from_slice(r);
+        }
+        Ok(QWeights { rows, cols, stride, w: wp, sw, zw, sums: own.iter().map(|&v| v as f32).collect() })
     }
 }
 
@@ -115,14 +122,16 @@ impl Deq {
 }
 
 /// `y[r]` for one activation row `x`: libpryon's quantised product, with `bias[r]` fused as in its kernel.
+/// `scratch` holds at least `MAX_COLS` bytes.
 pub(crate) fn qmatmul_row(x: &[f32], wq: &QWeights, bias: Option<&[f32]>, scratch: &mut [i8], y: &mut [f32]) {
-    let cols = wq.cols;
-    let q = &mut scratch[..cols];
+    let (cols, stride) = (wq.cols, wq.stride);
+    let q = &mut scratch[..stride];
     let d = Deq::new(&quantize_row(&x[..cols], q), cols);
+    q[cols..].fill(0);
     let mut acc = [0i32; BLOCK];
-    for (b, (w, yb)) in wq.w.chunks(BLOCK * cols).zip(y[..wq.rows].chunks_mut(BLOCK)).enumerate() {
-        let acc = &mut acc[..yb.len()];
-        dot_i8_rows(w, cols, q, acc);
+    for (b, (w, yb)) in wq.w.chunks(BLOCK * stride).zip(y[..wq.rows].chunks_mut(BLOCK)).enumerate() {
+        let acc = &mut acc[..w.len() / stride];
+        dot_i8_rows(w, stride, q, acc);
         for (j, (o, &dot)) in yb.iter_mut().zip(acc.iter()).enumerate() {
             let r = b * BLOCK + j;
             *o = d.out(dot, r, wq, bias.map(|v| v[r]));
@@ -134,8 +143,12 @@ pub(crate) fn qmatmul_row(x: &[f32], wq: &QWeights, bias: Option<&[f32]>, scratc
 mod tests {
     use super::*;
 
+    fn wvals(rows: usize, cols: usize) -> Vec<i8> {
+        (0..rows * cols).map(|i| ((i * 73 + 11) % 256) as u8 as i8).collect()
+    }
+
     fn weights(rows: usize, cols: usize, zw: i32) -> QWeights {
-        let w: Vec<i8> = (0..rows * cols).map(|i| ((i * 73 + 11) % 256) as u8 as i8).collect();
+        let w = wvals(rows, cols);
         let sums: Vec<i64> = w.chunks(cols).map(|r| r.iter().map(|&v| i64::from(v)).sum()).collect();
         QWeights::new(rows, cols, w, vec![0.01; rows], vec![zw; rows], &sums).unwrap()
     }
@@ -165,7 +178,7 @@ mod tests {
             let (rq, qx) = quantized(&x);
             let mut y = vec![0.0; 20];
             qmatmul_row(&x, &wq, None, &mut q, &mut y);
-            for (r, row) in wq.w.chunks(37).enumerate() {
+            for (r, row) in wvals(20, 37).chunks(37).enumerate() {
                 let acc: i64 = row.iter().zip(&qx).map(|(&w, &v)| (i64::from(v) - i64::from(rq.z)) * i64::from(i32::from(w) + 41)).sum();
                 assert_eq!(y[r].to_bits(), (acc as f32 * (rq.s * 0.01)).to_bits(), "off {off} row {r}");
             }
@@ -262,8 +275,8 @@ mod tests {
         let (rq, qx) = quantized(&x);
         assert_eq!(qx, [0; 5]);
         let mut y = [0.0; 3];
-        qmatmul_row(&x, &wq, Some(&[1.0, 2.0, 3.0]), &mut [0i8; 5], &mut y);
-        for (r, row) in wq.w.chunks(5).enumerate() {
+        qmatmul_row(&x, &wq, Some(&[1.0, 2.0, 3.0]), &mut [0i8; MAX_COLS], &mut y);
+        for (r, row) in wvals(3, 5).chunks(5).enumerate() {
             assert_eq!(y[r].to_bits(), dequant_ref(&rq, &qx, row, 0.01, 7, (r + 1) as f32).to_bits(), "row {r}");
         }
     }
@@ -274,7 +287,7 @@ mod tests {
         let (s, z) = row_params(1e-36, 2e-36);
         assert_eq!((s.to_bits(), z), (0, i32::MIN));
         let mut y = [1.0; 3];
-        qmatmul_row(&[1e-36, 2e-36, 1.5e-36, 1e-36], &weights(3, 4, 7), None, &mut [0i8; 4], &mut y);
+        qmatmul_row(&[1e-36, 2e-36, 1.5e-36, 1e-36], &weights(3, 4, 7), None, &mut [0i8; MAX_COLS], &mut y);
         assert!(y.iter().all(|v| *v == 0.0), "{y:?}");
     }
 }

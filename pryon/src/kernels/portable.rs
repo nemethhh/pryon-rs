@@ -31,3 +31,13 @@ pub(crate) fn dot_i8_rows(w: &[i8], cols: usize, q: &[i8], out: &mut [i32]) {
         *o = row.iter().zip(&q[..cols]).map(|(&a, &b)| i32::from(a) * i32::from(b)).sum();
     }
 }
+
+pub(crate) fn cpunk_exp_inplace(x: &mut [f32]) {
+    x.iter_mut().for_each(|v| *v = crate::num::cpunk_exp(*v));
+}
+
+pub(crate) fn fmaf_inplace(a: &[f32], b: &[f32], c: &mut [f32]) {
+    for ((o, &x), &y) in c.iter_mut().zip(a).zip(b) {
+        *o = crate::num::fmaf(x, y, *o);
+    }
+}

@@ -207,3 +207,169 @@ pub(crate) fn dequant_rows(acc: &[i32], s: [f32; 3], rs: &[f32], b: &[f32], a: &
         y[r] = bias[r] + (y[r] + t);
     }
 }
+
+pub(crate) fn dot_i8_rows(w: &[i8], cols: usize, q: &[i8], out: &mut [i32]) {
+    assert!(cols > 0 && cols % 16 == 0 && q.len() >= cols && out.len() % 4 == 0);
+    assert!(w.len() == out.len() * cols);
+    for (g, o) in w.chunks_exact(4 * cols).zip(out.chunks_exact_mut(4)) {
+        // SAFETY: reads the group's four rows of cols bytes and cols bytes of q; one 16-byte store to o[..4].
+        unsafe {
+            asm!(
+                "add {r1}, {r0}, {s}",
+                "add {r2}, {r1}, {s}",
+                "add {s}, {r2}, {s}",
+                "vmov.i32 q12, #0",
+                "vmov.i32 q13, #0",
+                "vmov.i32 q14, #0",
+                "vmov.i32 q15, #0",
+                "2:",
+                "vld1.8 {{d0-d1}}, [{q}]!",
+                "vld1.8 {{d2-d3}}, [{r0}]!",
+                "vld1.8 {{d4-d5}}, [{r1}]!",
+                "vld1.8 {{d6-d7}}, [{r2}]!",
+                "vld1.8 {{d16-d17}}, [{s}]!",
+                // i8 x i8 fits i16 but a sum of two (−128)² does not: widen each product before adding
+                "vmull.s8 q9, d2, d0",
+                "vmull.s8 q10, d3, d1",
+                "vmull.s8 q11, d4, d0",
+                "vmull.s8 q1, d5, d1",
+                "vpadal.s16 q12, q9",
+                "vpadal.s16 q12, q10",
+                "vpadal.s16 q13, q11",
+                "vpadal.s16 q13, q1",
+                "vmull.s8 q9, d6, d0",
+                "vmull.s8 q10, d7, d1",
+                "vmull.s8 q11, d16, d0",
+                "vmull.s8 q2, d17, d1",
+                "vpadal.s16 q14, q9",
+                "vpadal.s16 q14, q10",
+                "vpadal.s16 q15, q11",
+                "vpadal.s16 q15, q2",
+                "subs {n}, {n}, #1",
+                "bne 2b",
+                "vpadd.i32 d24, d24, d25",
+                "vpadd.i32 d26, d26, d27",
+                "vpadd.i32 d28, d28, d29",
+                "vpadd.i32 d30, d30, d31",
+                "vpadd.i32 d0, d24, d26",
+                "vpadd.i32 d1, d28, d30",
+                "vst1.32 {{d0-d1}}, [{o}]",
+                r0 = inout(reg) g.as_ptr() => _,
+                r1 = out(reg) _,
+                r2 = out(reg) _,
+                s = inout(reg) cols => _,
+                q = inout(reg) q.as_ptr() => _,
+                n = inout(reg) cols / 16 => _,
+                o = in(reg) o.as_mut_ptr(),
+                out("q0") _, out("q1") _, out("q2") _, out("q3") _, out("q8") _, out("q9") _,
+                out("q10") _, out("q11") _, out("q12") _, out("q13") _, out("q14") _, out("q15") _,
+                options(nostack),
+            );
+        }
+    }
+}
+
+// CPUNK exp (num::cpunk_exp): clamp, n, log2e, int bias, C1, C2, P1 held; P0 and the Horner terms reloaded each pass.
+static CPUNK_EXP_K: [u32; 12] = [
+    0x42B1_7217, 0xC2AE_AC4F, 0x4B40_0000, 0x3FB8_AA3B, 0xB4C0_0000, 0xBF31_7200, 0xB5BF_BE8E, 0x3C08_0161,
+    0x3D2B_A65B, 0x3E2A_ACD3, 0x3EFF_FEC6, 0x3F7F_FFFC,
+];
+
+pub(crate) fn cpunk_exp_inplace(x: &mut [f32]) {
+    let n4 = x.len() & !3;
+    if n4 > 0 {
+        cpunk_exp4(x.as_mut_ptr(), n4);
+    }
+    if n4 < x.len() {
+        let mut t = [0f32; 4];
+        let tail = &mut x[n4..];
+        t[..tail.len()].copy_from_slice(tail);
+        cpunk_exp4(t.as_mut_ptr(), 4);
+        tail.copy_from_slice(&t[..tail.len()]);
+    }
+}
+
+/// `cpunk_exp` over `n` (a nonzero multiple of 4) floats at `p`.
+fn cpunk_exp4(p: *mut f32, n: usize) {
+    // SAFETY: the callers pass n <= the length of the slice at p; reads and writes p[..n] four lanes at a time.
+    unsafe {
+        asm!(
+            "vld1.32 {{d8[], d9[]}}, [{k}]!",
+            "vld1.32 {{d10[], d11[]}}, [{k}]!",
+            "vld1.32 {{d12[], d13[]}}, [{k}]!",
+            "vld1.32 {{d14[], d15[]}}, [{k}]!",
+            "vld1.32 {{d16[], d17[]}}, [{k}]!",
+            "vld1.32 {{d18[], d19[]}}, [{k}]!",
+            "vld1.32 {{d20[], d21[]}}, [{k}]!",
+            "vld1.32 {{d22[], d23[]}}, [{k}]!",
+            "2:",
+            "vld1.32 {{d0-d1}}, [{p}]",
+            "mov {t}, {k}",
+            "vmin.f32 q0, q0, q4",
+            "vmax.f32 q0, q0, q5",
+            "vmov q1, q6",
+            "vmla.f32 q1, q0, q7",
+            "vadd.i32 q2, q1, q8",
+            "vcvt.f32.s32 q3, q2",
+            "vfma.f32 q0, q3, q9",
+            "vfma.f32 q0, q3, q10",
+            "vld1.32 {{d24[], d25[]}}, [{t}]!",
+            "vfma.f32 q12, q0, q11",
+            "vld1.32 {{d26[], d27[]}}, [{t}]!",
+            "vfma.f32 q13, q12, q0",
+            "vld1.32 {{d28[], d29[]}}, [{t}]!",
+            "vfma.f32 q14, q13, q0",
+            "vld1.32 {{d30[], d31[]}}, [{t}]",
+            "vfma.f32 q15, q14, q0",
+            "vmov.f32 q12, #1.0",
+            "vfma.f32 q12, q15, q0",
+            "vshl.i32 q2, q2, #23",
+            "vadd.i32 q0, q2, q12",
+            "vst1.32 {{d0-d1}}, [{p}]!",
+            "subs {n}, {n}, #4",
+            "bne 2b",
+            p = inout(reg) p => _,
+            n = inout(reg) n => _,
+            k = inout(reg) CPUNK_EXP_K.as_ptr() => _,
+            t = out(reg) _,
+            out("q0") _, out("q1") _, out("q2") _, out("q3") _, out("q4") _, out("q5") _, out("q6") _,
+            out("q7") _, out("q8") _, out("q9") _, out("q10") _, out("q11") _, out("q12") _, out("q13") _,
+            out("q14") _, out("q15") _,
+            options(nostack),
+        );
+    }
+}
+
+pub(crate) fn fmaf_inplace(a: &[f32], b: &[f32], c: &mut [f32]) {
+    let n = c.len();
+    assert!(a.len() >= n && b.len() >= n);
+    if n == 0 {
+        return;
+    }
+    // SAFETY: reads n floats of a, b and c, writes n of c; FPSCR is restored before the block ends.
+    unsafe {
+        asm!(
+            // VFP vfma honours FPSCR: clear DN, FZ and RMode so it rounds to nearest unflushed, as bionic's fmaf
+            "vmrs {old}, fpscr",
+            "bic {t}, {old}, #0x03C00000",
+            "vmsr fpscr, {t}",
+            "2:",
+            "vldmia {a}!, {{s0}}",
+            "vldmia {b}!, {{s1}}",
+            "vldr s2, [{c}]",
+            "vfma.f32 s2, s0, s1",
+            "vstmia {c}!, {{s2}}",
+            "subs {n}, {n}, #1",
+            "bne 2b",
+            "vmsr fpscr, {old}",
+            old = out(reg) _,
+            t = out(reg) _,
+            a = inout(reg) a.as_ptr() => _,
+            b = inout(reg) b.as_ptr() => _,
+            c = inout(reg) c.as_mut_ptr() => _,
+            n = inout(reg) n => _,
+            out("d0") _, out("d1") _,
+            options(nostack),
+        );
+    }
+}

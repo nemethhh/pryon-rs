@@ -146,6 +146,12 @@ multiply-add, libpryon's exp and reciprocal approximations, its quantiser's roun
 does the heavy parts. Each assembly kernel has a portable Rust twin and a test that the two agree, and the portable
 code runs on every other target.
 
+The wake engine's int8 product (libpryon's CPUNK) has its own armv7 kernels: the int8 dot product (weights padded at
+load to a multiple of 16 columns and 4 rows), CPUNK's exp, and the LSTM cell's `fmaf`. libpryon fuses these two, so
+the kernels do too: NEON `vfma` for the exp, which always flushes subnormals as libpryon's does, and VFP `vfma` for
+`fmaf`, run with FPSCR's FZ, DN and rounding mode cleared so it is not flushed, as bionic's `fmaf` is not. Their
+portable twins compute the fused results exactly in integer arithmetic.
+
 ## Building for the Echo
 
 The Echo's userland is 32-bit Android (API 24). You need NDK r21e (`armv7a-linux-androideabi24-clang` and its

@@ -3,9 +3,24 @@ mod armv7;
 #[cfg_attr(all(pryon_neon, target_arch = "arm", not(test)), allow(dead_code))]
 mod portable;
 
-/// `out[r] = Σ_c w[r·cols + c]·q[c]` for every `r < out.len()`; `w` is row-major, `q.len() >= cols`.
-// portable on every target until the NEON twin lands
+/// `out[r] = Σ_c w[r·cols + c]·q[c]` for every `r < out.len()`; `w` is row-major, `q.len() >= cols`. NEON also
+/// needs `cols` a multiple of 16 and `w.len() == out.len() * cols` with `out.len()` a multiple of 4 (`cpunk` pads).
+#[cfg(all(pryon_neon, target_arch = "arm"))]
+pub(crate) use armv7::dot_i8_rows;
+#[cfg(not(all(pryon_neon, target_arch = "arm")))]
 pub(crate) use portable::dot_i8_rows;
+
+/// `num::cpunk_exp` over a slice in place, bit for bit (NEON `vfma`, which always flushes subnormals).
+#[cfg(all(pryon_neon, target_arch = "arm"))]
+pub(crate) use armv7::cpunk_exp_inplace;
+#[cfg(not(all(pryon_neon, target_arch = "arm")))]
+pub(crate) use portable::cpunk_exp_inplace;
+
+/// `c[i] = num::fmaf(a[i], b[i], c[i])`, unflushed as bionic's fmaf, bit for bit whatever the caller's FPSCR.
+#[cfg(all(pryon_neon, target_arch = "arm"))]
+pub(crate) use armv7::fmaf_inplace;
+#[cfg(not(all(pryon_neon, target_arch = "arm")))]
+pub(crate) use portable::fmaf_inplace;
 
 /// `out[r] = Σ_c W[r][c] k[c]` over `c < stride` for weights stored by `store_weight` in the `block_index` layout;
 /// `out.len()` is a multiple of 4, `w.len() == out.len() * stride`, `stride` a multiple of 8, `k.len() >= stride`.
@@ -97,18 +112,137 @@ mod tests {
 
     #[test]
     fn dot_i8_rows_each_row() {
-        let (rows, cols) = (5, 37);
+        let (rows, cols) = (8, 48);
         let w: Vec<i8> = (0..rows * cols).map(|i| ((i * 37) % 256) as u8 as i8).collect();
         let q: Vec<i8> = (0..cols).map(|i| ((i * 91) % 128) as i8).collect();
-        let mut out = [7i32; 5];
+        let mut out = [7i32; 8];
         super::dot_i8_rows(&w, cols, &q, &mut out);
         for (r, &o) in out.iter().enumerate() {
             let want: i32 = (0..cols).map(|c| w[r * cols + c] as i32 * q[c] as i32).sum();
             assert_eq!(o, want, "row {r}");
         }
-        let mut out = [0i32; 2];
-        super::dot_i8_rows(&[-128; 2880], 1440, &[127; 1440], &mut out);
-        assert_eq!(out, [-128 * 127 * 1440; 2]);
+        let mut out = [0i32; 4];
+        super::dot_i8_rows(&[-128; 4 * 1440], 1440, &[127; 1440], &mut out);
+        assert_eq!(out, [-128 * 127 * 1440; 4]);
+    }
+
+    #[cfg(all(pryon_neon, target_arch = "arm"))]
+    #[test]
+    fn dot_i8_asm_equals_portable() {
+        let mut next = xorshift(0x6a09_e667);
+        let rows = 16;
+        for cols in (16..=1440).step_by(16) {
+            let mut w: Vec<i8> = (0..rows * cols).map(|_| next() as i8).collect();
+            for c in 0..cols {
+                let alt = if c % 2 == 0 { -128 } else { 127 };
+                (w[c], w[cols + c], w[2 * cols + c], w[3 * cols + c]) = (-128, 127, alt, 0);
+            }
+            // q is longer than a row: the kernel must read only cols of it
+            let random: Vec<i8> = (0..cols + 16).map(|_| next() as i8).collect();
+            for q in [random, vec![-128; cols], vec![127; cols]] {
+                let (mut a, mut b) = (vec![0i32; rows], vec![1i32; rows]);
+                super::dot_i8_rows(&w, cols, &q, &mut a);
+                super::portable::dot_i8_rows(&w, cols, &q, &mut b);
+                assert_eq!(a, b, "cols={cols} q[0]={}", q[0]);
+            }
+        }
+        let mut out = [0i32; 4];
+        super::dot_i8_rows(&[-128; 4 * 1440], 1440, &[-128; 1440], &mut out);
+        assert_eq!(out, [128 * 128 * 1440; 4]);
+    }
+
+    #[cfg(all(pryon_neon, target_arch = "arm"))]
+    #[test]
+    fn exp_asm_equals_portable() {
+        let c = f32::from_bits;
+        let mut x = act_inputs();
+        // clamp bounds and their neighbours, subnormal and tiny normal inputs (NEON flushes the former)
+        for b in [0x42B1_7217u32, 0xC2AE_AC4F] {
+            x.extend([c(b - 1), c(b), c(b + 1)]);
+        }
+        x.extend([c(1), c(0x8000_0001), c(0x007F_FFFF), c(0x807F_FFFF), f32::MIN_POSITIVE, -f32::MIN_POSITIVE]);
+        x.extend((0..4000u32).map(|i| c(0x0080_0000 + i * 7919 | (i & 1) << 31)));
+        x.extend([f32::INFINITY, f32::NEG_INFINITY, f32::NAN]);
+        // every tail length, then the whole set
+        for n in [1, 2, 3, 5, 6, 7, x.len()] {
+            let (mut a, mut b) = (x[..n].to_vec(), x[..n].to_vec());
+            super::cpunk_exp_inplace(&mut a);
+            super::portable::cpunk_exp_inplace(&mut b);
+            for ((&i, &p), &q) in x.iter().zip(&a).zip(&b) {
+                assert_eq!(p.to_bits(), q.to_bits(), "exp({i:e} = {:#010x})", i.to_bits());
+            }
+        }
+    }
+
+    /// Runs `f` with `bits` set in FPSCR, restoring it after.
+    #[cfg(all(pryon_neon, target_arch = "arm"))]
+    fn with_fpscr<T>(bits: u32, f: impl FnOnce() -> T) -> T {
+        let old: u32;
+        // SAFETY: only FPSCR changes, and it is restored below.
+        unsafe {
+            core::arch::asm!("vmrs {o}, fpscr", "orr {t}, {o}, {b}", "vmsr fpscr, {t}", o = out(reg) old, t = out(reg) _,
+                b = in(reg) bits, options(nostack));
+        }
+        let r = f();
+        unsafe { core::arch::asm!("vmsr fpscr, {}", in(reg) old, options(nostack)) };
+        r
+    }
+
+    #[cfg(all(pryon_neon, target_arch = "arm"))]
+    fn fpscr() -> u32 {
+        let v: u32;
+        // SAFETY: reads FPSCR only.
+        unsafe { core::arch::asm!("vmrs {}, fpscr", out(reg) v, options(nomem, nostack)) };
+        v
+    }
+
+    #[cfg(all(pryon_neon, target_arch = "arm"))]
+    #[test]
+    fn fmaf_asm_equals_portable() {
+        let mut next = xorshift(0x3c6e_f372);
+        let special = [0.0f32, -0.0, 1.0, -1.0, f32::MIN_POSITIVE, 1e-45, -3e-45, 1e-40, 3.4e38, -3.4e38, 0.5, 1.0000001];
+        let mut abc = Vec::new();
+        for &x in &special {
+            for &y in &special {
+                abc.extend(special.map(|z| (x, y, z)));
+            }
+        }
+        let f = |e: u32, m: u32| f32::from_bits((m & 0x807F_FFFF) | (e.min(254) << 23));
+        for i in 0..100_000u32 {
+            // products from subnormal to overflow, and c cancelling most of a·b
+            let ea = next() % 255;
+            let eb = (254 - ea + next() % 200).saturating_sub(100);
+            let (x, y) = (f(ea, next()), f(eb, next()));
+            let z = match i % 3 {
+                0 => f32::from_bits(next()),
+                1 => -(x * y) * (1.0 + (next() % 9) as f32 * f32::EPSILON),
+                _ => f((ea + eb).saturating_sub(127 + next() % 60), next()),
+            };
+            abc.push((x, y, z));
+        }
+        // the cell's own inputs: gates in (0, 1) and (−1, 1), tiny f·c0
+        for _ in 0..10_000 {
+            let u = |r: u32| (r >> 8) as f32 / (1 << 24) as f32;
+            abc.push((u(next()), u(next()) * 2.0 - 1.0, f32::from_bits(next() & 0x80FF_FFFF)));
+        }
+        let a: Vec<f32> = abc.iter().map(|t| t.0).collect();
+        let b: Vec<f32> = abc.iter().map(|t| t.1).collect();
+        let c: Vec<f32> = abc.iter().map(|t| t.2).collect();
+        let mut want = c.clone();
+        super::portable::fmaf_inplace(&a, &b, &mut want);
+        // the caller's FPSCR as found, then with DN, FZ and round-towards-zero set
+        for bits in [0, 0x03C0_0000] {
+            let mut got = c.clone();
+            let after = with_fpscr(bits, || {
+                super::fmaf_inplace(&a, &b, &mut got);
+                fpscr()
+            });
+            assert_eq!(after & bits, bits, "FPSCR not restored");
+            for (i, (&g, &w)) in got.iter().zip(&want).enumerate() {
+                let same = g.to_bits() == w.to_bits() || (g.is_nan() && w.is_nan());
+                assert!(same, "FPSCR |= {bits:#x}: fmaf({:e}, {:e}, {:e}) = {g:e}, want {w:e}", a[i], b[i], c[i]);
+            }
+        }
     }
 
     #[test]

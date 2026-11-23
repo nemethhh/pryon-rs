@@ -2,7 +2,8 @@
 
 use super::{arg, opt_arg, Attrs, Built, Op, Value};
 use crate::cpunk::{qmatmul_row, QWeights, MAX_COLS};
-use crate::num::{cpunk_sigmoid, cpunk_tanh, fmaf, vadd, vmul};
+use crate::kernels::{cpunk_exp_inplace, fmaf_inplace};
+use crate::num::{cpunk_sigmoid_of, cpunk_tanh_of, vadd, vmul};
 use crate::onnx::proto::NodeProto;
 use crate::onnx::tensor::{numel, Data, DType};
 
@@ -220,11 +221,22 @@ impl Op for Lstm {
                     *gj = vadd(x, *gj);
                 }
                 // gates i, o, f, c; the cell update is bionic fmaf (0xc62b88), the rest CPUNK NEON
+                for v in &mut g[3 * hid..g4] {
+                    *v = vadd(*v, *v);
+                }
+                cpunk_exp_inplace(&mut g[..g4]);
                 for u in 0..hid {
-                    let (i, f) = (cpunk_sigmoid(g[u]), cpunk_sigmoid(g[2 * hid + u]));
-                    let cn = fmaf(i, cpunk_tanh(g[3 * hid + u]), vmul(f, cl[u]));
-                    cl[u] = cn;
-                    hl[u] = vmul(cpunk_sigmoid(g[hid + u]), cpunk_tanh(cn));
+                    g[u] = cpunk_sigmoid_of(g[u]);
+                    g[3 * hid + u] = cpunk_tanh_of(g[3 * hid + u]);
+                    cl[u] = vmul(cpunk_sigmoid_of(g[2 * hid + u]), cl[u]);
+                }
+                fmaf_inplace(&g[..hid], &g[3 * hid..g4], cl);
+                for (hv, &cv) in hl.iter_mut().zip(cl.iter()) {
+                    *hv = vadd(cv, cv);
+                }
+                cpunk_exp_inplace(hl);
+                for (u, hv) in hl.iter_mut().enumerate() {
+                    *hv = vmul(cpunk_sigmoid_of(g[hid + u]), cpunk_tanh_of(*hv));
                 }
                 o[0][(t * lanes + l) * hid..][..hid].copy_from_slice(hl);
             }
