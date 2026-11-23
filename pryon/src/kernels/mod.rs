@@ -3,8 +3,9 @@ mod armv7;
 #[cfg_attr(all(pryon_neon, target_arch = "arm", not(test)), allow(dead_code))]
 mod portable;
 
-/// `out[r] = Σ_c w[r·cols + c]·q[c]` for every `r < out.len()`; `w` is row-major, `q.len() >= cols`. NEON also
-/// needs `cols` a multiple of 16 and `w.len() == out.len() * cols` with `out.len()` a multiple of 4 (`cpunk` pads).
+/// `out[r] = Σ_c w[r·cols + c]·q[c]` for every `r < out.len()`; `w` is row-major, `q.len() >= cols`, every `q[c]` in
+/// `0..=127` (CPUNK's quantiser range). NEON also needs `cols` a multiple of 16 and `w.len() == out.len() * cols` with
+/// `out.len()` a multiple of 4 (`cpunk` pads).
 #[cfg(all(pryon_neon, target_arch = "arm"))]
 pub(crate) use armv7::dot_i8_rows;
 #[cfg(not(all(pryon_neon, target_arch = "arm")))]
@@ -159,8 +160,8 @@ mod tests {
                 (w[c], w[cols + c], w[2 * cols + c], w[3 * cols + c]) = (-128, 127, alt, 0);
             }
             // q is longer than a row: the kernel must read only cols of it
-            let random: Vec<i8> = (0..cols + 16).map(|_| next() as i8).collect();
-            for q in [random, vec![-128; cols], vec![127; cols]] {
+            let random: Vec<i8> = (0..cols + 16).map(|_| (next() & 0x7F) as i8).collect();
+            for q in [random, vec![0; cols], vec![127; cols]] {
                 let (mut a, mut b) = (vec![0i32; rows], vec![1i32; rows]);
                 super::dot_i8_rows(&w, cols, &q, &mut a);
                 super::portable::dot_i8_rows(&w, cols, &q, &mut b);
@@ -168,8 +169,8 @@ mod tests {
             }
         }
         let mut out = [0i32; 4];
-        super::dot_i8_rows(&[-128; 4 * 1440], 1440, &[-128; 1440], &mut out);
-        assert_eq!(out, [128 * 128 * 1440; 4]);
+        super::dot_i8_rows(&[-128; 4 * 1440], 1440, &[127; 1440], &mut out);
+        assert_eq!(out, [-128 * 127 * 1440; 4]);
     }
 
     #[cfg(all(pryon_neon, target_arch = "arm"))]
