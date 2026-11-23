@@ -458,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::excessive_precision)]
+    #[allow(clippy::excessive_precision)] // literals as C's %g prints them
     fn fmt_g_is_c_percent_g() {
         let cases: [(f32, &str); 14] = [
             (0.99, "0.99"),

@@ -282,8 +282,7 @@ const PASSES: &[Pass] = &[
     Pass { name: "-e 28000", props: &[], ends: &[28000], groups: &["tts_stop", "tts_disney"] },
 ];
 
-/// Every validate pass vs the cache, scores as exact strings; the only allowance is libpryon's start gate on a set
-/// whose state it leaves uninitialised (`compare_gated`), counted per pass.
+/// Every validate pass vs the cache, exact scores; the only allowance is libpryon's start gate (`compare_gated`).
 #[test]
 fn oracle_corpus_validate_cache() {
     let Some(root) = env_dir("PRYON_WAKE_CORPUS") else { return };
@@ -963,8 +962,7 @@ fn afe_after_reset() {
     }
 }
 
-/// `PRYON_AFE_CLIP`: an Echo `micAsr` capture (16 kHz s16le `.raw`, or a directory of them) through libpryon in real
-/// time and the engine; the accepts pair up one to one by keyword, begin and end, with equal META times.
+/// `PRYON_AFE_CLIP` (`micAsr` captures) in both engines: accepts pair up by keyword, begin, end and META times.
 #[test]
 fn afe_matches_oracle_meta() {
     let Some(clip) = env_dir("PRYON_AFE_CLIP") else { return };

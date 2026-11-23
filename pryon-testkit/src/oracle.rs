@@ -184,9 +184,7 @@ impl OracleEnv {
         })
     }
 
-    /// Runs `pryon_test` on a 16 kHz s16le `.raw` at `-x 1000`; `manifest` is a path inside the rootfs. Returns stdout
-    /// then stderr. Fast enough only for clips libpryon decodes before its ~7 s backlog limit; an output in which it
-    /// dropped audio is an error.
+    /// `pryon_test` at `-x 1000` (`manifest` inside the rootfs): stdout then stderr; dropped audio is an error.
     pub fn run_wake(&self, manifest: &Path, clip: &Path, cmds: &[OracleCmd]) -> std::io::Result<String> {
         self.run_wake_at(manifest, clip, cmds, 1000.0, None)
     }
