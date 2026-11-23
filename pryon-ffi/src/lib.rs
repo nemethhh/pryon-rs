@@ -35,6 +35,37 @@ pub struct pryon_sound {
     names: Vec<CString>,
     pending: VecDeque<SoundWindow>,
     scratch: Vec<SoundWindow>,
+    poisoned: bool,
+}
+
+/// A handle that a caught panic poisons.
+trait Poison {
+    fn poisoned(&mut self) -> &mut bool;
+}
+
+impl Poison for pryon_sound {
+    fn poisoned(&mut self) -> &mut bool {
+        &mut self.poisoned
+    }
+}
+
+/// Runs `f` on the live handle `h` unless it is poisoned; a panic poisons it and yields `fail`.
+///
+/// # Safety
+/// `h` is a live handle used by one thread at a time.
+unsafe fn guarded<H: Poison, T>(h: *mut H, fail: T, f: impl FnOnce(&mut H) -> T) -> T {
+    let h = unsafe { &mut *h };
+    if *h.poisoned() {
+        return fail;
+    }
+    match catch_unwind(AssertUnwindSafe(|| f(h))) {
+        Ok(v) => v,
+        Err(_) => {
+            // the state may be half-updated
+            *h.poisoned() = true;
+            fail
+        }
+    }
 }
 
 fn write_err(err: *mut c_char, errlen: usize, msg: &str) {
@@ -82,7 +113,7 @@ fn open_impl(model_dir: *const c_char, types: *const *const c_char, n: c_int) ->
     if names.len() > PRYON_SOUND_MAX_TYPES {
         return Err(format!("{} types selected, at most {PRYON_SOUND_MAX_TYPES} supported", names.len()));
     }
-    Ok(Box::new(pryon_sound { det, names, pending: VecDeque::new(), scratch: Vec::new() }))
+    Ok(Box::new(pryon_sound { det, names, pending: VecDeque::new(), scratch: Vec::new(), poisoned: false }))
 }
 
 /// # Safety
@@ -140,24 +171,24 @@ pub unsafe extern "C" fn pryon_sound_feed(
     if s.is_null() || max < 0 || (pcm.is_null() && n > 0) || (out.is_null() && max > 0) {
         return -1;
     }
-    catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: s came from pryon_sound_open and is used by one thread at a time.
-        let s = unsafe { &mut *s };
-        if n > 0 {
-            let pcm = unsafe { std::slice::from_raw_parts(pcm, n) };
-            s.scratch.clear();
-            s.det.feed(pcm, &mut s.scratch);
-            s.pending.extend(s.scratch.drain(..));
-        }
-        let mut k = 0;
-        while k < max as usize {
-            let Some(w) = s.pending.pop_front() else { break };
-            unsafe { out.add(k).write(convert(&w)) };
-            k += 1;
-        }
-        k as c_int
-    }))
-    .unwrap_or(-1)
+    // SAFETY: s came from pryon_sound_open and is used by one thread at a time.
+    unsafe {
+        guarded(s, -1, |s| {
+            if n > 0 {
+                let pcm = std::slice::from_raw_parts(pcm, n);
+                s.scratch.clear();
+                s.det.feed(pcm, &mut s.scratch);
+                s.pending.extend(s.scratch.drain(..));
+            }
+            let mut k = 0;
+            while k < max as usize {
+                let Some(w) = s.pending.pop_front() else { break };
+                out.add(k).write(convert(&w));
+                k += 1;
+            }
+            k as c_int
+        })
+    }
 }
 
 /// # Safety
@@ -191,11 +222,13 @@ pub unsafe extern "C" fn pryon_sound_reset(s: *mut pryon_sound) {
     if s.is_null() {
         return;
     }
-    let _ = catch_unwind(AssertUnwindSafe(|| {
-        let s = unsafe { &mut *s };
-        s.det.reset();
-        s.pending.clear();
-    }));
+    // SAFETY: s is a live handle.
+    unsafe {
+        guarded(s, (), |s| {
+            s.det.reset();
+            s.pending.clear();
+        })
+    }
 }
 
 /// # Safety
@@ -208,6 +241,9 @@ pub unsafe extern "C" fn pryon_sound_close(s: *mut pryon_sound) {
 }
 
 pub const PRYON_SPOTTER_ECHO_STREAM: c_uint = 1;
+pub const PRYON_DETECTION_ACCEPT: i32 = 0;
+pub const PRYON_DETECTION_ACCEPT_AUXILIARY: i32 = 1;
+pub const PRYON_DETECTION_NEAR_MISS: i32 = 2;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -228,6 +264,13 @@ pub struct pryon_spotter {
     checksum: CString,
     pending: VecDeque<Detection>,
     scratch: Vec<Detection>,
+    poisoned: bool,
+}
+
+impl Poison for pryon_spotter {
+    fn poisoned(&mut self) -> &mut bool {
+        &mut self.poisoned
+    }
 }
 
 fn spotter_open_impl(model_dir: *const c_char, flags: c_uint) -> Result<Box<pryon_spotter>, String> {
@@ -248,7 +291,8 @@ fn spotter_open_impl(model_dir: *const c_char, flags: c_uint) -> Result<Box<pryo
         .map(|s| CString::new(s.as_str()).map_err(|_| format!("keyword {s:?} contains a NUL byte")))
         .collect::<Result<Vec<CString>, String>>()?;
     let checksum = CString::new(model.checksum()).map_err(|_| "checksum contains a NUL byte".to_string())?;
-    Ok(Box::new(pryon_spotter { sp, names, checksum, pending: VecDeque::new(), scratch: Vec::new() }))
+    let (pending, scratch) = (VecDeque::new(), Vec::new());
+    Ok(Box::new(pryon_spotter { sp, names, checksum, pending, scratch, poisoned: false }))
 }
 
 /// # Safety
@@ -278,9 +322,9 @@ fn convert_detection(d: &Detection) -> pryon_detection {
     pryon_detection {
         keyword: d.keyword as i32,
         kind: match d.kind {
-            DetectionKind::Accept => 0,
-            DetectionKind::AcceptAuxiliary => 1,
-            DetectionKind::NearMiss => 2,
+            DetectionKind::Accept => PRYON_DETECTION_ACCEPT,
+            DetectionKind::AcceptAuxiliary => PRYON_DETECTION_ACCEPT_AUXILIARY,
+            DetectionKind::NearMiss => PRYON_DETECTION_NEAR_MISS,
         },
         score: d.score,
         begin_sample: d.begin_sample,
@@ -304,24 +348,24 @@ pub unsafe extern "C" fn pryon_spotter_feed(
     if s.is_null() || max < 0 || (pcm.is_null() && n > 0) || (out.is_null() && max > 0) {
         return -1;
     }
-    catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: s came from pryon_spotter_open and is used by one thread at a time.
-        let s = unsafe { &mut *s };
-        if n > 0 {
-            let pcm = unsafe { std::slice::from_raw_parts(pcm, n) };
-            s.scratch.clear();
-            s.sp.feed(pcm, &mut s.scratch);
-            s.pending.extend(s.scratch.drain(..));
-        }
-        let mut k = 0;
-        while k < max as usize {
-            let Some(d) = s.pending.pop_front() else { break };
-            unsafe { out.add(k).write(convert_detection(&d)) };
-            k += 1;
-        }
-        k as c_int
-    }))
-    .unwrap_or(-1)
+    // SAFETY: s came from pryon_spotter_open and is used by one thread at a time.
+    unsafe {
+        guarded(s, -1, |s| {
+            if n > 0 {
+                let pcm = std::slice::from_raw_parts(pcm, n);
+                s.scratch.clear();
+                s.sp.feed(pcm, &mut s.scratch);
+                s.pending.extend(s.scratch.drain(..));
+            }
+            let mut k = 0;
+            while k < max as usize {
+                let Some(d) = s.pending.pop_front() else { break };
+                out.add(k).write(convert_detection(&d));
+                k += 1;
+            }
+            k as c_int
+        })
+    }
 }
 
 /// # Safety
@@ -331,14 +375,16 @@ pub unsafe extern "C" fn pryon_spotter_set_property(s: *mut pryon_spotter, name:
     if s.is_null() || name.is_null() {
         return -1;
     }
-    catch_unwind(AssertUnwindSafe(|| {
-        // Not UTF-8 cannot match any property name: ignored like an unknown one.
-        if let Ok(name) = unsafe { CStr::from_ptr(name) }.to_str() {
-            unsafe { (*s).sp.set_property(name, value) };
-        }
-        0
-    }))
-    .unwrap_or(-1)
+    // SAFETY: s is a live handle; name is NUL-terminated.
+    unsafe {
+        guarded(s, -1, |s| {
+            // Not UTF-8 cannot match any property name: ignored like an unknown one.
+            if let Ok(name) = CStr::from_ptr(name).to_str() {
+                s.sp.set_property(name, value);
+            }
+            0
+        })
+    }
 }
 
 /// # Safety
@@ -348,12 +394,14 @@ pub unsafe extern "C" fn pryon_spotter_reset(s: *mut pryon_spotter) {
     if s.is_null() {
         return;
     }
-    let _ = catch_unwind(AssertUnwindSafe(|| {
-        let s = unsafe { &mut *s };
-        s.scratch.clear();
-        s.sp.reset(&mut s.scratch);
-        s.pending.extend(s.scratch.drain(..));
-    }));
+    // SAFETY: s is a live handle.
+    unsafe {
+        guarded(s, (), |s| {
+            s.scratch.clear();
+            s.sp.reset(&mut s.scratch);
+            s.pending.extend(s.scratch.drain(..));
+        })
+    }
 }
 
 /// # Safety
@@ -603,7 +651,7 @@ mod tests {
         unsafe {
             assert_eq!(pryon_spotter_feed(s, pcm.as_ptr(), pcm.len(), out.as_mut_ptr(), 1), 1);
             let first = out[0];
-            assert_eq!(first.kind, 0);
+            assert_eq!(first.kind, PRYON_DETECTION_ACCEPT);
             assert_eq!(CStr::from_ptr(pryon_spotter_keyword_name(s, first.keyword)).to_str().unwrap(), "ALEXA");
             assert_eq!(first.afe_known, 0);
             assert_eq!((first.afe_start, first.afe_end), (0, 0));
@@ -730,6 +778,34 @@ mod tests {
         assert_eq!(offset_of!(pryon_detection, afe_known), 32);
         assert_eq!(offset_of!(pryon_detection, afe_start), 40);
         assert_eq!(offset_of!(pryon_detection, afe_end), 48);
+    }
+
+    #[test]
+    fn panic_poisons_handle() {
+        let d = spotter_set(0.99);
+        let s = spotter_open(&d, 0);
+        let pcm = [0i16; 160];
+        let name = std::ffi::CString::new("x").unwrap();
+        unsafe {
+            let mut out: [pryon_detection; 1] = std::mem::zeroed();
+            assert_eq!(pryon_spotter_feed(s, pcm.as_ptr(), pcm.len(), out.as_mut_ptr(), 1), 0);
+            assert_eq!(guarded(s, -1, |_| -> c_int { panic!("injected") }), -1);
+            assert_eq!(pryon_spotter_feed(s, pcm.as_ptr(), pcm.len(), out.as_mut_ptr(), 1), -1);
+            assert_eq!(pryon_spotter_set_property(s, name.as_ptr(), 1), -1);
+            pryon_spotter_reset(s);
+            assert!(pryon_spotter_keyword_count(s) > 0);
+            pryon_spotter_close(s);
+        }
+        let m = model_dir();
+        let s = open(&m);
+        unsafe {
+            let mut out: [pryon_sound_result; 1] = std::mem::zeroed();
+            assert_eq!(pryon_sound_feed(s, pcm.as_ptr(), pcm.len(), out.as_mut_ptr(), 1), 0);
+            guarded(s, (), |_| panic!("injected"));
+            assert_eq!(pryon_sound_feed(s, pcm.as_ptr(), pcm.len(), out.as_mut_ptr(), 1), -1);
+            pryon_sound_reset(s);
+            pryon_sound_close(s);
+        }
     }
 
     #[test]

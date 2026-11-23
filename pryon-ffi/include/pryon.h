@@ -25,6 +25,9 @@
  * 100th non-silent frame, or at the frame-997 flush) on top of the steps of its own
  * chunk, so real-time threads should feed from a worker thread. A trailing partial
  * window yields nothing.
+ *
+ * A panic inside the library (a bug) fails that call and poisons the handle:
+ * later feed and set_property calls return -1 and reset does nothing; close it.
  */
 #ifndef PRYON_H
 #define PRYON_H
