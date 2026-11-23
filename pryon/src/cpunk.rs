@@ -1,6 +1,6 @@
 //! The CPUNK quantised matrix product behind HybridGemm, HybridConv and HybridLSTM, as libpryon runs it
 //! (CortexA15 target, FPSCR.FZ set): a per-row activation quantiser, an exact int8 dot product and libpryon's f32
-//! dequantisation. Addresses and the full contract: local/notes/wake-bits.md (Task 14).
+//! dequantisation (libpryon.so 0x123897c: quantiser 0x1236440/0x1248fc0, matmul 0x516e80, dequant 0x123a544).
 
 use crate::kernels::dot_i8_rows;
 use crate::num::{rint, vmax, vmin, vmla, vmul, vsub, zdiv, zmul, zsub};

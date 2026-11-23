@@ -182,7 +182,7 @@ fn case(name: &str) -> Case {
                 x.extend(std::iter::repeat_n(v, k));
             }
             x.extend((0..k).map(|i| i as f32 * 0.3 - 4.0));
-            // small scales keep |y| below 4, where one f32 ulp is under the 1e-6 tolerance
+            // small scales keep |y| small, so the bound in constant_row_path is a few ulps
             gemm_case(name, &[5, k], 16, false, false, 2e-5, Some(x))
         }
         _ => panic!("unknown case {name}"),
@@ -266,13 +266,13 @@ fn conv_matches_ref() {
 // pypryon's LSTM and constant-row contracts approximate libpryon's: a bound here, the bits in capture/unit tests
 #[test]
 fn lstm_matches_ref() {
-    assert_close("lstm_h20_16lanes_t3", 1e-5);
-    assert_close("lstm_h100_25lanes_t1", 1e-5);
+    assert_close("lstm_h20_16lanes_t3", 1e-6);
+    assert_close("lstm_h100_25lanes_t1", 5e-7);
 }
 
 #[test]
 fn constant_row_path() {
-    assert_close("gemm_constant_row", 1e-6);
+    assert_close("gemm_constant_row", 5e-8);
 }
 
 fn load(m: ModelBuilder, bind: &[(&str, &[usize])]) -> Result<Graph, Error> {

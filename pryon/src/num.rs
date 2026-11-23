@@ -112,7 +112,20 @@ pub(crate) fn vsub(a: f32, b: f32) -> f32 {
 }
 
 pub(crate) fn vmul(a: f32, b: f32) -> f32 {
-    dn(fz(a) * fz(b))
+    dn(mul_fz(fz(a), fz(b)))
+}
+
+/// A product under FZ: ARM flushes on the unrounded value, so a product just under FLT_MIN is zero even when it
+/// rounds up to FLT_MIN.
+fn mul_fz(a: f32, b: f32) -> f32 {
+    let r = a * b;
+    if r.abs() < f32::MIN_POSITIVE {
+        0.0f32.copysign(r)
+    } else if r.abs() == f32::MIN_POSITIVE {
+        fma(a, b, -0.0, true)
+    } else {
+        r
+    }
 }
 
 /// NEON `vmla`: `a + b·c`, the product rounded first.
@@ -122,7 +135,7 @@ pub(crate) fn vmla(a: f32, b: f32, c: f32) -> f32 {
 
 /// NEON `vfma`: `a + b·c` rounded once.
 pub(crate) fn vfma(a: f32, b: f32, c: f32) -> f32 {
-    dn(fmaf(fz(b), fz(c), fz(a)))
+    dn(fma(fz(b), fz(c), fz(a), true))
 }
 
 pub(crate) fn vmin(a: f32, b: f32) -> f32 {
@@ -152,12 +165,21 @@ pub(crate) fn zsub(a: f32, b: f32) -> f32 {
 }
 
 pub(crate) fn zmul(a: f32, b: f32) -> f32 {
-    fz(fz(a) * fz(b))
+    mul_fz(fz(a), fz(b))
 }
 
 /// VFP division under FPSCR.FZ.
 pub(crate) fn zdiv(a: f32, b: f32) -> f32 {
-    fz(fz(a) / fz(b))
+    let (a, b) = (fz(a), fz(b));
+    let r = a / b;
+    // FZ judges the exact quotient: at FLT_MIN, compare |a| with FLT_MIN·|b| in integers
+    let tiny = r.abs() < f32::MIN_POSITIVE
+        || r.abs() == f32::MIN_POSITIVE && {
+            let ((ma, ea), (mb, eb)) = (parts(a), parts(b));
+            let (ma, mb, d) = (u64::from(ma), u64::from(mb), ea - eb + 126);
+            if d >= 0 { d < 40 && ma << d < mb } else { d <= -40 || ma < mb << -d }
+        };
+    if tiny { 0.0f32.copysign(r) } else { r }
 }
 
 /// Round half to even (`nearbyintf` in the default mode), without libm.
@@ -170,26 +192,33 @@ pub(crate) fn rint(x: f32) -> f32 {
     ((x + m) - m).copysign(x)
 }
 
-/// `a·b + c` rounded once (bionic `fmaf`, NEON `vfma`), in integer arithmetic: no FMA instruction, no f64.
+/// Mantissa and exponent of a finite nonzero f32: `x = ±m·2^e`.
+fn parts(x: f32) -> (u32, i32) {
+    let u = x.to_bits();
+    let e = (u >> 23 & 0xFF) as i32;
+    let m = u & 0x7F_FFFF;
+    if e == 0 { (m, -149) } else { (m | 0x80_0000, e - 150) }
+}
+
+/// `a·b + c` rounded once (bionic `fmaf`), in integer arithmetic: no FMA instruction, no f64.
 pub(crate) fn fmaf(a: f32, b: f32, c: f32) -> f32 {
+    fma(a, b, c, false)
+}
+
+/// `fmaf`, with `ftz` flushing a result that is tiny before rounding (ARM FPSCR.FZ, NEON).
+fn fma(a: f32, b: f32, c: f32, ftz: bool) -> f32 {
     if !a.is_finite() || !b.is_finite() || c.is_nan() || a == 0.0 || b == 0.0 {
         return a * b + c;
     }
     if c.is_infinite() {
         return c;
     }
-    let parts = |x: f32| {
-        let u = x.to_bits();
-        let e = (u >> 23 & 0xFF) as i32;
-        let m = u & 0x7F_FFFF;
-        if e == 0 { (m, -149) } else { (m | 0x80_0000, e - 150) }
-    };
     let ((ma, ea), (mb, eb)) = (parts(a), parts(b));
     let p = (u64::from(ma) * u64::from(mb)) as i64;
     let p = if (a < 0.0) != (b < 0.0) { -p } else { p };
     let ep = ea + eb;
     if c == 0.0 {
-        return round_scaled(p.unsigned_abs(), p < 0, ep);
+        return round_scaled(p.unsigned_abs(), p < 0, ep, ftz);
     }
     let (mc, ec) = parts(c);
     let mc = if c < 0.0 { -i64::from(mc) } else { i64::from(mc) };
@@ -197,7 +226,7 @@ pub(crate) fn fmaf(a: f32, b: f32, c: f32) -> f32 {
     // the product has 48 bits and c 24: these gaps keep the aligned sum inside an i64
     if (-38..=14).contains(&d) {
         let (sum, e) = if d >= 0 { ((p << d) + mc, ec) } else { (p + (mc << -d), ep) };
-        return round_scaled(sum.unsigned_abs(), sum < 0, e);
+        return round_scaled(sum.unsigned_abs(), sum < 0, e, ftz);
     }
     let (p, mc) = (i128::from(p), i128::from(mc));
     // beyond these gaps the smaller term only decides rounding, as a one-unit sticky of its sign
@@ -211,15 +240,18 @@ pub(crate) fn fmaf(a: f32, b: f32, c: f32) -> f32 {
     // keep 62 bits with a sticky low bit: still well below the 24 bits that survive rounding
     let sh = (128 - m.leading_zeros()).saturating_sub(62);
     let m64 = (m >> sh) as u64 | u64::from(m & ((1u128 << sh) - 1) != 0);
-    round_scaled(m64, sum < 0, e + sh as i32)
+    round_scaled(m64, sum < 0, e + sh as i32, ftz)
 }
 
-/// `±m·2^e` rounded to the nearest f32, ties to even.
-fn round_scaled(m: u64, neg: bool, e: i32) -> f32 {
+/// `±m·2^e` rounded to the nearest f32, ties to even; with `ftz`, zero when below FLT_MIN before rounding.
+fn round_scaled(m: u64, neg: bool, e: i32, ftz: bool) -> f32 {
     if m == 0 {
         return 0.0;
     }
     let top = 63 - m.leading_zeros() as i32 + e;
+    if ftz && top < -126 {
+        return if neg { -0.0 } else { 0.0 };
+    }
     let lsb = (top - 23).max(-149);
     let q = if lsb <= e {
         m << (e - lsb)
@@ -423,6 +455,27 @@ mod tests {
         assert_eq!(vmul(f32::NAN, 1.0).to_bits(), 0x7FC0_0000);
         assert_eq!(vfma(1.0, tiny, 1e30).to_bits(), 1.0f32.to_bits());
         assert_eq!(zdiv(f32::MIN_POSITIVE, 2.0).to_bits(), 0);
+    }
+
+    #[test]
+    fn fz_tininess_before_rounding() {
+        // exact results in [FLT_MIN − 2^-150, FLT_MIN) round up to FLT_MIN, but ARM's FZ tests the unrounded value
+        let (min, just_below_one) = (f32::MIN_POSITIVE, 1.0 - f32::EPSILON / 2.0);
+        let wide = f32::from_bits(0x00FF_FFFF);
+        assert_eq!(min * just_below_one, min);
+        assert_eq!(vmul(wide, 0.5).to_bits(), 0);
+        assert_eq!(vmul(min, just_below_one).to_bits(), 0);
+        assert_eq!(vmul(-min, just_below_one).to_bits(), 0x8000_0000);
+        assert_eq!(zmul(wide, 0.5).to_bits(), 0);
+        assert_eq!(zdiv(wide, 2.0).to_bits(), 0);
+        assert_eq!(zdiv(-wide, 2.0).to_bits(), 0x8000_0000);
+        assert_eq!(vfma(0.0, min, just_below_one).to_bits(), 0);
+        assert_eq!(vfma(-0.0, wide, -0.5).to_bits(), 0x8000_0000);
+        // FLT_MIN itself and anything above stays
+        assert_eq!(vmul(min, 1.0), min);
+        assert_eq!(zdiv(f32::from_bits(0x0100_0000), 2.0), min);
+        assert_eq!(vmul(f32::from_bits(0x0080_0001), 1.0), f32::from_bits(0x0080_0001));
+        assert_eq!(vfma(min, 1.0, 0.0), min);
     }
 
     /// CPUNK's exp (SigmoidImpl/TanhImpl<CortexA15>) written with the platform's fused multiply-add.

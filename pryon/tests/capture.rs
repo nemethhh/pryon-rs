@@ -474,9 +474,16 @@ fn capture_hybrid_bits() {
             let inputs = fed(st);
             let mut stats: BTreeMap<(usize, String), HybridStat> = BTreeMap::new();
             let mut missing: BTreeMap<String, usize> = BTreeMap::new();
+            let mut unsaved: BTreeMap<String, usize> = BTreeMap::new();
+            let mut expected: BTreeMap<(usize, String), String> = BTreeMap::new();
             let mut steps_run = 0;
             for clip in &c.clips {
                 let nodes = node_table(clip, &st.name);
+                for (tensor, (node, op, _)) in &nodes {
+                    if op.starts_with("Hybrid") {
+                        expected.insert((*node, tensor.clone()), op.clone());
+                    }
+                }
                 let mut sess = Session::new(set.graphs[s].clone());
                 for (t, step) in steps(clip, &st.name).iter().enumerate() {
                     feed(&mut sess, &set.graphs[s], step, &inputs);
@@ -484,6 +491,9 @@ fn capture_hybrid_bits() {
                         let (node, op, ins) = nodes.get(tensor).unwrap_or_else(|| panic!("{tensor}: no node"));
                         let got = match step.saved(tensor) {
                             Saved::Values(v) => v,
+                            Saved::Unsaved if op.starts_with("Hybrid") => {
+                                return *unsaved.entry(tensor.to_string()).or_default() += 1
+                            }
                             Saved::Unsaved => return,
                             Saved::Absent => return *missing.entry(tensor.to_string()).or_default() += 1,
                         };
@@ -532,6 +542,20 @@ fn capture_hybrid_bits() {
                     h.max_abs
                 );
                 bad |= h.equal != h.steps;
+            }
+            let never: Vec<String> = expected
+                .iter()
+                .filter(|(k, _)| !stats.contains_key(*k))
+                .map(|((node, t), op)| format!("node {node} {op} {t}"))
+                .collect();
+            if !never.is_empty() {
+                report += &format!("   Hybrid outputs never compared: {}\n", never.join(", "));
+                bad = true;
+            }
+            if !unsaved.is_empty() {
+                let list: Vec<&str> = unsaved.keys().map(String::as_str).collect();
+                report += &format!("   Hybrid outputs recorded without values: {}\n", list.join(", "));
+                bad = true;
             }
             if !missing.is_empty() {
                 let list: Vec<&str> = missing.keys().map(String::as_str).collect();
