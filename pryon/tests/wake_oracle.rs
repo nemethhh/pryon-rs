@@ -963,8 +963,8 @@ fn afe_after_reset() {
     }
 }
 
-/// `PRYON_AFE_CLIP`: an Echo `micAsr` capture (16 kHz s16le `.raw`, or a directory of them) through libpryon and
-/// the engine; every oracle accept has an engine accept with the same keyword, begin, end and META times.
+/// `PRYON_AFE_CLIP`: an Echo `micAsr` capture (16 kHz s16le `.raw`, or a directory of them) through libpryon in real
+/// time and the engine; the accepts pair up one to one by keyword, begin and end, with equal META times.
 #[test]
 fn afe_matches_oracle_meta() {
     let Some(clip) = env_dir("PRYON_AFE_CLIP") else { return };
@@ -981,7 +981,9 @@ fn afe_matches_oracle_meta() {
         vec![clip]
     };
     let sets: Vec<(&str, PathBuf)> = ["fw", "alexa"].iter().filter_map(|s| real_set(s).map(|d| (*s, d))).collect();
-    assert!(!sets.is_empty(), "set PRYON_WAKE_FW_DIR or PRYON_WAKE_SETS_DIR");
+    if sets.is_empty() {
+        return;
+    }
     let work = TempDir::new("afe-oracle");
     let (mut accepts, mut timed) = (0, 0);
     for (name, dir) in &sets {
@@ -992,14 +994,28 @@ fn afe_matches_oracle_meta() {
         let oracle_set = deterministic_set(dir, &work.join(name)).unwrap();
         let manifest = oracle_set.join("pryon.manifest");
         let results = par_map(&clips, |path| {
-            let text = env.run_wake(&manifest, path, &[]).unwrap();
-            assert_eq!(pushed(&text), Some(read_clip(path).len()), "{}: oracle not fed the whole clip", path.display());
+            let pcm = read_clip(path);
+            // real time: at -x 1000 a long clip overruns libpryon's backlog and it drops audio (run_wake refuses that)
+            let timeout = std::time::Duration::from_secs(10 * pcm.len() as u64 / 16000 + 60);
+            let text = env.run_wake_at(&manifest, path, &[], 1.0, Some(timeout)).unwrap();
+            assert_eq!(pushed(&text), Some(pcm.len()), "{}: oracle not fed the whole clip", path.display());
             let oracle = parse_wake(&text).unwrap();
-            let rust = run(&mut Spotter::new(m.clone(), ECHO).unwrap(), &read_clip(path), 1600);
+            let rust = run(&mut Spotter::new(m.clone(), ECHO).unwrap(), &pcm, 1600);
             let kws = m.keywords();
             let mut bad = Vec::new();
             let (mut n, mut t) = (0, 0);
             let outside = |o: &&OracleEvent| gate.is_none_or(|g| o.end >= g);
+            let accept = |d: &&Detection| d.kind != DetectionKind::NearMiss && gate.is_none_or(|g| d.end_sample >= g);
+            for d in rust.iter().filter(accept) {
+                let partner = oracle.iter().any(|o| {
+                    let same = (o.begin, o.end) == (d.begin_sample, d.end_sample);
+                    o.keyword == kws[d.keyword] && o.kind == kind_of(d.kind) && same
+                });
+                if !partner {
+                    let (b, e) = (d.begin_sample, d.end_sample);
+                    bad.push(format!("{} {:?} {b}..{e}: engine only", kws[d.keyword], d.kind));
+                }
+            }
             for o in oracle.iter().filter(|o| o.kind != OracleKind::NearMiss).filter(outside) {
                 n += 1;
                 t += usize::from(o.afe.is_some());

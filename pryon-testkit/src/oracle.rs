@@ -27,6 +27,9 @@ pub fn parse_wake(output: &str) -> Result<Vec<OracleEvent>, String> {
     let mut results: Vec<(String, u32, u64, u64, Option<(i64, i64)>)> = Vec::new();
     let mut kws: Vec<(String, String, String)> = Vec::new();
     for line in output.lines() {
+        if line.contains(BACKLOG_RESET) {
+            return Err(format!("libpryon dropped audio: {}", line.trim()));
+        }
         if let Some(rest) = line.strip_prefix("RESULT ") {
             let keyword = field(rest, "keyword=").ok_or("RESULT without keyword")?;
             let num = |k: &str| field(rest, k).and_then(|v| v.parse::<u64>().ok()).ok_or(format!("RESULT without {k}"));
@@ -60,6 +63,17 @@ pub fn parse_wake(output: &str) -> Result<Vec<OracleEvent>, String> {
         events.push(OracleEvent { keyword, kind, score, threshold, begin, end, afe });
     }
     Ok(events)
+}
+
+/// libpryon's log line when it throws its audio backlog away (pryon_test still counts that audio as pushed).
+const BACKLOG_RESET: &str = "Audio backlog size reset";
+
+/// An error if libpryon dropped audio of `clip` in this output: an oracle that skipped audio is not an oracle.
+pub fn refuse_dropped(output: &str, clip: &Path) -> std::io::Result<()> {
+    match output.lines().find(|l| l.contains(BACKLOG_RESET)) {
+        Some(l) => Err(std::io::Error::other(format!("{}: libpryon dropped audio ({})", clip.display(), l.trim()))),
+        None => Ok(()),
+    }
 }
 
 /// The samples pryon_test restarted its decoder at (`restart: new decoder fed from sample N`).
@@ -170,7 +184,9 @@ impl OracleEnv {
         })
     }
 
-    /// Runs `pryon_test` on a 16 kHz s16le `.raw`; `manifest` is a path inside the rootfs. Returns stdout then stderr.
+    /// Runs `pryon_test` on a 16 kHz s16le `.raw` at `-x 1000`; `manifest` is a path inside the rootfs. Returns stdout
+    /// then stderr. Fast enough only for clips libpryon decodes before its ~7 s backlog limit; an output in which it
+    /// dropped audio is an error.
     pub fn run_wake(&self, manifest: &Path, clip: &Path, cmds: &[OracleCmd]) -> std::io::Result<String> {
         self.run_wake_at(manifest, clip, cmds, 1000.0, None)
     }
@@ -188,7 +204,7 @@ impl OracleEnv {
         use std::process::{Command, Stdio};
         use std::time::Instant;
         let mut cmd = Command::new("unshare");
-        // The PID namespace is for bionic's 16-bit mutex owner ids; -x 1000 keeps the backlog under libpryon's drop limit.
+        // The PID namespace is for bionic's 16-bit mutex owner ids.
         cmd.args(["--user", "--map-root-user", "--pid", "--fork", "--kill-child", "qemu-arm", "-L"])
             .arg(&self.rootfs)
             .arg(&self.pryon_test)
@@ -237,7 +253,9 @@ impl OracleEnv {
             let tail: Vec<&str> = tail.into_iter().rev().collect();
             return Err(std::io::Error::other(format!("pryon_test exited {:?}: {}", status.code(), tail.join("\n"))));
         }
-        Ok(format!("{}\n{}", String::from_utf8_lossy(&stdout), String::from_utf8_lossy(&stderr)))
+        let out = format!("{}\n{}", String::from_utf8_lossy(&stdout), String::from_utf8_lossy(&stderr));
+        refuse_dropped(&out, clip)?;
+        Ok(out)
     }
 }
 
@@ -297,6 +315,19 @@ mod tests {
     }
 
     #[test]
+    fn backlog_reset_rejected() {
+        let out = format!(
+            "{RESULT_A}\n{KWS_A}\npryon[4] INFO: DecoderID=dec: Audio backlog size reset from 7050 msec to 2000 msec\n\
+             pushed 2677248 samples (167.3s), 1 callbacks\n"
+        );
+        let e = parse_wake(&out).unwrap_err();
+        assert!(e.contains("dropped audio"), "{e}");
+        let e = refuse_dropped(&out, Path::new("/x/long.raw")).unwrap_err().to_string();
+        assert!(e.contains("/x/long.raw") && e.contains("dropped audio"), "{e}");
+        assert!(refuse_dropped(&format!("{RESULT_A}\n{KWS_A}\n"), Path::new("a.raw")).is_ok());
+    }
+
+    #[test]
     fn probabilistic_accept_rejected() {
         let kws = KWS_A.replace("detection_type=Accept", "detection_type=AcceptProbabilistic");
         let e = parse_wake(&format!("{RESULT_A}\n{kws}\n")).unwrap_err();
@@ -348,7 +379,8 @@ mod tests {
         };
         let dir = TempDir::new("oracle");
         let clip = dir.join("noise.raw");
-        let pcm: Vec<u8> = synth(Clip::Noise).iter().flat_map(|s| s.to_le_bytes()).collect();
+        // 5 s: at -x 1000 libpryon decodes it before its ~7 s backlog limit drops audio
+        let pcm: Vec<u8> = synth(Clip::Noise)[..16000 * 5].iter().flat_map(|s| s.to_le_bytes()).collect();
         std::fs::write(&clip, pcm).unwrap();
         let manifest = Path::new("/system/local/models/keyword/en-US/ALEXA/pryon.manifest");
         let cmds = [OracleCmd::Property { at: 4000, name: "AlarmState".into(), value: 1 }, OracleCmd::SessionEnd { at: 8000 }];

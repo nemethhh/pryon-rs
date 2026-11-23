@@ -27,7 +27,7 @@ const END_CAP: f32 = 1.25;
 const MAX_KEYWORDS: usize = 64;
 /// Word components of a multi-word spotter (libpryon asserts at most two).
 const MAX_WORDS: usize = 2;
-/// Bound on the AFE frames kept for lookups (about 8.4 s).
+/// Bound on the AFE frames kept for lookups (128 samples each: about 524 s).
 const MAX_AFE_RECORDS: usize = 1 << 16;
 
 /// Active thresholds after libpryon's clamps (keyword_spotter_thresholds.cpp, 0x9c2468).
