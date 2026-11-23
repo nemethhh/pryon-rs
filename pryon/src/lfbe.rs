@@ -528,10 +528,6 @@ impl Lfbe {
         }
     }
 
-    pub fn bins(&self) -> usize {
-        self.bins
-    }
-
     /// Drops buffered samples; the next frame starts at the next sample pushed.
     pub fn reset(&mut self) {
         self.buf.clear();

@@ -13,7 +13,6 @@ pub struct GraphProto {
     pub initializers: Vec<TensorProto>,
     pub inputs: Vec<ValueInfo>,
     pub outputs: Vec<ValueInfo>,
-    pub value_info: Vec<ValueInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -231,7 +230,6 @@ fn parse_graph(b: &[u8]) -> Result<GraphProto, String> {
             5 => g.initializers.push(parse_tensor(v.len()?)?),
             11 => g.inputs.push(parse_value_info(v.len()?)?),
             12 => g.outputs.push(parse_value_info(v.len()?)?),
-            13 => g.value_info.push(parse_value_info(v.len()?)?),
             _ => {}
         }
         Ok(())

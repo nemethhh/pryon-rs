@@ -155,10 +155,6 @@ impl LoadedSet {
         }
         Ok(LoadedSet { spec, graphs, components, wiring })
     }
-
-    pub fn component(&self, key: &str) -> Option<usize> {
-        self.components.iter().position(|c| c.key == key)
-    }
 }
 
 pub struct StepOut<'a> {
