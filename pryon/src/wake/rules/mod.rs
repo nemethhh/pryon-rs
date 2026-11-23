@@ -343,7 +343,7 @@ impl Orchestra {
                     (p, o.equals, Thr::new(o.accept, prob, t.notify))
                 })
                 .collect();
-            let cap = PREROLL_MS / (FRAME_MS * s.kw_window) as f32;
+            let cap = PREROLL_MS / (u64::from(FRAME_MS) * u64::from(s.kw_window)) as f32;
             spots.push(Spot {
                 keyword,
                 aux: s.auxiliary,
