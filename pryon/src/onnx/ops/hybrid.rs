@@ -294,8 +294,9 @@ pub(super) fn hybrid_lstm(n: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -
     }
     let h0 = float_arg(ins, 11)?.dims();
     let &[1, lanes, hh] = h0 else { return Err(format!("initial state of shape {h0:?}")) };
-    if hh != hid || float_arg(ins, 12)?.dims() != h0 {
-        return Err(format!("initial states of shape {h0:?} and {:?}", ins[12].dims()));
+    let c0 = float_arg(ins, 12)?.dims();
+    if hh != hid || c0 != h0 {
+        return Err(format!("initial states of shape {h0:?} and {c0:?}"));
     }
     if xrows != 1 && xrows != lanes {
         return Err(format!("input of shape {:?} for {lanes} lanes", x.dims()));

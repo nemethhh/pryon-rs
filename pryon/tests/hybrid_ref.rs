@@ -362,3 +362,22 @@ fn lstm_reverse_refused() {
     let e = unsupported(load(m, &[("x", &[1, 1, 8]), ("h0", &[1, 2, 4]), ("c0", &[1, 2, 4])]));
     assert!(e.contains("HybridLSTM (node l)") && e.contains("direction"), "{e}");
 }
+
+#[test]
+fn lstm_h0_mismatch_without_c0_refused() {
+    let m = ModelBuilder::new(8, 15)
+        .input("x", F, &d(&[1, 1, 8]))
+        .input("h0", F, &d(&[1, 2, 3]))
+        .output("y", F, &d(&[1, 1, 2, 4]));
+    let mut r = R::new("h0");
+    let m = qweights(m, &mut r, "w", &[1], 16, 8, 0.02);
+    let m = qweights(m, &mut r, "r", &[1], 16, 4, 0.02).init_f32("b", &[1, 32], &[0.0; 32]).node_named(
+        "l",
+        "HybridLSTM",
+        &["x", "w_w", "w_sw", "w_zw", "w_sums", "r_w", "r_sw", "r_zw", "r_sums", "b", "", "h0"],
+        &["y"],
+        &[("hidden_size", Attr::Int(4))],
+    );
+    let e = unsupported(load(m, &[("x", &[1, 1, 8]), ("h0", &[1, 2, 3])]));
+    assert!(e.contains("HybridLSTM (node l)") && e.contains("input 12"), "{e}");
+}
