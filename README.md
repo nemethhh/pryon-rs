@@ -6,8 +6,9 @@ An open, native Rust reimplementation of two engines in Amazon's `libpryon.so`:
   breaking, dog barks, a baby crying, and eight more sound types). It produces **the same scores, bit for bit, and
   the same decisions** as libpryon, at roughly **half the CPU and a quarter of the memory** on an Echo Dot;
 - the **wake word engine** ("Alexa", "Echo", "Computer", ...): the firmware ALEXA model and the en-US wake word sets
-  Amazon serves. On a PC it produces the same events and the same printed scores as libpryon on the sets validated
-  so far (the firmware set outside libpryon's start gate, below); it has not yet been run on a device.
+  Amazon serves. It produces the same events and the same printed scores as libpryon on the sets validated so far
+  (the firmware set outside libpryon's start gate, below), on a PC and on the Echo Dot 3 and Echo Dot 2, where it
+  also needs less CPU and memory than libpryon.
 
 It is a plain library with a Rust and a C API: 16 kHz mono int16 audio in, sound results per ~10 s window or wake
 word detections out. No threads, no global state, no dependencies at run time. It was written to replace libpryon in
@@ -37,21 +38,13 @@ recordings, TTS "Alexa", "Hey Disney", "Stop" and "Ziggy", spoken commands, long
 | alexa-en-US on a PC | every event (ALEXA, HEY_DISNEY, STOP) equal to libpryon's in kind, begin, end and printed score; also with client properties set and with session ends mid-clip |
 | Firmware ALEXA on a PC | the same, outside libpryon's firmware start gate (below), which validate sets aside and counts; after a session end 0.5 s into each clip most events fall in the gate (366 of 388 set aside) |
 | Network tensors | every node output of both sets bit-equal to libpryon's own tensors, captured under qemu-arm on 4 clips |
-| armv7 build under qemu-arm | `pryon-cli wake --bits` output byte-identical to x86_64 (both sets, 106 s of real "Alexa" recordings) |
-| On the device (Echo Dot 3, Echo Dot 2) | not run yet: parity, CPU and memory against libpryon |
+| armv7 build under qemu-arm | bit-exact against the qemu oracle as on x86_64; `pryon-cli wake --bits` output byte-identical to x86_64 (both sets, 106 s of real "Alexa" recordings) |
+| Parity on the device (Echo Dot 3, Echo Dot 2) | `pryon-cli wake --bits` output byte-identical to the PC on 135/135 short clips per set (firmware ALEXA, alexa-en-US) and on 8/8 long-speech runs; libpryon on the device equals the qemu oracle, apart from its own non-deterministic start gate after a restart, which is deliberately not modelled |
+| CPU and memory on the device | at or below libpryon in CPU and peak RSS on both Echos; less CPU, firmware ALEXA / alexa-en-US: Echo Dot 3 (CPU capped at 747.5 MHz) 1.37× / 1.78×, Echo Dot 2 1.92× / 2.38× |
+| Echo front-end clock on a real `micAsr` capture | AFE times equal to libpryon's on 13/13 accepts per set |
+| Spoken, in hassmic's `both` mode on an Echo Dot 3 | 10/10 events of the same keyword and kind as libpryon; 8 sample-exact, the other 2 inside libpryon's start gate |
 
-Still pending on a device, none of it run yet (gate 1 is the PC parity above):
-
-- gate 2, parity: the engine on the Echo Dot 3 and Echo Dot 2 identical to the PC, and libpryon there identical to
-  the qemu oracle;
-- gate 3, resources: CPU per second of audio and peak memory per wake word slot against libpryon (target: 1.3× less
-  CPU or better), and the worst single feed;
-- the Echo front-end clock (`SpotterOptions::echo_stream`) against a real `micAsr` capture: so far it is checked only
-  on synthetic clips carrying every metadata version libpryon parses;
-- the flush-to-zero behaviour of the NEON and VFP kernels on the Cortex-A35 and A53: so far it is checked under
-  qemu-arm and against the ARM architecture manual.
-
-After those, hassmic's soak (both engines on the same slot for 24 h, events compared) decides whether its default
+Next is hassmic's soak (both engines on the same slot for 24 h, events compared), which decides whether its default
 moves to this engine for a set.
 
 Whisper detection is not implemented.
@@ -205,7 +198,7 @@ runs libpryon (`pryon_test` from [echo-dot-assist](https://github.com/nemethhh/e
 `PRYON_ORACLE_ROOTFS` and `PRYON_PRYON_TEST` stand in for the two flags) and the wake engine on the same `.raw` or
 16 kHz mono `.wav` clips (files or directories) and prints every difference as
 `DIFF <clip> <keyword> oracle=<event|-> rust=<event|->`, then a summary per keyword.
-Exit 0 clean, 1 differences, 2 usage or oracle errors.
+Exit 0 clean, 1 differences, 2 usage or oracle errors or a set the engine refuses or cannot read.
 
 - **Timing.** The oracle runs in real time (`--speed 1`, the default), `--jobs` clips at a time: at higher speeds
   libpryon's results depend on feed timing. `--cache` keeps oracle outputs as `<set checksum>/<key>.txt`, the key
@@ -280,7 +273,7 @@ counted).
 - `reset` is libpryon's session end: a pending near miss is reported, then the front end, network, rules and
   operating state restart; client properties stay.
 - libpryon restarts its decoder by itself after `restart-trigger` accepts of one keyword; the engine does the same
-  (`Spotter::origin` moves to the sample after the triggering frame).
+  (its frames start again at the sample after the triggering frame).
 - With `SpotterOptions::echo_stream` (C: `PRYON_SPOTTER_ECHO_STREAM`), for an Echo's `micAsr` stream that carries
   the front end's clock in its lowest bits, each detection gets `afe`: libpryon's
   `timestamp_before_ww_start/_end`. Off by default; other platforms have no such marks.
@@ -383,7 +376,7 @@ libpryon does on the device). No fixture is affected. Run on the device to confi
 ### Wake fixtures
 
 `pryon/tests/fixtures/lfbe64/` are the 64-bin front end's frames on the first 3 s of the `lfbe/` clips, from
-`pryon_lfbe.c` (the C front end, with the wake word models' bins and mel range). `hybrid/` holds testkit-built
+pypryon's `vendor/pryon-native/pryon_lfbe.c` (the C front end, with the wake word models' bins and mel range). `hybrid/` holds testkit-built
 `Hybrid*` graphs with random weights (`<case>.onnx`, inputs `<case>.in.f32`, written by the ignored test
 `write_fixtures`) and their outputs from pypryon's CPUNK rewrite run in onnxruntime (`<case>.out.f32`).
 
