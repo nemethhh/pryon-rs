@@ -687,6 +687,37 @@ mod tests {
     }
 
     #[test]
+    fn spotter_echo_stream_afe() {
+        let d = spotter_set(0.99);
+        let pcm = pryon_testkit::lsb_stream(synth(Clip::Noise)[..16000 * 6].to_vec(), 1000);
+        let model = Arc::new(SpotterModel::load(d.path()).unwrap());
+        let mut sp = Spotter::new(model, SpotterOptions { echo_stream: true }).unwrap();
+        let mut want = Vec::new();
+        sp.feed(&pcm, &mut want);
+        assert!(want.iter().any(|x| x.afe.is_some()));
+        let run = |flags: c_uint| {
+            let s = spotter_open(&d, flags);
+            let mut out: Vec<pryon_detection> = vec![unsafe { std::mem::zeroed() }; 64];
+            let n = unsafe { pryon_spotter_feed(s, pcm.as_ptr(), pcm.len(), out.as_mut_ptr(), 64) };
+            unsafe { pryon_spotter_close(s) };
+            out.truncate(n as usize);
+            out
+        };
+        let got = run(PRYON_SPOTTER_ECHO_STREAM);
+        assert_eq!(got.len(), want.len());
+        for (g, w) in got.iter().zip(&want) {
+            match w.afe {
+                Some(a) => assert_eq!((g.afe_known, g.afe_start, g.afe_end), (1, a.start, a.end)),
+                None => assert_eq!((g.afe_known, g.afe_start, g.afe_end), (0, 0, 0)),
+            }
+        }
+        assert!(got.iter().any(|g| g.afe_known == 1));
+        let plain = run(0);
+        assert!(!plain.is_empty());
+        assert!(plain.iter().all(|g| (g.afe_known, g.afe_start, g.afe_end) == (0, 0, 0)));
+    }
+
+    #[test]
     fn spotter_layout_matches_header() {
         use std::mem::{offset_of, size_of};
         assert_eq!(size_of::<pryon_detection>(), 56);
