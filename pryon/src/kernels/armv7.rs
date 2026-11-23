@@ -211,6 +211,8 @@ pub(crate) fn dequant_rows(acc: &[i32], s: [f32; 3], rs: &[f32], b: &[f32], a: &
 pub(crate) fn dot_i8_rows(w: &[i8], cols: usize, q: &[i8], out: &mut [i32]) {
     assert!(cols > 0 && cols % 16 == 0 && q.len() >= cols && out.len() % 4 == 0);
     assert!(w.len() == out.len() * cols);
+    // the paired vmlal sums two products in i16: a negative q could overflow it
+    debug_assert!(q[..cols].iter().all(|&v| v >= 0), "q outside 0..=127");
     for (g, o) in w.chunks_exact(4 * cols).zip(out.chunks_exact_mut(4)) {
         // SAFETY: reads the group's four rows of cols bytes and cols bytes of q; one 16-byte store to o[..4].
         unsafe {
