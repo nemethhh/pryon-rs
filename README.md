@@ -8,12 +8,13 @@ An open, native Rust reimplementation of two engines in Amazon's `libpryon.so`:
 - the **wake word engine** ("Alexa", "Echo", "Computer", ...): the firmware ALEXA model and the en-US wake word sets
   Amazon serves. It produces the same events and the same printed scores as libpryon on the sets validated so far
   (the firmware set outside libpryon's start gate, below), on a PC and on the Echo Dot 3 and Echo Dot 2, where it
-  also needs less CPU and memory than libpryon.
+  also needs less CPU than libpryon and no more memory.
 
 It is a plain library with a Rust and a C API: 16 kHz mono int16 audio in, sound results per ~10 s window or wake
 word detections out. No threads, no global state, no dependencies at run time. It was written to replace libpryon in
-[hassmic](https://github.com/nemethhh/echo-dot-assist/tree/rust-sound), which turns stock Echos into Home Assistant
-voice satellites, but nothing in it assumes hassmic, Home Assistant or an Echo.
+[hassmic](https://github.com/nemethhh/echo-dot-assist/tree/rust-wake), which turns stock Echos into Home Assistant
+voice satellites (`make RUST=1`; `SOUND_ENGINE` and `WAKE_ENGINE` pick libpryon, this engine or both side by side;
+the default stays libpryon), but nothing in it assumes hassmic, Home Assistant or an Echo.
 
 Not affiliated with Amazon. This repository contains no Amazon code, models, firmware or recordings: you supply the
 model from a device you own.
@@ -163,7 +164,8 @@ link it with the native libraries rustc lists for the target
     armv7a-linux-androideabi24-clang app.c libpryon_ffi.a -ldl -llog -lunwind -lm -lc           # Echo (NDK r21e)
 
 `pryon-ffi/examples/sound.c` and `pryon-ffi/examples/spotter.c` are complete programs; `cargo test` builds and runs
-them.
+them. A panic inside the library never unwinds into C: the call fails and the handle refuses further audio (release
+builds unwind, so link the target's unwinder, as above).
 
 ### Command line
 
@@ -175,8 +177,8 @@ them.
   `--speed 1` feeds in real time
 - `rusage -- CMD ...`: run a command and report its CPU time and peak memory (to measure libpryon the same way)
 - `wake -m SET [-p NAME=VALUE[@SAMPLE]]... [--reset-at SAMPLE]... [--chunk N] [--bits] CLIP.raw`: print the wake
-  engine's detections (`EVENT` lines) and decoder restarts; `-p` sets a client property and `--reset-at` ends the
-  session before the given sample
+  engine's detections (`EVENT` lines) and decoder restarts (`RESTART` lines, checked after each chunk); `-p` sets a
+  client property and `--reset-at` ends the session before the given sample
 - `bench-wake -m SET [--chunk N] CLIP.raw`: as `bench`, for a wake word set
 - `inspect SET`: what the loader read from a wake word set (stages, spotters, thresholds, operating states)
 - `validate ... MODEL CLIPS...`: compare the wake engine with libpryon, below
@@ -366,9 +368,9 @@ qemu-arm against an Echo Dot 3 root filesystem:
       qemu-arm -L $ROOTFS aed_test -m MODEL/pryon.manifest -x 1 -j noise.raw > noise.txt
 
 In real time (`-x 1`): faster, libpryon may drop audio once its backlog passes about 7 s and log `Audio backlog size
-reset`. Each file must have floor(samples / 159680) windows and no such line. The tests compare the printed scores (6 decimals), the decisions, `maxEnergyLevel` and
-`numSamplesAboveEnergyThreshold`. `davs/bits/<clip>.txt` adds the exact score bits of each window, from a Python
-reference of the recipe that matches the printed scores.
+reset`. Each file must have floor(samples / 159680) windows and no such line. The tests compare the printed scores
+(6 decimals), the decisions, `maxEnergyLevel` and `numSamplesAboveEnergyThreshold`. `davs/bits/<clip>.txt` adds the
+exact score bits of each window, from a Python reference of the recipe that matches the printed scores.
 
 In the sound detector on a PC, very small intermediate values are not flushed to zero, whereas NEON flushes them (as
 libpryon does on the device). No fixture is affected. Run on the device to confirm parity there.
@@ -376,13 +378,15 @@ libpryon does on the device). No fixture is affected. Run on the device to confi
 ### Wake fixtures
 
 `pryon/tests/fixtures/lfbe64/` are the 64-bin front end's frames on the first 3 s of the `lfbe/` clips, from
-pypryon's `vendor/pryon-native/pryon_lfbe.c` (the C front end, with the wake word models' bins and mel range). `hybrid/` holds testkit-built
-`Hybrid*` graphs with random weights (`<case>.onnx`, inputs `<case>.in.f32`, written by the ignored test
-`write_fixtures`) and their outputs from pypryon's CPUNK rewrite run in onnxruntime (`<case>.out.f32`).
+pypryon's `vendor/pryon-native/pryon_lfbe.c` (the C front end, with the wake word models' bins and mel range).
+`hybrid/` holds testkit-built `Hybrid*` graphs with random weights (`<case>.onnx`, inputs `<case>.in.f32`, written
+by the ignored test `write_fixtures`) and their outputs from pypryon's CPUNK rewrite run in onnxruntime
+(`<case>.out.f32`).
 
 `pryon/tests/fixtures/wake/{fw,alexa}/<clip>.txt` are the wake events of `pryon_test` (echo-dot-assist
 `src/tools/pryon_test.c`) for the firmware ALEXA set and alexa-en-US on the synthetic clips, run as above with
-`-m SET/pryon.manifest -x 1` (at `-x 1000` libpryon drops most of these 20-25 s clips). Their tests need `PRYON_WAKE_FW_DIR` and `PRYON_WAKE_SETS_DIR`.
+`-m SET/pryon.manifest -x 1` (at `-x 1000` libpryon drops most of these 20-25 s clips). Their tests need
+`PRYON_WAKE_FW_DIR` and `PRYON_WAKE_SETS_DIR`.
 
 `synth-{fw,davs}/<clip>.txt` are libpryon's events for the synthetic sets of `pryon-cli synth-wake-set fw|davs DIR
 --force 0.99` on the same clips; they probe libpryon's keyword rules. They were run in real time (`-x 1`): a set
