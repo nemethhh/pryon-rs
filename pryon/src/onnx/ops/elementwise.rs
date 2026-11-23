@@ -1,6 +1,8 @@
 //! Elementwise arithmetic with NumPy broadcasting; integer constants fold with wrapping arithmetic.
+//! Float Add/Sub/Mul are libpryon's CPUNK NEON kernels (0x123461c, 0x124c79c, 0x1247910): flush to zero, default NaN.
 
 use super::{arg, each_index, fold_numel, strides, Attrs, Built, Op, Value};
+use crate::num::{vadd, vmul, vsub};
 use crate::onnx::proto::NodeProto;
 use crate::onnx::tensor::{numel, Data, Tensor};
 use std::marker::PhantomData;
@@ -16,7 +18,7 @@ pub(crate) struct Mul;
 
 impl BinKind for Add {
     fn f32(a: f32, b: f32) -> f32 {
-        a + b
+        vadd(a, b)
     }
     fn int(a: i64, b: i64) -> i64 {
         a.wrapping_add(b)
@@ -25,7 +27,7 @@ impl BinKind for Add {
 
 impl BinKind for Sub {
     fn f32(a: f32, b: f32) -> f32 {
-        a - b
+        vsub(a, b)
     }
     fn int(a: i64, b: i64) -> i64 {
         a.wrapping_sub(b)
@@ -34,7 +36,7 @@ impl BinKind for Sub {
 
 impl BinKind for Mul {
     fn f32(a: f32, b: f32) -> f32 {
-        a * b
+        vmul(a, b)
     }
     fn int(a: i64, b: i64) -> i64 {
         a.wrapping_mul(b)

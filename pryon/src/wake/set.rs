@@ -44,6 +44,19 @@ pub struct SetSpec {
     pub restart: RestartSpec,
 }
 
+impl SetSpec {
+    /// Some stage's recurrent buffers have no stored values: libpryon then starts them from uninitialised heap, so
+    /// its scores are NaN for about 28 steps after every start (the engine starts them from zeros).
+    pub fn uninitialised_state(&self) -> bool {
+        self.stages.iter().any(|s| !s.recurrent.is_empty() && !s.primed)
+    }
+
+    /// The longest lock period of the set's spotters, in frames.
+    pub fn longest_lock(&self) -> u64 {
+        self.spotters.iter().map(|s| u64::from(s.lock)).max().unwrap_or(0)
+    }
+}
+
 /// How a pryon.config key is treated.
 #[derive(Clone, Copy)]
 enum Key {

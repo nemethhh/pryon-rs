@@ -42,9 +42,13 @@ fn run(g: Graph, ins: &[(&str, &[f32])], outs: &[&str]) -> (Vec<Vec<f32>>, Vec<S
     again.run();
     let got: Vec<Vec<f32>> = outs.iter().map(|n| s.output(g.output_index(n).unwrap()).to_vec()).collect();
     for (n, v) in outs.iter().zip(&got) {
-        assert_eq!(again.output(g.output_index(n).unwrap()), &v[..], "run and run_traced differ on {n}");
+        assert_eq!(bits(again.output(g.output_index(n).unwrap())), bits(v), "run and run_traced differ on {n}");
     }
     (got, traced)
+}
+
+fn bits(v: &[f32]) -> Vec<u32> {
+    v.iter().map(|x| x.to_bits()).collect()
 }
 
 fn shape_of(g: &Graph, out: &str) -> Vec<usize> {
@@ -451,7 +455,7 @@ fn softmax_opset11_flattens() {
 #[test]
 fn softmax_opset13_axis() {
     let x: Vec<f32> = (0..12).map(|i| (i as f32 * 0.37).cos() * 2.0).collect();
-    let mk = |axis: Option<i64>| {
+    let mk = |axis: Option<i64>| -> Vec<f32> {
         let attrs: Vec<(&str, Attr)> = axis.map(|a| ("axis", Attr::Int(a))).into_iter().collect();
         let m = ModelBuilder::new(8, 13)
             .input("x", F, &d(&[2, 2, 3]))
@@ -462,15 +466,13 @@ fn softmax_opset13_axis() {
     let last = mk(None);
     close(&last, &(0..4).flat_map(|r| softmax_ref(&x[r * 3..r * 3 + 3])).collect::<Vec<_>>(), 1e-6);
     assert_eq!(mk(Some(-1)), last);
-    let mid = mk(Some(1));
-    let mut want = vec![0.0; 12];
-    for (o, i) in (0..2).flat_map(|o| (0..3).map(move |i| (o, i))) {
-        let col: Vec<f32> = (0..2).map(|k| x[(o * 2 + k) * 3 + i]).collect();
-        for (k, v) in softmax_ref(&col).into_iter().enumerate() {
-            want[(o * 2 + k) * 3 + i] = v;
-        }
-    }
-    close(&mid, &want, 1e-6);
+    // an axis before the last: libpryon would normalise from the axis on, not over the axis alone
+    let m = ModelBuilder::new(8, 13)
+        .input("x", F, &d(&[2, 2, 3]))
+        .output("y", F, &d(&[2, 2, 3]))
+        .node("Softmax", &["x"], &["y"], &[("axis", Attr::Int(1))]);
+    let e = unsupported(load(m, &[("x", &[2, 2, 3])], &[]));
+    assert!(e.contains("axis 1"), "{e}");
 }
 
 #[test]
@@ -559,7 +561,7 @@ fn batchnorm_values() {
         .map(|i| {
             let c = (i / 3) % 2;
             let s = g[c] / var[c].sqrt();
-            x[i] * s + (b[c] - mu[c] * s)
+            x[i].mul_add(s, b[c] - mu[c] * s)
         })
         .collect();
     assert_eq!(o[0], want);
@@ -610,4 +612,100 @@ fn extra_outputs_refused() {
         .node_named("n", "BatchNormalization", &["x", "g", "b", "g", "g"], &["y", "m", "v"], &[]);
     let e = unsupported(load(bn, &[("x", &[1, 2])], &[]));
     assert!(e.contains("BatchNormalization (node n) with 3 outputs"), "{e}");
+}
+
+/// One-node graph over `x` of shape `dims`; returns the output bits.
+fn one(op: &str, dims: &[usize], attrs: &[(&str, Attr)], x: &[f32], inits: &[(&str, &[f32])]) -> Vec<u32> {
+    let di: Vec<i64> = dims.iter().map(|&v| v as i64).collect();
+    let mut m = ModelBuilder::new(8, 11).input("x", F, &d(&di)).output("y", F, &[]);
+    let mut ins = vec!["x"];
+    for (n, v) in inits {
+        m = m.init_f32(n, &[v.len() as i64], v);
+        ins.push(n);
+    }
+    let m = m.node(op, &ins, &["y"], attrs);
+    let g = load(m, &[("x", dims)], &[]).unwrap();
+    bits(&run(g, &[("x", x)], &["y"]).0[0])
+}
+
+/// libpryon's Softmax (CPUNK SoftmaxImpl<CortexA15>): max by NEON vmax, CPUNK exp of x - max, the sum in four lanes
+/// (tail first, then vectors last to first), one reciprocal, products. Bits from an independent f32 oracle of
+/// that form; every row of the captures matches it.
+#[test]
+fn softmax_bits() {
+    let cases: [(&[f32], &[u32]); 3] = [
+        (&[0.1, 0.7, -1.3], &[0x3ea6d854, 0x3f180178, 0x3da492ec]),
+        (&[2.5, -0.75, 0.3, 1.125], &[0x3f368ac1, 0x3ce27e55, 0x3da1cf51, 0x3e389d8a]),
+        (
+            &[0.9, -2.2, 0.35, 1.7, -0.6, 0.05, 2.4, -1.1, 0.8],
+            &[0x3dcc646d, 0x3b9352c6, 0x3d6bd921, 0x3e637115, 0x3cb66ca2, 0x3d2eb87c, 0x3ee50176, 0x3c5d4abd, 0x3db8f118],
+        ),
+    ];
+    for (x, want) in cases {
+        assert_eq!(one("Softmax", &[1, x.len()], &[], x, &[]), want, "{x:?}");
+    }
+}
+
+/// ReduceSum over axis 0 is libpryon's chain of CPUNK Adds: the first slice copied, then NEON adds (flush to zero).
+#[test]
+fn reduce_sum_order() {
+    let ax = [("axes", Attr::Ints(vec![0]))];
+    let tiny = f32::from_bits(0x0000_1000);
+    // -0 + -0 stays -0 (a 0 seed would make it +0); a subnormal is flushed by the add, kept by the copy
+    assert_eq!(one("ReduceSum", &[2, 2], &ax, &[-0.0, tiny, -0.0, 0.0], &[]), [0x8000_0000, 0]);
+    assert_eq!(one("ReduceSum", &[1, 2], &ax, &[-0.0, tiny], &[]), [0x8000_0000, 0x1000]);
+    let x = [1.0, f32::from_bits(0x3380_0000), f32::from_bits(0x3380_0000), 3.0];
+    assert_eq!(one("ReduceSum", &[4, 1], &ax, &x, &[]), [(((1.0 + x[1]) + x[2]) + 3.0f32).to_bits()]);
+}
+
+/// ReduceMax over axis 0 starts from the first slice and keeps it unless `acc < x`: a NaN there stays.
+#[test]
+fn reduce_max_first_slice() {
+    let ax = [("axes", Attr::Ints(vec![0]))];
+    let nan = f32::NAN;
+    assert_eq!(one("ReduceMax", &[2, 2], &ax, &[nan, 1.0, 2.0, nan], &[]), [nan.to_bits(), 1.0f32.to_bits()]);
+}
+
+/// libpryon's BatchNormalization (0xb3e534): s = g / sqrt(var + eps), b' = B - mean·s (CPUNK), y = fmaf(x, s, b').
+#[test]
+fn batchnorm_form() {
+    let p = |v: f32| [v];
+    let cases = [
+        ((0.8938f32, 1.883f32, -0.942f32, -0.069f32, 2.833f32), 0x3e0a2a7au32),
+        ((2.7994, 1.517, -0.59, 0.882, 2.087), 0x3fb6233e),
+    ];
+    for ((x, g, b, mu, var), want) in cases {
+        let got = one(
+            "BatchNormalization",
+            &[1, 1, 1],
+            &[("epsilon", Attr::Float(0.001))],
+            &[x],
+            &[("g", &p(g)), ("b", &p(b)), ("mu", &p(mu)), ("var", &p(var))],
+        );
+        assert_eq!(got, [want], "x {x}");
+    }
+}
+
+/// MaxPool (0xd016a8, NCHW): max from -FLT_MAX by `v > m`, so a window of NaN gives -FLT_MAX.
+#[test]
+fn maxpool_nan_window() {
+    let nan = f32::NAN;
+    let ks = [("kernel_shape", Attr::Ints(vec![1, 2])), ("strides", Attr::Ints(vec![1, 2]))];
+    assert_eq!(one("MaxPool", &[1, 1, 1, 4], &ks, &[nan, nan, nan, 2.0], &[]), [f32::MIN.to_bits(), 2.0f32.to_bits()]);
+}
+
+/// Add/Sub/Mul run as CPUNK NEON kernels: subnormal inputs and results flush to zero.
+#[test]
+fn elementwise_flush_to_zero() {
+    let m = ModelBuilder::new(6, 11)
+        .input("a", F, &d(&[2]))
+        .input("b", F, &d(&[2]))
+        .output("s", F, &d(&[2]))
+        .output("p", F, &d(&[2]))
+        .node("Add", &["a", "b"], &["s"], &[])
+        .node("Mul", &["a", "b"], &["p"], &[]);
+    let g = load(m, &[("a", &[2]), ("b", &[2])], &[]).unwrap();
+    let tiny = f32::from_bits(0x0000_1000);
+    let (o, _) = run(g, &[("a", &[tiny, 1e-20]), ("b", &[0.0, 1e-20])], &["s", "p"]);
+    assert_eq!((bits(&o[0]), bits(&o[1])), (vec![0, (1e-20f32 + 1e-20).to_bits()], vec![0, 0]));
 }

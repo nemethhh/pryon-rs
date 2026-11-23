@@ -82,20 +82,26 @@ link it with the native libraries rustc lists for the target
 - `bench -m MODEL [--chunk N] [--speed X] CLIP.raw`: CPU per second of audio, worst single feed, peak memory;
   `--speed 1` feeds in real time
 - `rusage -- CMD ...`: run a command and report its CPU time and peak memory (to measure libpryon the same way)
-- `validate [--oracle-rootfs DIR --pryon-test PATH] [--cache DIR] [--exact] [--records DIR] [--speed X] [--jobs N]
-  [--lead-ms MS] [--tail-ms MS] [-p NAME=VALUE[@SAMPLE]]... [-e SAMPLE]... MODEL CLIPS...`: run libpryon (`pryon_test` under qemu-arm; `PRYON_ORACLE_ROOTFS` and
-  `PRYON_PRYON_TEST` stand in for the two flags) and the wake engine on the same `.raw` or 16 kHz mono `.wav` clips
+- `validate [--oracle-rootfs DIR --pryon-test PATH] [--cache DIR] [--exact] [--records DIR] [--record KEYWORD]...
+  [--speed X] [--jobs N] [--lead-ms MS] [--tail-ms MS] [-p NAME=VALUE[@SAMPLE]]... [-e SAMPLE]... MODEL CLIPS...`:
+  run libpryon (`pryon_test` under qemu-arm; `PRYON_ORACLE_ROOTFS` and `PRYON_PRYON_TEST` stand in for the two
+  flags) and the wake engine on the same `.raw` or 16 kHz mono `.wav` clips
   (files or directories) and print every difference as `DIFF <clip> <keyword> oracle=<event|-> rust=<event|->`, then
   a summary per keyword. Exit 0 clean, 1 differences, 2 usage or oracle errors. The oracle runs in real time
   (`--speed 1`, the default) because libpryon's results depend on feed timing at higher speeds, `--jobs` clips at a
   time. Both engines get each clip between `--lead-ms` (default 2500) and `--tail-ms` (default 1000) of digital
   silence: the firmware oracle scores nothing in its first ~1.7 s, and libpryon reports an accept only ~120 ms after
-  the keyword ends, so not at the very end of a clip; events are printed in clip samples. That firmware gate
-  restarts with every session end and decoder restart; it is the same at any feed speed and host load, but its
-  length depends on the install path of the model (168 and 174 frames observed for copies of the same files), so it
-  is not a property of the set and the engine does not reproduce it: on the firmware set, events in the gate after
-  an `-e` or a restart (and a lock period after it) differ, and once a gate-hidden accept moves the engine's restart
-  point, the events after it part too. `-p` sets a client
+  the keyword ends, so not at the very end of a clip; events are printed in clip samples. That firmware gate comes
+  from libpryon itself: the firmware graph's conv buffers have no stored values, and libpryon starts them from
+  uninitialised heap memory (NaN, denormals, 1e12-size garbage) at the start, after every session end and after
+  every decoder restart, so its scores are NaN until that garbage has left the network (168 or 174 frames in the
+  installs measured; the garbage, and with it the length, follows the install path). The engine starts the buffers
+  from zeros and does not reproduce the garbage. So on a set whose buffers libpryon leaves uninitialised (the
+  firmware set; not the DAVS sets), and only there, validate sets aside and counts (`GATE` lines, `GATE ALLOWANCE`,
+  the record's `gate_exempt`): one-sided events, or pairs of equal kind, whose ends lie within 174 frames plus the
+  set's longest lock period after a session end or a restart both engines agree on; engine events inside the gate
+  that libpryon lacks; and the events after the first restart the two engines place differently (a gate-hidden
+  accept moves the engine's restart point). Everything else is a difference. `-p` sets a client
   property and `-e` ends the session (`Spotter::reset`, libpryon's `PryonDecoder_SessionEnd`) before the given clip
   sample, in both engines. libpryon's probabilistic accept (a random accept of a near miss, drawn from a
   clock-seeded generator) is switched off for the oracle only: it runs a copy of the set whose
@@ -103,9 +109,12 @@ link it with the native libraries rustc lists for the target
   only effect; the engine never draws. When libpryon restarts its decoder after too many accepts, `pryon_test`
   creates a new one and goes on from the sample after the triggering frame, as the engine does. `--cache` keeps
   oracle outputs as `<set checksum>/<key>.txt`, the key covering the padded clip, the commands, the speed and the
-  harness version. On a clean `--exact` run (scores compared as 6-decimal strings) it writes
-  `validated/<checksum>.<KEYWORD>.rec` for each keyword the oracle accepted at least once: the set, the keyword,
-  the clip count and digest, the padding, accept and near-miss counts, date and pryon-rs commit.
+  harness version. On a clean `--exact` run (every event's kind, begin and end equal, and the engine's score printed
+  as `pryon_test` prints it, C `%g`, equal to the oracle's string) it writes `validated/<checksum>.<KEYWORD>.rec`
+  for each keyword the oracle accepted at least once (only the `--record` keywords when given): the set, the
+  keyword, the clip count and digest, the padding, accept and near-miss counts, the events the gate allowance set
+  aside, date and pryon-rs commit. A clip the oracle did not hear to the end is an error, so it never yields a
+  record.
 - `synth NAME OUT.raw`, `synth-model DIR`: synthetic test clips and a random-weight model in the real format
 
 Clips are raw 16 kHz mono s16le.

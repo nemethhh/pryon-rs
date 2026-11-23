@@ -129,10 +129,10 @@ fn name(clip: &Path) -> String {
     clip.file_name().unwrap().to_string_lossy().into_owned()
 }
 
-/// Distance in representable f32 values (both NaN counts as equal, NaN against a number as `u32::MAX`).
+/// Distance in representable f32 values; a NaN equals only the same NaN bits, otherwise it is `u32::MAX` away.
 fn ulp(a: f32, b: f32) -> u32 {
     if a.is_nan() || b.is_nan() {
-        return if a.is_nan() && b.is_nan() { 0 } else { u32::MAX };
+        return if a.to_bits() == b.to_bits() { 0 } else { u32::MAX };
     }
     let key = |x: f32| {
         let u = x.to_bits();
@@ -371,7 +371,7 @@ fn capture_nodes_bits() {
 }
 
 fn stage_report(set: &LoadedSet, stage: &str, clips: usize, r: &StageReport) -> String {
-    let ulp = |u: u32| if u == u32::MAX { "NaN/number".to_string() } else { u.to_string() };
+    let ulp = |u: u32| if u == u32::MAX { "NaN bits".to_string() } else { u.to_string() };
     let mut o = format!(
         "== {} ({}) stage {stage}: {} steps over {clips} clips, {} tensors compared, {} bit-equal\n",
         set.spec.dir.file_name().unwrap_or_default().to_string_lossy(),
@@ -520,7 +520,7 @@ fn capture_hybrid_bits() {
                     steps_run += 1;
                 }
             }
-            let ulp = |u: u32| if u == u32::MAX { "NaN/number".to_string() } else { u.to_string() };
+            let ulp = |u: u32| if u == u32::MAX { "NaN bits".to_string() } else { u.to_string() };
             report += &format!(
                 "== {} ({}) stage {}: {steps_run} steps, {} Hybrid outputs\n",
                 set.spec.dir.file_name().unwrap_or_default().to_string_lossy(),

@@ -1,10 +1,13 @@
 //! `validate`: libpryon (qemu) and pryon-rs on the same clips, every difference printed, validated sets recorded.
 
 use pryon::wake::{load_set, Detection, DetectionKind, Spotter, SpotterModel, SpotterOptions};
-use pryon_testkit::compare::{compare, oracle_cache_key, pad_clip, pushed, Diff, Ev, Limits, Tally, LEAD_MS, TAIL_MS};
-use pryon_testkit::oracle::{deterministic_set, parse_wake, OracleCmd, OracleEnv, OracleEvent, OracleKind};
+use pryon_testkit::compare::{
+    compare_gated, oracle_cache_key, pad_clip, pushed, Diff, Ev, GateTally, Limits, Tally, FW_GATE_MAX_FRAMES, LEAD_MS,
+    TAIL_MS,
+};
+use pryon_testkit::oracle::{deterministic_set, parse_wake, restarts, OracleCmd, OracleEnv, OracleEvent, OracleKind};
 use pryon_testkit::fnv1a64;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -16,6 +19,8 @@ struct Args {
     pryon_test: Option<PathBuf>,
     cache: Option<PathBuf>,
     records: PathBuf,
+    /// Keywords records may be written for (`--record`); empty: every keyword the oracle accepted.
+    record_only: Vec<String>,
     exact: bool,
     speed: f64,
     jobs: usize,
@@ -34,6 +39,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         pryon_test: None,
         cache: None,
         records: Path::new(env!("CARGO_MANIFEST_DIR")).join("../validated"),
+        record_only: Vec::new(),
         exact: false,
         speed: 1.0,
         jobs: std::thread::available_parallelism().map_or(4, |n| n.get()),
@@ -52,6 +58,7 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             "--pryon-test" => a.pryon_test = Some(val()?.into()),
             "--cache" => a.cache = Some(val()?.into()),
             "--records" => a.records = val()?.into(),
+            "--record" => a.record_only.push(val()?),
             "--exact" => a.exact = true,
             "--speed" => match val()?.parse::<f64>() {
                 Ok(x) if x > 0.0 && x.is_finite() => a.speed = x,
@@ -88,8 +95,9 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
         return Err("expected MODEL and at least one CLIP".into());
     }
     a.model = pos.remove(0).into();
+    let mut seen = HashSet::new();
     for p in pos {
-        collect_clips(Path::new(&p), &mut a.clips)?;
+        collect_clips(Path::new(&p), &mut a.clips, &mut seen)?;
     }
     a.clips.sort();
     a.clips.dedup();
@@ -103,13 +111,17 @@ fn is_clip(p: &Path) -> bool {
     p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("raw") || e.eq_ignore_ascii_case("wav"))
 }
 
-fn collect_clips(p: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
+/// `seen` holds the directories already walked (canonical), so symlinked directory cycles end.
+fn collect_clips(p: &Path, out: &mut Vec<PathBuf>, seen: &mut HashSet<PathBuf>) -> Result<(), String> {
     let md = std::fs::metadata(p).map_err(|e| format!("{}: {e}", p.display()))?;
     if md.is_dir() {
+        if !seen.insert(std::fs::canonicalize(p).map_err(|e| format!("{}: {e}", p.display()))?) {
+            return Ok(());
+        }
         for e in std::fs::read_dir(p).map_err(|e| format!("{}: {e}", p.display()))? {
             let q = e.map_err(|e| e.to_string())?.path();
             if q.is_dir() || is_clip(&q) {
-                collect_clips(&q, out)?;
+                collect_clips(&q, out, seen)?;
             }
         }
     } else {
@@ -155,11 +167,15 @@ fn wav_data(b: &[u8]) -> Result<&[u8], String> {
                 if !fmt_ok {
                     return Err("WAV data before fmt".into());
                 }
-                return Ok(&b[body..(body + len).min(b.len())]);
+                return Ok(&b[body..body.saturating_add(len).min(b.len())]);
             }
             _ => {}
         }
-        at = body + len + (len & 1);
+        // a chunk length near u32::MAX must not wrap on 32-bit targets
+        at = match body.checked_add(len).and_then(|x| x.checked_add(len & 1)) {
+            Some(x) => x,
+            None => break,
+        };
     }
     Err("WAV without a data chunk".into())
 }
@@ -176,13 +192,18 @@ fn kind_of(k: DetectionKind) -> OracleKind {
     }
 }
 
-/// Feeds `pcm` applying each command before its sample, in the order given (as pryon_test does).
-fn run_rust(model: &Arc<SpotterModel>, pcm: &[i16], cmds: &[(u64, Option<(String, i32)>)]) -> Result<Vec<Ev>, String> {
+/// Feeds `pcm` applying each command before its sample, in the order given (as pryon_test does); the events and the
+/// samples the engine restarted at.
+fn run_rust(
+    model: &Arc<SpotterModel>,
+    pcm: &[i16],
+    cmds: &[(u64, Option<(String, i32)>)],
+) -> Result<(Vec<Ev>, Vec<u64>), String> {
     let mut sp = Spotter::new(model.clone(), SpotterOptions::default()).map_err(|e| e.to_string())?;
     let mut cmds: Vec<&(u64, Option<(String, i32)>)> = cmds.iter().collect();
     cmds.sort_by_key(|c| c.0);
     let mut out: Vec<Detection> = Vec::new();
-    let (mut pos, mut next) = (0usize, 0usize);
+    let (mut pos, mut next, mut restarted) = (0usize, 0usize, Vec::new());
     loop {
         while next < cmds.len() && cmds[next].0 <= pos as u64 {
             match &cmds[next].1 {
@@ -196,20 +217,30 @@ fn run_rust(model: &Arc<SpotterModel>, pcm: &[i16], cmds: &[(u64, Option<(String
         }
         let stop = cmds.get(next).map_or(pcm.len(), |c| (c.0 as usize).min(pcm.len()));
         let end = (pos + 1600).min(stop);
+        let origin = sp.origin();
         sp.feed(&pcm[pos..end], &mut out);
+        if sp.origin() != origin {
+            restarted.push(sp.origin());
+        }
         pos = end;
     }
     let kw = sp.keywords();
-    Ok(out
-        .iter()
-        .map(|d| Ev { keyword: kw[d.keyword].clone(), kind: kind_of(d.kind), score: d.score, begin: d.begin_sample, end: d.end_sample })
-        .collect())
+    let ev = |d: &Detection| Ev {
+        keyword: kw[d.keyword].clone(),
+        kind: kind_of(d.kind),
+        score: d.score,
+        begin: d.begin_sample,
+        end: d.end_sample,
+    };
+    Ok((out.iter().map(ev).collect(), restarted))
 }
 
 struct ClipOut {
     name: String,
-    /// Per keyword: tally and differences.
-    per_kw: BTreeMap<String, (Tally, Vec<Diff>)>,
+    /// Per keyword: tally, differences and the events the start-gate allowance set aside.
+    per_kw: BTreeMap<String, (Tally, Vec<Diff>, GateTally)>,
+    /// The first restart the engines place differently, on a set without the start gate.
+    restart_mismatch: Option<(Option<u64>, Option<u64>)>,
     fnv: u64,
 }
 
@@ -219,6 +250,8 @@ struct Ctx<'a> {
     /// The deterministic oracle copy of the set (oracle::deterministic_set).
     manifest: PathBuf,
     limits: Limits,
+    /// `FW_GATE_MAX_FRAMES` plus the longest lock when libpryon leaves the set's state uninitialised.
+    gate_frames: Option<u64>,
     checksum: String,
     env: Option<OracleEnv>,
     scratch: PathBuf,
@@ -230,8 +263,8 @@ fn shifted(c: &Ctx) -> Vec<(u64, Option<(String, i32)>)> {
     c.args.cmds.iter().map(|(at, x)| (if *at == 0 { 0 } else { at + lead }, x.clone())).collect()
 }
 
-/// `pcm` is the padded clip; `fnv` its hash.
-fn oracle_text(c: &Ctx, path: &Path, pcm: &[i16], fnv: u64) -> Result<String, String> {
+/// `pcm` is the padded clip; `fnv` its hash; `index` the clip's place in the run (unique file names per job).
+fn oracle_text(c: &Ctx, path: &Path, pcm: &[i16], fnv: u64, index: usize) -> Result<String, String> {
     let cmds: Vec<OracleCmd> = shifted(c)
         .into_iter()
         .map(|(at, x)| match x {
@@ -251,7 +284,7 @@ fn oracle_text(c: &Ctx, path: &Path, pcm: &[i16], fnv: u64) -> Result<String, St
     let clip = if is_raw {
         path.to_path_buf()
     } else {
-        tmp_raw = c.scratch.join(format!("{fnv:016x}.raw"));
+        tmp_raw = c.scratch.join(format!("{index}-{fnv:016x}.raw"));
         std::fs::write(&tmp_raw, raw_bytes(pcm)).map_err(|e| e.to_string())?;
         tmp_raw.clone()
     };
@@ -261,48 +294,47 @@ fn oracle_text(c: &Ctx, path: &Path, pcm: &[i16], fnv: u64) -> Result<String, St
     if let Some(f) = cached {
         let dir = f.parent().unwrap();
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        let tmp = f.with_extension(format!("tmp{}", std::process::id()));
+        let tmp = f.with_extension(format!("tmp{}-{index}", std::process::id()));
         std::fs::write(&tmp, &text).and_then(|_| std::fs::rename(&tmp, &f)).map_err(|e| format!("{}: {e}", f.display()))?;
     }
     Ok(text)
 }
 
-fn one_clip(c: &Ctx, path: &Path) -> Result<ClipOut, String> {
+fn one_clip(c: &Ctx, index: usize, path: &Path) -> Result<ClipOut, String> {
     let name = path.display().to_string();
     let clip = read_pcm(path)?;
     let fnv = fnv1a64(&raw_bytes(&clip));
     let pcm = pad_clip(&clip, c.args.lead_ms, c.args.tail_ms);
-    let text = oracle_text(c, path, &pcm, fnv1a64(&raw_bytes(&pcm)))?;
+    let text = oracle_text(c, path, &pcm, fnv1a64(&raw_bytes(&pcm)), index)?;
     let lead = u64::from(c.args.lead_ms) * 16;
-    let mut oracle = parse_wake(&text).map_err(|e| format!("oracle output: {e}"))?;
-    for e in &mut oracle {
-        (e.begin, e.end) = (e.begin.saturating_sub(lead), e.end.saturating_sub(lead));
-    }
+    let oracle = parse_wake(&text).map_err(|e| format!("oracle output: {e}"))?;
     let fed = pushed(&text).unwrap_or(0);
     if fed != pcm.len() {
         return Err(format!("the oracle was fed {fed} of {} samples", pcm.len()));
     }
-    let mut engine = run_rust(&c.model, &pcm, &shifted(c))?;
-    for e in &mut engine {
-        (e.begin, e.end) = (e.begin.saturating_sub(lead), e.end.saturating_sub(lead));
-    }
+    let cmds = shifted(c);
+    let (engine, engine_restarts) = run_rust(&c.model, &pcm, &cmds)?;
+    let ends: Vec<u64> = cmds.iter().filter(|(_, x)| x.is_none()).map(|(at, _)| *at).collect();
+    let oracle_restarts = restarts(&text);
     let mut keywords: Vec<String> = c.model.keywords().to_vec();
     keywords.extend(oracle.iter().map(|e| e.keyword.clone()));
     keywords.sort();
     keywords.dedup();
     let mut per_kw = BTreeMap::new();
+    let mut restart_mismatch = None;
     for k in keywords {
         let o: Vec<OracleEvent> = oracle.iter().filter(|e| e.keyword == k).cloned().collect();
         let r: Vec<Ev> = engine.iter().filter(|e| e.keyword == k).cloned().collect();
-        let mut diffs = Vec::new();
-        let t = compare(&o, &r, &c.limits, c.args.exact, &mut diffs);
-        per_kw.insert(k, (t, diffs));
+        let (gate, exact) = (c.gate_frames, c.args.exact);
+        let g = compare_gated(&o, &r, &oracle_restarts, &engine_restarts, &ends, gate, lead, &c.limits, exact);
+        restart_mismatch = g.restart_mismatch;
+        per_kw.insert(k, (g.tally, g.diffs, g.gate));
     }
-    Ok(ClipOut { name, per_kw, fnv })
+    Ok(ClipOut { name, per_kw, restart_mismatch, fnv })
 }
 
-/// Runs `f` over `items` on `jobs` threads, results in order.
-fn par_map<T: Sync, R: Send>(jobs: usize, items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+/// Runs `f(index, item)` over `items` on `jobs` threads, results in order.
+fn par_map<T: Sync, R: Send>(jobs: usize, items: &[T], f: impl Fn(usize, &T) -> R + Sync) -> Vec<R> {
     let next = AtomicUsize::new(0);
     let out: Mutex<Vec<Option<R>>> = Mutex::new((0..items.len()).map(|_| None).collect());
     std::thread::scope(|s| {
@@ -312,7 +344,7 @@ fn par_map<T: Sync, R: Send>(jobs: usize, items: &[T], f: impl Fn(&T) -> R + Syn
                 if i >= items.len() {
                     break;
                 }
-                let r = f(&items[i]);
+                let r = f(i, &items[i]);
                 out.lock().unwrap()[i] = Some(r);
             });
         }
@@ -359,7 +391,9 @@ pub fn run(args: &[String]) -> Result<ExitCode, (bool, String)> {
     let model_dir = std::fs::canonicalize(&a.model).map_err(|e| (false, format!("{}: {e}", a.model.display())))?;
     let model = Arc::new(SpotterModel::load(&model_dir).map_err(|e| (false, format!("{}: {e}", a.model.display())))?);
     let mut limits = Limits::default();
-    for s in load_set(&model_dir).map_err(|e| (false, e.to_string()))?.spotters {
+    let spec = load_set(&model_dir).map_err(|e| (false, e.to_string()))?;
+    let gate_frames = spec.uninitialised_state().then(|| FW_GATE_MAX_FRAMES + spec.longest_lock());
+    for s in spec.spotters {
         let t = &s.thresholds;
         let ov: Vec<f32> = t.overrides.iter().map(|o| o.accept).collect();
         limits.add(&s.name, t.accept, t.notify, &ov);
@@ -372,13 +406,23 @@ pub fn run(args: &[String]) -> Result<ExitCode, (bool, String)> {
     let scratch = Scratch(std::env::temp_dir().join(format!("pryon-validate-{}", std::process::id())));
     std::fs::create_dir_all(&scratch.0).map_err(|e| (false, e.to_string()))?;
     let oracle_set = deterministic_set(&model_dir, &scratch.0.join("oracle-set")).map_err(|e| (false, format!("oracle set: {e}")))?;
-    let ctx = Ctx { args: &a, model: model.clone(), manifest: oracle_set.join("pryon.manifest"), limits, checksum: checksum.clone(), env, scratch: scratch.0.clone() };
-    let results = par_map(a.jobs, &a.clips, |p| one_clip(&ctx, p));
+    let ctx = Ctx {
+        args: &a,
+        model: model.clone(),
+        manifest: oracle_set.join("pryon.manifest"),
+        limits,
+        gate_frames,
+        checksum: checksum.clone(),
+        env,
+        scratch: scratch.0.clone(),
+    };
+    let results = par_map(a.jobs, &a.clips, |i, p| one_clip(&ctx, i, p));
     drop(scratch);
 
     let mut errors = 0usize;
-    let mut totals: BTreeMap<String, Tally> = BTreeMap::new();
-    let mut fnvs: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+    // differences the gate allowance does not cover, restart disagreements included
+    let mut differences = 0usize;
+    let mut totals: BTreeMap<String, (Tally, GateTally)> = BTreeMap::new();
     let mut all_fnvs = Vec::new();
     let mut ok_clips = 0usize;
     for (p, r) in a.clips.iter().zip(results) {
@@ -390,21 +434,42 @@ pub fn run(args: &[String]) -> Result<ExitCode, (bool, String)> {
             Ok(c) => {
                 ok_clips += 1;
                 all_fnvs.push(c.fnv);
-                for (k, (t, diffs)) in &c.per_kw {
+                if let Some((o, e)) = c.restart_mismatch {
+                    differences += 1;
+                    let s = |x: Option<u64>| x.map_or("-".to_string(), |v| v.to_string());
+                    println!("DIFF {} restart oracle={} rust={}", c.name, s(o), s(e));
+                }
+                for (k, (t, diffs, g)) in &c.per_kw {
+                    differences += diffs.len();
                     for d in diffs {
                         println!("DIFF {} {}", c.name, d);
                     }
-                    totals.entry(k.clone()).or_default().add(t);
-                    fnvs.entry(k.clone()).or_default().push(c.fnv);
+                    if g.total() > 0 {
+                        println!(
+                            "GATE {} {k}: {} in a gate window, {} inside the gate, {} after a diverging restart",
+                            c.name, g.window, g.inside, g.after_restart
+                        );
+                    }
+                    let e = totals.entry(k.clone()).or_default();
+                    e.0.add(t);
+                    e.1.add(g);
                 }
             }
         }
     }
-    let mut differences = 0usize;
-    for (k, t) in &totals {
-        differences += t.differing + t.oracle_only + t.engine_only;
+    let mut gate = GateTally::default();
+    for (k, (t, g)) in &totals {
+        gate.add(g);
         println!("SUMMARY {k}: {}", t.line());
     }
+    // each event the allowance set aside is counted, so an exact run says what it did not compare
+    println!(
+        "GATE ALLOWANCE events {} ({} in a gate window, {} engine events inside the gate, {} after a diverging restart)",
+        gate.total(),
+        gate.window,
+        gate.inside,
+        gate.after_restart
+    );
     println!("TOTAL clips {} errors {errors} differences {differences} (set {checksum})", a.clips.len());
     if errors > 0 {
         return Ok(ExitCode::from(2));
@@ -417,12 +482,17 @@ pub fn run(args: &[String]) -> Result<ExitCode, (bool, String)> {
         let digest = fnv1a64(&all_fnvs.iter().flat_map(|f| f.to_be_bytes()).collect::<Vec<u8>>());
         let (date, rev) = (today(), git_head());
         std::fs::create_dir_all(&a.records).map_err(|e| (false, format!("{}: {e}", a.records.display())))?;
-        for (k, t) in totals.iter().filter(|(_, t)| t.accepts > 0) {
+        let wanted = |k: &str| a.record_only.is_empty() || a.record_only.iter().any(|r| r == k);
+        for (k, (t, g)) in totals.iter().filter(|(k, (t, _))| t.accepts > 0 && wanted(k)) {
             let f = a.records.join(format!("{checksum}.{k}.rec"));
             let body = format!(
                 "set={checksum}\nkeyword={k}\nclips={ok_clips}\nclips_digest={digest:016x}\nlead_ms={}\ntail_ms={}\n\
-                 accepts={}\nnear_misses={}\ndate={date}\npryon_rs={rev}\n",
-                a.lead_ms, a.tail_ms, t.accepts, t.near_misses
+                 accepts={}\nnear_misses={}\ngate_exempt={}\ndate={date}\npryon_rs={rev}\n",
+                a.lead_ms,
+                a.tail_ms,
+                t.accepts,
+                t.near_misses,
+                g.total()
             );
             std::fs::write(&f, body).map_err(|e| (false, format!("{}: {e}", f.display())))?;
             println!("RECORD {}", f.display());

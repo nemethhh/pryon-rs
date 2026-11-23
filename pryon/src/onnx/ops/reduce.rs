@@ -1,7 +1,7 @@
-//! Float operators that combine elements: Softmax, ReduceSum/Max, MaxPool, BatchNormalization.
+//! Float operators that combine elements: Softmax, ReduceSum/Max, MaxPool, BatchNormalization, in libpryon's order.
 
 use super::{arg, axes_of, axis, fold_numel, opt_arg, strides, Attrs, Built, Op, Value};
-use crate::num::exp_ps;
+use crate::num::{cpunk_softmax, fmaf, vadd, vmul, vsub, zdiv, zsqrt};
 use crate::onnx::proto::NodeProto;
 use crate::onnx::tensor::{numel, Data, DType, Tensor, MAX_RANK};
 
@@ -38,32 +38,15 @@ fn float_arg(ins: &[Value], i: usize) -> Result<&Value, String> {
     Ok(v)
 }
 
+/// Rows of `len` contiguous values (libpryon's Softmax, 0xcc883c, flattens at the axis).
 struct Softmax {
-    outer: usize,
     len: usize,
-    inner: usize,
 }
 
 impl Op for Softmax {
     fn run(&self, ins: &[&[f32]], outs: &mut [&mut [f32]]) {
-        let (x, y) = (ins[0], &mut *outs[0]);
-        for o in 0..self.outer {
-            for i in 0..self.inner {
-                let at = |k: usize| (o * self.len + k) * self.inner + i;
-                let mut m = f32::NEG_INFINITY;
-                for k in 0..self.len {
-                    m = if x[at(k)] > m { x[at(k)] } else { m };
-                }
-                let mut sum = 0.0f32;
-                for k in 0..self.len {
-                    let e = exp_ps(x[at(k)] - m);
-                    y[at(k)] = e;
-                    sum += e;
-                }
-                for k in 0..self.len {
-                    y[at(k)] /= sum;
-                }
-            }
+        for (x, y) in ins[0].chunks_exact(self.len).zip(outs[0].chunks_exact_mut(self.len)) {
+            cpunk_softmax(x, y);
         }
     }
 }
@@ -76,16 +59,19 @@ pub(super) fn softmax(_: &NodeProto, a: &mut Attrs, ins: &[Value], opset: i64) -
     }
     let legacy = opset < 13;
     let ax = axis(a.int("axis")?.unwrap_or(if legacy { 1 } else { -1 }), dims.len())?;
-    let (outer, len, inner) = if legacy {
-        (numel(&dims[..ax])?, numel(&dims[ax..])?, 1)
-    } else {
-        (numel(&dims[..ax])?, dims[ax], numel(&dims[ax + 1..])?)
-    };
-    finish(Box::new(Softmax { outer, len, inner }), ins, dims)
+    if !legacy && ax + 1 != dims.len() {
+        // libpryon normalises over everything from the axis on; opset 13 means the axis alone
+        return Err(format!("attribute axis {ax} before the last axis (opset {opset})"));
+    }
+    let len = numel(&dims[ax..])?;
+    if len == 0 {
+        return Err(format!("empty rows in {dims:?}"));
+    }
+    finish(Box::new(Softmax { len }), ins, dims)
 }
 
+/// libpryon reduces one axis slice by slice (0xb027cc, 0xe39d84): the first slice copied, then `step` per slice.
 pub(crate) trait RedKind: Send + Sync + 'static {
-    const INIT: f32;
     fn step(acc: f32, x: f32) -> f32;
 }
 
@@ -93,16 +79,16 @@ pub(crate) struct Sum;
 pub(crate) struct Max;
 
 impl RedKind for Sum {
-    const INIT: f32 = 0.0;
+    /// CPUNK Add (NEON).
     fn step(acc: f32, x: f32) -> f32 {
-        acc + x
+        vadd(acc, x)
     }
 }
 
 impl RedKind for Max {
-    const INIT: f32 = f32::NEG_INFINITY;
+    /// VFP compare: the accumulator stays unless `acc < x` (a NaN in either keeps it).
     fn step(acc: f32, x: f32) -> f32 {
-        if x > acc {
+        if acc < x {
             x
         } else {
             acc
@@ -119,19 +105,23 @@ struct Reduce<K> {
 
 impl<K: RedKind> Op for Reduce<K> {
     fn run(&self, ins: &[&[f32]], outs: &mut [&mut [f32]]) {
-        outs[0].fill(K::INIT);
         let mut idx = [0usize; MAX_RANK];
         let mut off = 0;
+        // reduced axes at a nonzero index: 0 marks an output's first contribution
+        let mut moved = 0usize;
         for &x in ins[0] {
-            outs[0][off] = K::step(outs[0][off], x);
+            outs[0][off] = if moved == 0 { x } else { K::step(outs[0][off], x) };
             for k in (0..self.dims.len()).rev() {
+                let red = self.ostride[k] == 0 && self.dims[k] > 1;
                 idx[k] += 1;
                 off += self.ostride[k];
                 if idx[k] < self.dims[k] {
+                    moved += usize::from(red && idx[k] == 1);
                     break;
                 }
                 off -= self.ostride[k] * self.dims[k];
                 idx[k] = 0;
+                moved -= usize::from(red);
             }
         }
     }
@@ -182,7 +172,8 @@ impl Op for MaxPool {
             let plane = &x[p * self.h * self.w..][..self.h * self.w];
             for oh in 0..self.o.0 {
                 for ow in 0..self.o.1 {
-                    let mut m = f32::NEG_INFINITY;
+                    // 0xd016a8: from -FLT_MAX, replaced only when `v > m`
+                    let mut m = f32::MIN;
                     for i in 0..self.k.0 {
                         for j in 0..self.k.1 {
                             let v = plane[(oh * self.s.0 + i) * self.w + ow * self.s.1 + j];
@@ -263,7 +254,7 @@ impl Op for BatchNorm {
         for (p, (y, x)) in outs[0].chunks_mut(self.inner).zip(ins[0].chunks(self.inner)).enumerate() {
             let (s, b) = (self.scale[p % c], self.shift[p % c]);
             for (o, &v) in y.iter_mut().zip(x) {
-                *o = v * s + b;
+                *o = fmaf(v, s, b);
             }
         }
     }
@@ -292,8 +283,9 @@ pub(super) fn batch_norm(_: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) ->
     if opt_arg(ins, 5).is_some() {
         return Err("more than five inputs".into());
     }
-    let scale: Vec<f32> = g.iter().zip(&var).map(|(&g, &v)| g / (v + eps).sqrt()).collect();
-    let shift: Vec<f32> = b.iter().zip(&mu).zip(&scale).map(|((&b, &m), &s)| b - m * s).collect();
+    // 0xb3e534: CPUNK Add, Sqrt, Div, Mul, Sub fold the parameters; the kernel then runs bionic fmaf
+    let scale: Vec<f32> = g.iter().zip(&var).map(|(&g, &v)| zdiv(g, zsqrt(vadd(v, eps)))).collect();
+    let shift: Vec<f32> = b.iter().zip(&mu).zip(&scale).map(|((&b, &m), &s)| vsub(b, vmul(m, s))).collect();
     let inner = numel(&dims[2..])?;
     if inner == 0 || c == 0 {
         return Err(format!("empty input {dims:?}"));

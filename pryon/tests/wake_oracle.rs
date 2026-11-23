@@ -2,9 +2,10 @@
 
 use pryon::wake::{load_set, Detection, DetectionKind, Spotter, SpotterModel, SpotterOptions};
 use pryon_testkit::compare::{
-    compare as compare_events, oracle_cache_key, pad_clip, pushed, Diff, Ev, Limits, Tally, LEAD_MS, TAIL_MS,
+    compare as compare_events, compare_gated, oracle_cache_key, pad_clip, pushed, Diff, Ev, GateTally, Limits, Tally,
+    FW_GATE_MAX_FRAMES, LEAD_MS, TAIL_MS,
 };
-use pryon_testkit::oracle::{parse_wake, OracleCmd, OracleEvent, OracleKind};
+use pryon_testkit::oracle::{parse_wake, restarts, OracleCmd, OracleEvent, OracleKind};
 use pryon_testkit::wakeset::{write_davs_set, write_fw_set, WakeSetOpts};
 use pryon_testkit::{synth, Clip, TempDir};
 use std::path::{Path, PathBuf};
@@ -147,7 +148,7 @@ fn thresholds(dir: &Path) -> Limits {
 
 fn compare(oracle: &[OracleEvent], engine: &[Ev], thr: &Limits, diffs: &mut Vec<String>) -> Tally {
     let mut d: Vec<Diff> = Vec::new();
-    let t = compare_events(oracle, engine, thr, false, &mut d);
+    let t = compare_events(oracle, engine, thr, true, &mut d);
     diffs.extend(d.iter().map(Diff::to_string));
     t
 }
@@ -260,45 +261,6 @@ fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> 
     out.into_inner().unwrap().into_iter().map(Option::unwrap).collect()
 }
 
-/// Largest firmware gate observed (168 or 174 frames, by install path); the engine does not reproduce it.
-const FW_GATE_MAX_FRAMES: u64 = 174;
-
-/// Known begin differences: 317 truncates a frame earlier; the firmware ones follow >= 1e-3 score differences.
-const BEGIN_EXCEPTIONS: &[(&str, &str)] = &[
-    ("alexa", "alexa_real/picovoice_real_alexa_real_317"),
-    ("fw", "alexa_real/picovoice_real_alexa_real_322"),
-    ("fw", "tts_stop/amy-medium-alexa-gap0600-stop"),
-    ("fw", "tts_stop/lessac-medium-alexa-gap0600-stop"),
-];
-
-/// `Some(0)` matched, `Some(n)` n events exempt, `None` a failure; a gated pair needs equal kinds and one window.
-fn judge(d: &Diff, begin_ok: bool, windows: &[(u64, u64)]) -> Option<usize> {
-    let has = |&(a, b): &(u64, u64), end: u64| a <= end && end <= b;
-    match (&d.oracle, &d.engine) {
-        (Some(o), Some(e)) if o.kind == e.kind && o.end == e.end && (o.begin == e.begin || begin_ok) => Some(0),
-        (Some(o), Some(e)) if o.kind == e.kind && windows.iter().any(|w| has(w, o.end) && has(w, e.end)) => Some(2),
-        (Some(x), None) | (None, Some(x)) if windows.iter().any(|w| has(w, x.end)) => Some(1),
-        _ => None,
-    }
-}
-
-#[test]
-fn judge_gate_pairs() {
-    let ev = |kind, end| Some(Ev { keyword: "ALEXA".into(), kind, score: 0.9, begin: end - 8000, end });
-    let pair = |ok, ek, oe, ee| Diff { keyword: "ALEXA".into(), oracle: ev(ok, oe), engine: ev(ek, ee) };
-    let w = [(10_000, 50_000), (60_000, 90_000)];
-    let (a, n) = (OracleKind::Accept, OracleKind::NearMiss);
-    assert_eq!(judge(&pair(a, a, 36_880, 37_840), false, &w), Some(2));
-    assert_eq!(judge(&pair(a, n, 36_880, 37_840), false, &w), None);
-    assert_eq!(judge(&pair(a, a, 36_880, 37_840), false, &[]), None);
-    assert_eq!(judge(&pair(a, a, 45_000, 65_000), false, &w), None);
-    assert_eq!(judge(&pair(n, a, 20_000, 20_000), true, &w), None);
-    assert_eq!(judge(&pair(a, a, 20_000, 20_000), false, &[]), Some(0));
-    let one = Diff { keyword: "ALEXA".into(), oracle: None, engine: ev(n, 70_000) };
-    assert_eq!(judge(&one, false, &w), Some(1));
-    assert_eq!(judge(&one, false, &[]), None);
-}
-
 /// A `pryon-cli validate` pass: clip-sample commands and the corpus groups it ran on (`local/task12/final.sh`).
 struct Pass {
     name: &'static str,
@@ -320,7 +282,8 @@ const PASSES: &[Pass] = &[
     Pass { name: "-e 28000", props: &[], ends: &[28000], groups: &["tts_stop", "tts_disney"] },
 ];
 
-/// Every validate pass vs the cache; allowed: listed begin-only pairs and, on firmware, the unreproduced gate.
+/// Every validate pass vs the cache, scores as exact strings; the only allowance is libpryon's start gate on a set
+/// whose state it leaves uninitialised (`compare_gated`), counted per pass.
 #[test]
 fn oracle_corpus_validate_cache() {
     let Some(root) = env_dir("PRYON_WAKE_CORPUS") else { return };
@@ -336,8 +299,9 @@ fn oracle_corpus_validate_cache() {
         let m = Arc::new(SpotterModel::load(dir).unwrap());
         let thr = thresholds(dir);
         let sum = m.checksum().to_string();
-        let lock = load_set(dir).unwrap().spotters.iter().map(|s| u64::from(s.lock)).max().unwrap_or(0);
-        let window = (FW_GATE_MAX_FRAMES + lock) * 160;
+        let spec = load_set(dir).unwrap();
+        let gate = spec.uninitialised_state().then(|| FW_GATE_MAX_FRAMES + spec.longest_lock());
+        assert_eq!(gate.is_some(), *name == "fw", "{name}: libpryon leaves only the firmware state uninitialised");
         for pass in PASSES {
             let mut oracle_cmds: Vec<OracleCmd> = Vec::new();
             let mut cmds: Vec<Cmd> = Vec::new();
@@ -349,6 +313,7 @@ fn oracle_corpus_validate_cache() {
                 oracle_cmds.push(OracleCmd::SessionEnd { at: shift(at) });
                 cmds.push(Cmd::End(shift(at)));
             }
+            let ends: Vec<u64> = pass.ends.iter().map(|&at| shift(at)).collect();
             let chosen: Vec<_> = clips.iter().filter(|c| pass.groups.is_empty() || pass.groups.contains(&c.0.as_str())).collect();
             let results = par_map(&chosen, |(group, clip, path)| {
                 let pcm = pad_clip(&read_clip(path), LEAD_MS, TAIL_MS);
@@ -357,84 +322,37 @@ fn oracle_corpus_validate_cache() {
                 let cached = cache.join(&sum).join(format!("{key:016x}.txt"));
                 let Ok(text) = std::fs::read_to_string(&cached) else { return None };
                 assert_eq!(pushed(&text), Some(pcm.len()), "{}: oracle not fed the whole clip", cached.display());
-                let mut oracle = parse_wake(&text).unwrap_or_else(|e| panic!("{}: {e}", cached.display()));
-                let (mut rust, engine_restarts) = spot_cmds(&m, &pcm, &cmds);
-                let oracle_restarts: Vec<u64> = text
-                    .lines()
-                    .filter_map(|l| l.strip_prefix("restart: new decoder fed from sample ")?.trim().parse().ok())
-                    .collect();
-                // from the first restart the engines place differently on, nothing lines up any more
-                let agree = oracle_restarts.iter().zip(&engine_restarts).take_while(|(a, b)| a == b).count();
-                let mut bad = Vec::new();
-                let cut = match (oracle_restarts.get(agree), engine_restarts.get(agree)) {
-                    (None, None) => u64::MAX,
-                    // only the firmware gate can move a restart; anywhere else it is a bug
-                    (a, b) if *name != "fw" => {
-                        bad.push(format!("restart samples differ: oracle {a:?} engine {b:?}"));
-                        u64::MAX
-                    }
-                    (a, b) => (*a.unwrap_or(&u64::MAX)).min(*b.unwrap_or(&u64::MAX)),
-                };
-                let n = oracle.len() + rust.len();
-                oracle.retain(|e| e.end < cut);
-                rust.retain(|e| e.end < cut);
-                let after_cut = n - oracle.len() - rust.len();
-                let mut starts: Vec<u64> = cmds.iter().filter_map(|c| if let Cmd::End(s) = *c { Some(s) } else { None }).collect();
-                starts.extend_from_slice(&oracle_restarts[..agree]);
-                // engine events inside the gate itself have no oracle counterpart to pair with (it is not scoring)
-                let gate = FW_GATE_MAX_FRAMES * 160;
-                let n = rust.len();
-                if *name == "fw" {
-                    rust.retain(|e| !starts.iter().any(|&s| e.end > s && e.end < s + gate));
+                let oracle = parse_wake(&text).unwrap_or_else(|e| panic!("{}: {e}", cached.display()));
+                let (rust, engine_restarts) = spot_cmds(&m, &pcm, &cmds);
+                let o_restarts = restarts(&text);
+                let g = compare_gated(&oracle, &rust, &o_restarts, &engine_restarts, &ends, gate, lead, &thr, true);
+                let mut bad: Vec<String> = g.diffs.iter().map(Diff::to_string).collect();
+                if let Some((a, b)) = g.restart_mismatch {
+                    bad.push(format!("restart samples differ: oracle {a:?} engine {b:?}"));
                 }
-                let in_gate = n - rust.len();
-                for e in &mut oracle {
-                    (e.begin, e.end) = (e.begin.saturating_sub(lead), e.end.saturating_sub(lead));
-                }
-                for e in &mut rust {
-                    (e.begin, e.end) = (e.begin.saturating_sub(lead), e.end.saturating_sub(lead));
-                }
-                let mut diffs: Vec<Diff> = Vec::new();
-                let t = compare_events(&oracle, &rust, &thr, false, &mut diffs);
-                let windows: Vec<(u64, u64)> = if *name == "fw" {
-                    starts.iter().map(|&s| (s.saturating_sub(lead), (s + window).saturating_sub(lead))).collect()
-                } else {
-                    Vec::new()
-                };
-                let id = format!("{group}/{clip}");
-                let begin_ok = BEGIN_EXCEPTIONS.contains(&(*name, id.as_str()));
-                let mut exempt = 0;
-                for d in &diffs {
-                    match judge(d, begin_ok, &windows) {
-                        Some(n) => exempt += n,
-                        None => bad.push(d.to_string()),
-                    }
-                }
-                Some((id, t, bad, [exempt, in_gate, after_cut]))
+                Some((format!("{group}/{clip}"), g.tally, bad, g.gate))
             });
             let missing = results.iter().filter(|r| r.is_none()).count();
             assert!(missing < chosen.len(), "{name} [{}]: nothing cached", pass.name);
             if missing > 0 && !partial_ok {
                 failures.push(format!("{name} [{}]: {missing} of {} clips uncached (PRYON_CORPUS_PARTIAL=1 allows)", pass.name, chosen.len()));
             }
-            let (mut total, mut skip) = (Tally::default(), [0usize; 3]);
-            for (clip, t, bad, s) in results.into_iter().flatten() {
+            let (mut total, mut skip) = (Tally::default(), GateTally::default());
+            for (clip, t, bad, g) in results.into_iter().flatten() {
                 total.add(&t);
-                for (a, b) in skip.iter_mut().zip(s) {
-                    *a += b;
-                }
+                skip.add(&g);
                 if !bad.is_empty() {
                     failures.push(format!("{name} [{}] {clip}:\n  {}", pass.name, bad.join("\n  ")));
                 }
             }
             println!(
-                "{name} [{}]: compared {} events; exempt: {} in a gate window (one-sided or a pair with both ends there), \
-                 {} engine events inside the gate, {} after a diverging restart; {missing} clips uncached | {}",
+                "{name} [{}]: compared {} events; gate allowance: {} in a gate window (one-sided or a pair with both ends \
+                 there), {} engine events inside the gate, {} after a diverging restart; {missing} clips uncached | {}",
                 pass.name,
-                total.oracle + total.engine - skip[0],
-                skip[0],
-                skip[1],
-                skip[2],
+                total.oracle + total.engine - skip.window,
+                skip.window,
+                skip.inside,
+                skip.after_restart,
                 total.line()
             );
         }
@@ -530,11 +448,8 @@ fn fixture(dir: &str, name: &str) -> String {
     std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-/// Scores may differ from libpryon's in the last float digits until the network is bit-exact (Tasks 14-15).
-const SCORE_ULPS: f32 = 1e-6;
-
 /// Every event of `tests/fixtures/wake/<dir>/<name>.txt` (libpryon, -x 1, two identical runs), every keyword:
-/// kind, begin and end exact, scores within `SCORE_ULPS`; returns Rust's events.
+/// kind, begin, end and the printed score exact; returns Rust's events.
 fn check_probe(dir: &str, name: &str, fw: bool, force: f32, edits: &[(Cfg, Edit)], cmds: &[Cmd], clip: Clip) -> Vec<Ev> {
     let (d, m) = probe_set(name, fw, force, edits);
     let text = fixture(dir, name);
@@ -546,10 +461,7 @@ fn check_probe(dir: &str, name: &str, fw: bool, force: f32, edits: &[(Cfg, Edit)
     let t = compare_events(&oracle, &rust, &thresholds(&d), true, &mut diff);
     println!("{dir}/{name}: {}", t.line());
     let diffs: Vec<String> = diff.iter().map(Diff::to_string).collect();
-    let n = oracle.len();
-    let decisions = (t.kind_eq, t.begin_eq, t.end_eq, t.engine) == (n, n, n, n) && t.oracle_only + t.engine_only == 0;
-    let close = t.score_d.iter().all(|&d| d <= SCORE_ULPS);
-    assert!(decisions && close, "{dir}/{name}:\n{}", diffs.join("\n"));
+    assert!(t.clean(), "{dir}/{name}:\n{}", diffs.join("\n"));
     rust
 }
 

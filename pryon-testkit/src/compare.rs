@@ -152,7 +152,54 @@ fn score_ok(oracle: &Ev, printed_threshold: Option<f32>, engine: f32, thr: &[f32
     }
 }
 
-/// `exact`: scores are compared as 6-decimal strings with no margin rule.
+/// `x` as pryon_test prints a score: C `%g` (6 significant digits, ties to even, trailing zeros dropped).
+pub fn fmt_g(x: f32) -> String {
+    if !x.is_finite() || x == 0.0 {
+        return if x == 0.0 { "0".into() } else { format!("{x}") };
+    }
+    // every f32 has a finite decimal expansion; 160 digits hold it, so the rounding below sees the exact value
+    let full = format!("{:.160e}", f64::from(x).abs());
+    let (mant, exp) = full.split_once('e').unwrap();
+    let mut exp: i32 = exp.parse().unwrap();
+    let digits: Vec<u8> = mant.bytes().filter(u8::is_ascii_digit).map(|b| b - b'0').collect();
+    let mut kept: Vec<u8> = digits[..6].to_vec();
+    let rest = &digits[6..];
+    let up = rest[0] > 5 || (rest[0] == 5 && (rest[1..].iter().any(|&d| d != 0) || kept[5] % 2 == 1));
+    if up {
+        let mut i = 5;
+        loop {
+            if kept[i] < 9 {
+                kept[i] += 1;
+                break;
+            }
+            kept[i] = 0;
+            if i == 0 {
+                kept.insert(0, 1);
+                kept.pop();
+                exp += 1;
+                break;
+            }
+            i -= 1;
+        }
+    }
+    let sign = if x < 0.0 { "-" } else { "" };
+    let trim = |s: String| if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s };
+    let ds: String = kept.iter().map(|d| char::from(b'0' + d)).collect();
+    if (-4..6).contains(&exp) {
+        let s = if exp >= 0 {
+            let (a, b) = ds.split_at(exp as usize + 1);
+            format!("{a}.{b}")
+        } else {
+            format!("0.{}{ds}", "0".repeat((-exp - 1) as usize))
+        };
+        format!("{sign}{}", trim(s))
+    } else {
+        let m = trim(format!("{}.{}", &ds[..1], &ds[1..]));
+        format!("{sign}{m}e{}{:02}", if exp < 0 { '-' } else { '+' }, exp.abs())
+    }
+}
+
+/// `exact`: the engine's score printed as pryon_test prints it must equal the oracle's string, with no margin rule.
 pub fn compare(oracle: &[OracleEvent], engine: &[Ev], limits: &Limits, exact: bool, diffs: &mut Vec<Diff>) -> Tally {
     let mut t = Tally { clips: 1, ..Tally::default() };
     let printed: Vec<Option<f32>> = oracle.iter().map(|e| e.threshold.parse().ok()).collect();
@@ -180,7 +227,7 @@ pub fn compare(oracle: &[OracleEvent], engine: &[Ev], limits: &Limits, exact: bo
             t.accepts_paired += 1;
         }
         let ok_score = if exact {
-            format!("{:.6}", o.score) == format!("{:.6}", e.score)
+            oracle[i].score == fmt_g(e.score)
         } else {
             score_ok(o, printed[i], e.score, limits.thr.get(&o.keyword).map_or(&[][..], |v| v))
         };
@@ -202,6 +249,119 @@ pub fn compare(oracle: &[OracleEvent], engine: &[Ev], limits: &Limits, exact: bo
         diffs.push(Diff { keyword: e.keyword.clone(), oracle: None, engine: Some(e.clone()) });
     }
     t
+}
+
+/// libpryon starts a firmware set's conv buffers from uninitialised heap (data-less initializers), so its scores are
+/// NaN until those values have left the network: 168 or 174 frames after a start, session end or decoder restart in
+/// the installs measured (the garbage depends on the install path). The engine starts from zeros and does not model it.
+pub const FW_GATE_MAX_FRAMES: u64 = 174;
+
+/// Events set aside by the firmware gate allowance, per clip or summed.
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
+pub struct GateTally {
+    /// One-sided events, or equal-kind pairs with both ends, in a gate window.
+    pub window: usize,
+    /// Engine events ending inside the gate itself, where libpryon scores nothing.
+    pub inside: usize,
+    /// Events after the first restart the two engines place differently.
+    pub after_restart: usize,
+}
+
+impl GateTally {
+    pub fn add(&mut self, o: &GateTally) {
+        self.window += o.window;
+        self.inside += o.inside;
+        self.after_restart += o.after_restart;
+    }
+
+    pub fn total(&self) -> usize {
+        self.window + self.inside + self.after_restart
+    }
+}
+
+/// One clip's comparison under the gate allowance.
+pub struct Gated {
+    pub tally: Tally,
+    /// Differences the allowance does not cover.
+    pub diffs: Vec<Diff>,
+    pub gate: GateTally,
+    /// The first restart the engines place differently (oracle, engine), on a set without the gate: a failure.
+    pub restart_mismatch: Option<(Option<u64>, Option<u64>)>,
+}
+
+/// Compares one clip's events (all samples in fed-stream coordinates; `lead` is subtracted from the events reported).
+/// `gate_frames` is `Some(FW_GATE_MAX_FRAMES + longest lock)` for a set whose state libpryon leaves uninitialised:
+/// then one-sided events, or equal-kind pairs with both ends, in `[S, S + gate_frames]` after a session end or an
+/// agreed restart `S` are exempt, engine events inside `[S, S + FW_GATE_MAX_FRAMES)` that libpryon lacks are dropped,
+/// and events after the first restart the engines disagree on are not compared. Nothing else is excused.
+#[allow(clippy::too_many_arguments)]
+pub fn compare_gated(
+    oracle: &[OracleEvent],
+    engine: &[Ev],
+    oracle_restarts: &[u64],
+    engine_restarts: &[u64],
+    session_ends: &[u64],
+    gate_frames: Option<u64>,
+    lead: u64,
+    limits: &Limits,
+    exact: bool,
+) -> Gated {
+    let mut oracle = oracle.to_vec();
+    let mut engine = engine.to_vec();
+    let mut gate = GateTally::default();
+    let agree = oracle_restarts.iter().zip(engine_restarts).take_while(|(a, b)| a == b).count();
+    let (o_next, e_next) = (oracle_restarts.get(agree).copied(), engine_restarts.get(agree).copied());
+    let mut restart_mismatch = None;
+    let cut = match (o_next, e_next) {
+        (None, None) => u64::MAX,
+        (a, b) if gate_frames.is_none() => {
+            restart_mismatch = Some((a, b));
+            u64::MAX
+        }
+        (a, b) => a.unwrap_or(u64::MAX).min(b.unwrap_or(u64::MAX)),
+    };
+    let n = oracle.len() + engine.len();
+    oracle.retain(|e| e.end < cut);
+    engine.retain(|e| e.end < cut);
+    gate.after_restart = n - oracle.len() - engine.len();
+    let mut starts = session_ends.to_vec();
+    starts.extend_from_slice(&oracle_restarts[..agree]);
+    let mut windows = Vec::new();
+    if let Some(frames) = gate_frames {
+        let inside = FW_GATE_MAX_FRAMES * 160;
+        let n = engine.len();
+        // an engine event libpryon also has (same kind and end) is still compared in full
+        let twin = |e: &Ev| oracle.iter().any(|o| o.keyword == e.keyword && o.kind == e.kind && o.end == e.end);
+        engine.retain(|e| twin(e) || !starts.iter().any(|&s| e.end > s && e.end < s + inside));
+        gate.inside = n - engine.len();
+        windows = starts.iter().map(|&s| (s.saturating_sub(lead), (s + frames * 160).saturating_sub(lead))).collect();
+    }
+    for e in &mut oracle {
+        (e.begin, e.end) = (e.begin.saturating_sub(lead), e.end.saturating_sub(lead));
+    }
+    for e in &mut engine {
+        (e.begin, e.end) = (e.begin.saturating_sub(lead), e.end.saturating_sub(lead));
+    }
+    let mut all = Vec::new();
+    let tally = compare(&oracle, &engine, limits, exact, &mut all);
+    let mut diffs = Vec::new();
+    for d in all {
+        match gate_exempt(&d, &windows) {
+            Some(n) => gate.window += n,
+            None => diffs.push(d),
+        }
+    }
+    Gated { tally, diffs, gate, restart_mismatch }
+}
+
+/// Events a difference may set aside under the gate: a pair needs equal kinds and both ends in one window.
+pub fn gate_exempt(d: &Diff, windows: &[(u64, u64)]) -> Option<usize> {
+    let has = |&(a, b): &(u64, u64), end: u64| a <= end && end <= b;
+    match (&d.oracle, &d.engine) {
+        (Some(o), Some(e)) if o.kind == e.kind && windows.iter().any(|w| has(w, o.end) && has(w, e.end)) => Some(2),
+        (Some(x), None) | (None, Some(x)) if windows.iter().any(|w| has(w, x.end)) => Some(1),
+        _ => None,
+    }
 }
 
 /// v2: pryon_test goes on after a restart; the oracle runs `deterministic_set`.
@@ -258,6 +418,91 @@ mod tests {
         let mut d = Vec::new();
         let t = compare(&[o], &[e], &Limits::default(), false, &mut d);
         assert_eq!((t.oracle_only, t.engine_only, d.len(), t.clean()), (1, 1, 2, false));
+    }
+
+    #[test]
+    fn fmt_g_is_c_percent_g() {
+        let cases: [(f32, &str); 12] = [
+            (0.99, "0.99"),
+            (0.633601, "0.633601"),
+            (1.0, "1"),
+            (0.045, "0.045"),
+            (0.0009765625, "0.000976562"),
+            (6.103515625e-05, "6.10352e-05"),
+            (123456.7, "123457"),
+            (1234567.0, "1.23457e+06"),
+            (0.5, "0.5"),
+            (0.9999996, "1"),
+            (0.00012345678, "0.000123457"),
+            (9.1552734375e-05, "9.15527e-05"),
+        ];
+        for (x, want) in cases {
+            assert_eq!(fmt_g(x), want, "{x:e}");
+        }
+    }
+
+    #[test]
+    fn exact_scores_are_strings() {
+        let o = OracleEvent {
+            keyword: "ALEXA".into(),
+            kind: OracleKind::Accept,
+            score: "0.045".into(),
+            threshold: "0.9".into(),
+            begin: 100,
+            end: 2000,
+            afe: None,
+        };
+        let e = |score| Ev { keyword: "ALEXA".into(), kind: OracleKind::Accept, score, begin: 100, end: 2000 };
+        let run = |s, exact| compare(&[o.clone()], &[e(s)], &Limits::default(), exact, &mut Vec::new()).matched;
+        assert_eq!(run(0.045, true), 1);
+        // 0.0450001 prints as "0.0450001": a 6-decimal rule would call it equal
+        assert_eq!(run(0.0450001, true), 0);
+    }
+
+    fn ev(kind: OracleKind, end: u64) -> Option<Ev> {
+        Some(Ev { keyword: "ALEXA".into(), kind, score: 0.9, begin: end - 8000, end })
+    }
+
+    #[test]
+    fn gate_exempt_pairs() {
+        let pair = |ok, ek, oe, ee| Diff { keyword: "ALEXA".into(), oracle: ev(ok, oe), engine: ev(ek, ee) };
+        let w = [(10_000, 50_000), (60_000, 90_000)];
+        let (a, n) = (OracleKind::Accept, OracleKind::NearMiss);
+        assert_eq!(gate_exempt(&pair(a, a, 36_880, 37_840), &w), Some(2));
+        assert_eq!(gate_exempt(&pair(a, n, 36_880, 37_840), &w), None);
+        assert_eq!(gate_exempt(&pair(a, a, 36_880, 37_840), &[]), None);
+        assert_eq!(gate_exempt(&pair(a, a, 45_000, 65_000), &w), None);
+        // a score-only difference outside every window is never excused
+        assert_eq!(gate_exempt(&pair(a, a, 20_000_000, 20_000_000), &w), None);
+        let one = Diff { keyword: "ALEXA".into(), oracle: None, engine: ev(n, 70_000) };
+        assert_eq!(gate_exempt(&one, &w), Some(1));
+        assert_eq!(gate_exempt(&one, &[]), None);
+    }
+
+    #[test]
+    fn gated_comparison_counts_each_allowance() {
+        let oe = |end| OracleEvent {
+            keyword: "ALEXA".into(),
+            kind: OracleKind::Accept,
+            score: "0.9".into(),
+            threshold: "0.5".into(),
+            begin: end - 8000,
+            end,
+            afe: None,
+        };
+        let e = |end| ev(OracleKind::Accept, end).unwrap();
+        let lim = Limits::default();
+        let gate = Some(FW_GATE_MAX_FRAMES + 50);
+        // session end at 100 000: the engine's 110 000 lies inside the gate, the oracle's 130 000 in the window
+        let oracle = [oe(50_000), oe(130_000), oe(900_000)];
+        let engine = [e(50_000), e(110_000), e(950_000)];
+        let g = compare_gated(&oracle, &engine, &[800_000], &[850_000], &[100_000], gate, 0, &lim, true);
+        assert_eq!(g.gate, GateTally { window: 1, inside: 1, after_restart: 2 });
+        assert!(g.diffs.is_empty() && g.restart_mismatch.is_none());
+        assert_eq!(g.tally.matched, 1);
+        // without the gate every one of them is a difference and the restart disagreement is reported
+        let g = compare_gated(&oracle, &engine, &[800_000], &[850_000], &[100_000], None, 0, &lim, true);
+        assert_eq!((g.gate.total(), g.diffs.len(), g.restart_mismatch), (0, 4, Some((Some(800_000), Some(850_000)))));
     }
 
     #[test]

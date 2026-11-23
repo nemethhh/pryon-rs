@@ -21,7 +21,12 @@ const USAGE: &str = "usage:
   pryon-cli bench -m DIR [--chunk N] [--speed X] CLIP.raw
   pryon-cli rusage -- CMD ARGS...
   pryon-cli validate [--oracle-rootfs DIR --pryon-test PATH] [--cache DIR] [--exact] [--records DIR]
-      [--speed X] [--jobs N] [--lead-ms MS] [--tail-ms MS] [-p NAME=VALUE[@SAMPLE]]... [-e SAMPLE]... MODEL CLIPS...";
+      [--record KEYWORD]... [--speed X] [--jobs N] [--lead-ms MS] [--tail-ms MS] [-p NAME=VALUE[@SAMPLE]]...
+      [-e SAMPLE]... MODEL CLIPS...
+      --exact compares every event and printed score; its one allowance, counted on GATE lines, is libpryon's start
+      gate on sets whose conv buffers it leaves uninitialised (firmware): one-sided events or equal-kind pairs ending
+      within 174 frames plus the longest lock after a session end or agreed restart, engine events inside the gate,
+      and events after a restart the two engines place differently";
 
 enum Fail {
     Usage(String),
@@ -337,7 +342,7 @@ fn cmd_wake(args: &[String]) -> Res {
         cmds.push((*at, o.props.len() + i, None));
     }
     cmds.sort();
-    let mut out = Vec::new();
+    let (mut out, mut restarts) = (Vec::new(), Vec::new());
     let mut pos = 0usize;
     let mut next = cmds.iter().peekable();
     loop {
@@ -356,11 +361,18 @@ fn cmd_wake(args: &[String]) -> Res {
         }
         let stop = next.peek().map_or(pcm.len(), |c| (c.0 as usize).min(pcm.len()));
         let end = (pos + chunk).min(stop);
+        let origin = sp.origin();
         sp.feed(&pcm[pos..end], &mut out);
+        if sp.origin() != origin {
+            restarts.push(sp.origin());
+        }
         pos = end;
     }
     for d in &out {
         print_detection(sp.keywords(), d, o.bits);
+    }
+    for r in restarts {
+        println!("RESTART sample={r}");
     }
     Ok(())
 }

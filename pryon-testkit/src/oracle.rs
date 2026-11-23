@@ -44,6 +44,9 @@ pub fn parse_wake(output: &str) -> Result<Vec<OracleEvent>, String> {
     }
     let mut events = Vec::new();
     for (i, ((keyword, ty, begin, end, afe), (score, threshold, dtype))) in results.into_iter().zip(kws).enumerate() {
+        if !score.parse::<f32>().is_ok_and(f32::is_finite) {
+            return Err(format!("event {i}: classifier_score={score} is not a number"));
+        }
         let kind = match (ty, dtype.as_str()) {
             (2, "Accept") => OracleKind::Accept,
             (2, "AcceptAuxiliary") => OracleKind::AcceptAuxiliary,
@@ -56,6 +59,12 @@ pub fn parse_wake(output: &str) -> Result<Vec<OracleEvent>, String> {
         events.push(OracleEvent { keyword, kind, score, threshold, begin, end, afe });
     }
     Ok(events)
+}
+
+/// The samples pryon_test restarted its decoder at (`restart: new decoder fed from sample N`).
+pub fn restarts(output: &str) -> Vec<u64> {
+    let at = |l: &str| l.strip_prefix("restart: new decoder fed from sample ")?.trim().parse().ok();
+    output.lines().filter_map(at).collect()
 }
 
 /// Value of `key` (e.g. `type=`) up to the next space or comma.
@@ -203,8 +212,14 @@ impl OracleEnv {
         let (so, se) = (drain(Box::new(child.stdout.take().unwrap())), drain(Box::new(child.stderr.take().unwrap())));
         let t0 = Instant::now();
         let status = loop {
-            if let Some(s) = child.try_wait()? {
-                break s;
+            match child.try_wait() {
+                Ok(Some(s)) => break s,
+                Ok(None) => {}
+                Err(e) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(e);
+                }
             }
             if timeout.is_some_and(|t| t0.elapsed() > t) {
                 let _ = child.kill();
@@ -285,6 +300,15 @@ mod tests {
         let kws = KWS_A.replace("detection_type=Accept", "detection_type=AcceptProbabilistic");
         let e = parse_wake(&format!("{RESULT_A}\n{kws}\n")).unwrap_err();
         assert!(e.contains("deterministic_set"), "{e}");
+    }
+
+    #[test]
+    fn unparsable_score_rejected() {
+        for bad in ["nan", "0.9x", ""] {
+            let kws = KWS_A.replace("classifier_score=0.999451", &format!("classifier_score={bad}"));
+            let e = parse_wake(&format!("{RESULT_A}\n{kws}\n")).unwrap_err();
+            assert!(e.contains("not a number"), "{bad}: {e}");
+        }
     }
 
     #[test]

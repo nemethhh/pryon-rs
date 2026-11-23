@@ -182,6 +182,11 @@ pub(crate) fn zdiv(a: f32, b: f32) -> f32 {
     if tiny { 0.0f32.copysign(r) } else { r }
 }
 
+/// VFP square root under FPSCR.FZ (correctly rounded; its result is never subnormal).
+pub(crate) fn zsqrt(a: f32) -> f32 {
+    fz(a).sqrt()
+}
+
 /// Round half to even (`nearbyintf` in the default mode), without libm.
 pub(crate) fn rint(x: f32) -> f32 {
     const BIG: f32 = 8388608.0;
@@ -278,6 +283,40 @@ fn cpunk_exp(x: f32) -> f32 {
         p = vfma(c(k), p, r);
     }
     f32::from_bits(((n as u32) << 23).wrapping_add(p.to_bits()))
+}
+
+/// CPUNK ReduceMaxImpl<CortexA15> (0x124ac90): NEON vmax from -FLT_MAX (lane order is immaterial: vmax is exact).
+pub(crate) fn cpunk_max(x: &[f32]) -> f32 {
+    x.iter().fold(f32::MIN, |m, &v| vmax(m, v))
+}
+
+/// CPUNK SoftmaxImpl<CortexA15> on one row (0x124af60; the four-row kernel 0x124b8d0 keeps the same order):
+/// `e = exp(x - max)`, the sum in four lanes seeded with the `len % 4` tail and then the vectors last to first,
+/// `inv = 1 / ((l0 + l2) + (l1 + l3))` (VFP), `y = inv·e`.
+pub(crate) fn cpunk_softmax(x: &[f32], y: &mut [f32]) {
+    let m = cpunk_max(x);
+    for (o, &v) in y.iter_mut().zip(x) {
+        *o = cpunk_exp(vsub(v, m));
+    }
+    let n4 = y.len() & !3;
+    let mut l = [0f32; 4];
+    if n4 < y.len() {
+        for (k, &e) in y[n4..].iter().enumerate() {
+            l[k] = e;
+        }
+        l = l.map(|v| vadd(v, 0.0));
+    }
+    for c in y[..n4].chunks_exact(4).rev() {
+        for (a, &e) in l.iter_mut().zip(c) {
+            *a = vadd(*a, e);
+        }
+    }
+    let inv = zdiv(1.0, vadd(vadd(l[0], l[2]), vadd(l[1], l[3])));
+    // a one-element tail is scaled by a VFP multiply, everything else by NEON
+    let vfp = y.len() - n4 == 1;
+    for (i, o) in y.iter_mut().enumerate() {
+        *o = if vfp && i == n4 { zmul(inv, *o) } else { vmul(inv, *o) };
+    }
 }
 
 /// libpryon's CPUNK sigmoid: `e / (e + 1)` with `e = exp(x)`.

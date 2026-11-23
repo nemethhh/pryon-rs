@@ -1,7 +1,7 @@
 //! `pryon-cli validate` with hand-written oracle outputs in `--cache` (no qemu).
 
 use pryon::wake::SpotterModel;
-use pryon_testkit::compare::{oracle_cache_key, pad_clip, LEAD_MS, TAIL_MS};
+use pryon_testkit::compare::{fmt_g, oracle_cache_key, pad_clip, LEAD_MS, TAIL_MS};
 use pryon_testkit::oracle::OracleCmd;
 use pryon_testkit::{fnv1a64, TempDir};
 use std::path::{Path, PathBuf};
@@ -41,7 +41,7 @@ impl Fixture {
         std::fs::write(&padded_clip, &padded).unwrap();
         let lead = u64::from(LEAD_MS) * 16;
         let shifted: Vec<u64> = ends.iter().map(|&at| if at == 0 { 0 } else { at + lead }).collect();
-        let mut args = vec!["wake".to_string(), "-m".into(), s(&set)];
+        let mut args = vec!["wake".to_string(), "-m".into(), s(&set), "--bits".into(), "--chunk".into(), "1600".into()];
         for at in &shifted {
             args.extend(["--reset-at".to_string(), at.to_string()]);
         }
@@ -49,17 +49,23 @@ impl Fixture {
         let events = cli(&args.iter().map(String::as_str).collect::<Vec<_>>());
         assert!(events.status.success());
         let mut text = String::new();
-        for l in String::from_utf8(events.stdout).unwrap().lines().filter(|l| l.starts_with("EVENT ")) {
+        for l in String::from_utf8(events.stdout.clone()).unwrap().lines().filter(|l| l.starts_with("EVENT ")) {
             let f = |k: &str| l[l.find(k).unwrap() + k.len()..].split(' ').next().unwrap().to_string();
             let (kind, ty) = (f("kind="), if f("kind=") == "NearMiss" { 0 } else { 2 });
+            // pryon_test prints scores with %g
+            let score = fmt_g(f32::from_bits(u32::from_str_radix(&f("bits="), 16).unwrap()));
             text += &format!(
                 "RESULT decoder=d keyword={} type={ty} begin={} end={} (x) meta=1\n\
                  pryon[4] INFO: DecoderID=d: recognition_id=d-0: {{KWS}} segmentation_score=-inf,classifier_score={},active_threshold=0.5,detection_type={kind}\n",
                 f("keyword="),
                 f("begin="),
                 f("end="),
-                f("score=")
+                score
             );
+        }
+        let out = String::from_utf8(events.stdout).unwrap();
+        for at in out.lines().filter_map(|l| l.strip_prefix("RESTART sample=")) {
+            text += &format!("restart: new decoder fed from sample {at}\n");
         }
         text += &format!("pushed {} samples, 0 callbacks\n", padded.len() / 2);
         let sum = SpotterModel::load(&set).unwrap().checksum().to_string();
@@ -124,13 +130,85 @@ fn record_written_on_exact() {
     assert_eq!(f.records(), [format!("{sum}.ALEXA.rec")], "{}", text(&o));
     let rec = std::fs::read_to_string(f.dir.join("records").join(format!("{sum}.ALEXA.rec"))).unwrap();
     let keys: Vec<&str> = rec.lines().map(|l| l.split('=').next().unwrap()).collect();
-    let want =
-        ["set", "keyword", "clips", "clips_digest", "lead_ms", "tail_ms", "accepts", "near_misses", "date", "pryon_rs"];
+    let want = [
+        "set",
+        "keyword",
+        "clips",
+        "clips_digest",
+        "lead_ms",
+        "tail_ms",
+        "accepts",
+        "near_misses",
+        "gate_exempt",
+        "date",
+        "pryon_rs",
+    ];
     assert_eq!(keys, want, "{rec}");
     assert!(rec.contains(&format!("lead_ms={LEAD_MS}\ntail_ms={TAIL_MS}\n")), "{rec}");
     assert!(rec.contains(&format!("set={sum}\n")) && rec.contains("keyword=ALEXA\n") && rec.contains("clips=1\n"), "{rec}");
     let digest = fnv1a64(&fnv1a64(&std::fs::read(&f.clip).unwrap()).to_be_bytes());
     assert!(rec.contains(&format!("clips_digest={digest:016x}\n")), "{rec}");
+    assert!(rec.contains("gate_exempt=0\n"), "{rec}");
+}
+
+#[test]
+fn records_only_for_named_keywords() {
+    let f = Fixture::new("record-only");
+    let o = f.validate(&["--exact", "--record", "STOP"]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+    assert!(f.records().is_empty(), "{}", text(&o));
+    let o = f.validate(&["--exact", "--record", "STOP", "--record", "ALEXA"]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+    assert_eq!(f.records().len(), 1, "{}", text(&o));
+}
+
+#[test]
+fn exact_compares_the_printed_score() {
+    let f = Fixture::new("printed");
+    let t = std::fs::read_to_string(&f.cache_file).unwrap();
+    // the same number, printed otherwise than pryon_test's %g: equal for the margin rule, a difference in --exact
+    std::fs::write(&f.cache_file, t.replacen("classifier_score=0.99,", "classifier_score=0.990000,", 1)).unwrap();
+    assert_eq!(f.validate(&[]).status.code(), Some(0));
+    let o = f.validate(&["--exact"]);
+    assert_eq!(o.status.code(), Some(1), "{}", text(&o));
+    assert!(f.records().is_empty());
+}
+
+#[test]
+fn gate_allowance_counted() {
+    // the synthetic firmware set keeps libpryon's data-less conv buffers, so the start gate applies after a session end
+    let f = Fixture::with_session_ends("gate", &[40_000]);
+    let lead = u64::from(LEAD_MS) * 16;
+    let t = std::fs::read_to_string(&f.cache_file).unwrap();
+    let end_of = |l: &str| l.split("end=").nth(1).and_then(|x| x.split(' ').next()?.parse::<u64>().ok());
+    let lines: Vec<&str> = t.lines().collect();
+    let s = 40_000 + lead;
+    let first = lines.iter().position(|l| l.starts_with("RESULT") && end_of(l).is_some_and(|e| e > s)).unwrap();
+    assert!(end_of(lines[first]).unwrap() < s + 174 * 160, "no engine event inside the gate: {}", lines[first]);
+    // as libpryon: nothing scored inside the gate after the session end
+    let mut kept: Vec<&str> = lines[..first].to_vec();
+    kept.extend(&lines[first + 2..]);
+    std::fs::write(&f.cache_file, kept.join("\n") + "\n").unwrap();
+    let o = f.validate(&["--exact", "-e", "40000"]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+    let line = text(&o).lines().find(|l| l.starts_with("GATE ALLOWANCE")).unwrap_or_default().to_string();
+    assert!(!line.contains("events 0 "), "{}", text(&o));
+    let rec = std::fs::read_to_string(f.dir.join("records").join(f.records()[0].clone())).unwrap();
+    assert!(!rec.contains("gate_exempt=0\n"), "{rec}");
+}
+
+#[test]
+fn symlinked_directory_cycle_ends() {
+    let f = Fixture::new("cycle");
+    let dir = f.dir.join("clips");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(&f.clip, dir.join("noise.raw")).unwrap();
+    std::os::unix::fs::symlink(&dir, dir.join("again")).unwrap();
+    let (cache, records) = (f.dir.join("cache"), f.dir.join("records"));
+    let s = |p: &Path| p.to_str().unwrap().to_string();
+    let o = cli(&["validate", "--cache", &s(&cache), "--records", &s(&records), &s(&f.set), &s(&dir)]);
+    assert_eq!(o.status.code(), Some(0), "{}", text(&o));
+    assert!(text(&o).contains("TOTAL clips 1 "), "{}", text(&o));
 }
 
 #[test]
@@ -190,9 +268,11 @@ fn short_oracle_feed_is_an_error() {
     let t = std::fs::read_to_string(&f.cache_file).unwrap();
     let pushed = t.lines().find(|l| l.starts_with("pushed ")).unwrap().to_string();
     std::fs::write(&f.cache_file, t.replace(&pushed, "pushed 16000 samples, 0 callbacks")).unwrap();
-    let o = f.validate(&[]);
+    let o = f.validate(&["--exact"]);
     assert_eq!(o.status.code(), Some(2), "{}", text(&o));
     assert!(text(&o).contains("fed 16000 of"), "{}", text(&o));
+    // a clip the oracle did not hear to the end never yields a record
+    assert!(f.records().is_empty());
 }
 
 #[test]
