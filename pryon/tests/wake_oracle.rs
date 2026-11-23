@@ -265,7 +265,7 @@ fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> 
     out.into_inner().unwrap().into_iter().map(Option::unwrap).collect()
 }
 
-/// A `pryon-cli validate` pass: clip-sample commands and the corpus groups it ran on (`local/task12/final.sh`).
+/// A `pryon-cli validate` pass: clip-sample commands and the corpus groups it ran on.
 struct Pass {
     name: &'static str,
     props: &'static [(u64, &'static str, i32)],
@@ -402,7 +402,7 @@ enum Cmd<'a> {
     End(u64),
 }
 
-/// A synthetic set with string edits, as `local/probe11*.sh` / `local/probe12/fixtures.sh` wrote it.
+/// A synthetic set with string edits to its kw.cfg/op.cfg.
 fn probe_set(name: &str, fw: bool, force: f32, edits: &[(Cfg, Edit)]) -> (TempDir, Arc<SpotterModel>) {
     let d = TempDir::new(&format!("probe-{name}"));
     let o = WakeSetOpts { seed: 1, force_score: Some(force) };
@@ -598,7 +598,7 @@ fn synth_variant_davs_lock_50() {
     synth_variant("davs_lock50", false, 0.99, &[Edit::All(r#""lock-period": 132"#, r#""lock-period": 50"#)]);
 }
 
-/// The synthetic sets at force 0.99 on every synthetic clip (Task 9's probes): ALEXA, STOP after it while awake,
+/// The synthetic sets at force 0.99 on every synthetic clip (the keyword-rule probes): ALEXA, STOP after it while awake,
 /// and the firmware's decoder restart after 12 accepts (pryon_test now goes on with a new decoder).
 fn synth_set(fw: bool, clip: Clip) {
     check_probe(if fw { "synth-fw" } else { "synth-davs" }, clip.name(), fw, 0.99, &[], &[], clip);
@@ -629,7 +629,7 @@ synth_set_tests! {
     synth_set_davs_quiet_tones: false, Clip::QuietTones;
 }
 
-/// A `local/probe12/fixtures.sh` script on `Clip::Noise`.
+/// A command script (properties, session ends) on `Clip::Noise`.
 fn script(name: &str, fw: bool, force: f32, edits: &[(Cfg, Edit)], cmds: &[Cmd]) -> Vec<Ev> {
     check_probe("synth-scripts", name, fw, force, edits, cmds, Clip::Noise)
 }
@@ -812,7 +812,7 @@ fn prob_accept_not_emitted() {
 const ECHO: SpotterOptions = SpotterOptions { echo_stream: true };
 
 /// Frame kinds of the `mixed` AFE clip: clean lead-in, corrupt frames, every parsed version, clean gaps, a version
-/// flipping every frame (local/afe16/dump).
+/// flipping every frame.
 fn mixed(k: usize) -> LsbFrame {
     match k {
         0..300 => LsbFrame::Clean,

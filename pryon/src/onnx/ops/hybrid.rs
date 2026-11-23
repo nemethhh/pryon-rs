@@ -361,7 +361,7 @@ mod tests {
 
     #[test]
     fn recurrent_saturates_127() {
-        // h0 = [−63.5, 63.5]: s = 1, z = 64, and 63.5 quantises to 128, held at 127 (LEDGER's tie rows)
+        // h0 = [−63.5, 63.5]: s = 1, z = 64, and 63.5 quantises to 128, held at 127 (a tie row)
         let sw_r = [0.01f32, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08];
         let op = lstm(1, 2, (&[1; 8], &[0.0; 8]), (&[0, 1].repeat(8), &sw_r));
         let (h, c) = run(&op, &[0.0], &[0.0; 16], &[-63.5, 63.5], &[0.5, -0.5]);

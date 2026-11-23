@@ -115,7 +115,7 @@ fn f32s(path: &std::path::Path) -> Vec<f32> {
     b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect()
 }
 
-/// Within 1e-3 of pypryon (fed the same LFBE frames, `local/make_pyref.sh` dumps) over each clip's first steps,
+/// Within 1e-3 of pypryon (fed the same LFBE frames) over each clip's first steps,
 /// where alignment, ring, primed-state and binding faults all show; later steps may carry an activation-quantization
 /// rounding flip set off by pypryon's f64 batch-norm and LSTM-cell math, so they are held to the size of one flip.
 #[test]
@@ -146,7 +146,7 @@ fn pipeline_matches_pypryon() {
         let set = Arc::new(LoadedSet::load(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())));
         let root = Path::new(&refs).join(&set.spec.checksum);
         let mut clips: Vec<PathBuf> = std::fs::read_dir(&root)
-            .unwrap_or_else(|e| panic!("{}: {e} (run local/make_pyref.sh)", root.display()))
+            .unwrap_or_else(|e| panic!("{}: {e} (dump the pypryon reference first)", root.display()))
             .map(|e| e.unwrap().path())
             .collect();
         clips.sort();

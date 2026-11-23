@@ -1,4 +1,4 @@
-//! HybridGemm/Conv/LSTM against pypryon's CPUNK rewrite run in onnxruntime (`local/hybrid_ref.py` writes `.out.f32`).
+//! HybridGemm/Conv/LSTM against pypryon's CPUNK rewrite run in onnxruntime (`.out.f32`).
 
 use pryon::onnx::{Graph, Session};
 use pryon::Error;
@@ -198,7 +198,7 @@ fn bytes(v: &[f32]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 
-/// Regenerates `<case>.onnx` and `<case>.in.f32`; then run `local/hybrid_ref.py` for `.out.f32`.
+/// Regenerates `<case>.onnx` and `<case>.in.f32`; the reference then writes `.out.f32`.
 #[test]
 #[ignore]
 fn write_fixtures() {

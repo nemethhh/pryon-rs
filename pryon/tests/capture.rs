@@ -1,4 +1,4 @@
-//! Bit comparisons against libpryon's own tensors, captured per step and node by `local/capture/wake_capture.py`
+//! Bit comparisons against libpryon's own tensors, captured per step and node under qemu-arm
 //! under `PRYON_CAPTURE_DIR/<set checksum>/<clip>/` (`pcm.raw`, `<stage>/<step>/shape.json` and `<tensor>.f32`).
 
 use pryon::onnx::Session;
@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// Clips per set (local/capture/capture_all.sh).
+/// Clips per set.
 const CLIPS: usize = 4;
 
 struct Captured {
@@ -39,7 +39,7 @@ fn captured() -> Option<Vec<Captured>> {
         let set = Arc::new(LoadedSet::load(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())));
         let top = Path::new(&root).join(&set.spec.checksum);
         let mut clips: Vec<PathBuf> = std::fs::read_dir(&top)
-            .unwrap_or_else(|e| panic!("{}: {e} (run local/capture/capture_all.sh)", top.display()))
+            .unwrap_or_else(|e| panic!("{}: {e} (capture the tensors first)", top.display()))
             .map(|e| e.unwrap().path())
             .filter(|p| p.is_dir())
             .collect();

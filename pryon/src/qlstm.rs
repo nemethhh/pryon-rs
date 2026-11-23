@@ -98,7 +98,7 @@ pub(crate) mod tests {
             .fold(0xcbf2_9ce4_8422_2325, |h, b| (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3))
     }
 
-    /// Same sequence as `local/gen_task7.py`; step 2 is a constant row.
+    /// A fixed input sequence; step 2 is a constant row.
     pub(crate) fn inputs() -> Vec<[f32; 20]> {
         (0..5)
             .map(|t| {

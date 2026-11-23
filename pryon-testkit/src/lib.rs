@@ -132,7 +132,7 @@ pub fn synth(clip: Clip) -> Vec<i16> {
     }
 }
 
-/// One 128-sample frame of the Echo's LSB metadata (echo-dot-assist docs/re-vad.md §2).
+/// One 128-sample frame of the Echo's LSB metadata (the `micAsr` stream's low-bit side channel).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LsbFrame {
     /// Version 3.3, as both Dots write it.

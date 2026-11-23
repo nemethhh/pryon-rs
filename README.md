@@ -11,10 +11,8 @@ An open, native Rust reimplementation of two engines in Amazon's `libpryon.so`:
   also needs less CPU than libpryon and no more memory.
 
 It is a plain library with a Rust and a C API: 16 kHz mono int16 audio in, sound results per ~10 s window or wake
-word detections out. No threads, no global state, no dependencies at run time. It was written to replace libpryon in
-[hassmic](https://github.com/nemethhh/echo-dot-assist/tree/rust-wake), which turns stock Echos into Home Assistant
-voice satellites (`make RUST=1`; `SOUND_ENGINE` and `WAKE_ENGINE` pick libpryon, this engine or both side by side;
-the default stays libpryon), but nothing in it assumes hassmic, Home Assistant or an Echo.
+word detections out. No threads, no global state, no dependencies at run time. It runs the models on any target
+Rust builds for, with NEON kernels on 32-bit ARM such as the Echo's own CPU.
 
 Not affiliated with Amazon. This repository contains no Amazon code, models, firmware or recordings: you supply the
 model from a device you own.
@@ -25,13 +23,13 @@ Sound detection:
 
 | Check | Result |
 |---|---|
-| Parity with libpryon on a PC (libpryon run under qemu-arm as the oracle) | identical scores (exact float bits) and decisions on every committed test clip and on 22 local real-speech clips, both model generations |
+| Parity with libpryon on a PC (libpryon run under qemu-arm as the oracle) | identical scores (exact float bits) and decisions on every committed test clip and on 22 real-speech clips, both model generations |
 | Parity on the device | output of the Echo Dot 3 and Echo Dot 2 byte-identical to the PC on 26/26 clip × model runs |
 | CPU, 164 s clip, fed in real time like libpryon | Echo Dot 3 (Cortex-A35): 21.0 % → 9.0 % of a core (2.3× less); Echo Dot 2 (Cortex-A53): 11.1 % → 5.3 % (2.1× less) |
 | Peak memory | Echo Dot 3: 16.8 → 3.9 MB; Echo Dot 2: 11.0 → 2.9 MB |
 | Model load | Echo Dot 3: ~85 ms; Echo Dot 2: ~60 ms |
 
-Wake words (`pryon-cli validate --exact`, below, on 994 local clips: 329 real "Alexa" and 411 real "Computer"
+Wake words (`pryon-cli validate --exact`, below, on 994 clips: 329 real "Alexa" and 411 real "Computer"
 recordings, TTS "Alexa", "Hey Disney", "Stop" and "Ziggy", spoken commands, long speech, synthetic clips):
 
 | Check | Result |
@@ -43,10 +41,7 @@ recordings, TTS "Alexa", "Hey Disney", "Stop" and "Ziggy", spoken commands, long
 | Parity on the device (Echo Dot 3, Echo Dot 2) | `pryon-cli wake --bits` output byte-identical to the PC on 135/135 short clips per set (firmware ALEXA, alexa-en-US) and on 8/8 long-speech runs; libpryon on the device equals the qemu oracle, apart from its own non-deterministic start gate after a restart, which is deliberately not modelled |
 | CPU and memory on the device | at or below libpryon in CPU and peak RSS on both Echos; less CPU, firmware ALEXA / alexa-en-US: Echo Dot 3 (CPU capped at 747.5 MHz) 1.37× / 1.78×, Echo Dot 2 1.92× / 2.38× |
 | Echo front-end clock on a real `micAsr` capture | AFE times equal to libpryon's on 13/13 accepts per set |
-| Spoken, in hassmic's `both` mode on an Echo Dot 3 | 10/10 events of the same keyword and kind as libpryon; 8 sample-exact, the other 2 inside libpryon's start gate |
-
-Next is hassmic's soak (both engines on the same slot for 24 h, events compared), which decides whether its default
-moves to this engine for a set.
+| Live speech on an Echo Dot 3, both engines on the same microphone stream | 10/10 events of the same keyword and kind as libpryon; 8 sample-exact, the other 2 inside libpryon's start gate |
 
 Whisper detection is not implemented.
 
@@ -58,8 +53,7 @@ A model is a directory with `pryon.config`, `AED.json` and `model_gcmvn.cpu.v1.q
 known, both supported:
 
 - the firmware's, on every Fire OS Echo checked so far: `adb pull /system/local/models/AED`
-- the newer one Amazon serves to devices (retrained weights, smoke/CO thresholds 0.845 instead of 0.825); hassmic's
-  `scripts/artifacts.sh` installs it to `/data/local/hassmic/aed`
+- the newer one Amazon serves to devices (retrained weights, smoke/CO thresholds 0.845 instead of 0.825)
 
 The type list and every threshold come from the model's `AED.json`.
 
@@ -96,15 +90,14 @@ set. That covers:
 Decoders no keyword reads (voice activity, speaker ID) are never opened; NTT fusion, watermark and fingerprint
 configuration is not run.
 
-libpryon's probabilistic accept is not reproduced: a satellite must not wake at random. In alexa-en-US's ALEXA,
+libpryon's probabilistic accept is not reproduced: a wake word engine should not wake at random. In alexa-en-US's ALEXA,
 libpryon turns a score above `probabilistic-accept-threshold` (and below the accept threshold) into an accept
 (`AcceptProbabilistic`) with `probabilistic-accept-probability` 0.001, drawn from a clock-seeded generator. The
 engine follows libpryon's rule up to the draw and always reports such a score as a near miss, as libpryon does
 with the probability set to 0.
 
-Next (milestone B): validate `echo-en-US` and the shared amazon/computer/ziggy set, one record per keyword (COMPUTER
-has the 411 real recordings; AMAZON and ZIGGY only TTS so far), plus whatever operators or rule fields they turn
-out to need.
+Planned: validation records for `echo-en-US` and the shared amazon/computer/ziggy set, one per keyword, plus
+whatever operators or rule fields they turn out to need.
 
 ## Use
 
@@ -195,9 +188,9 @@ Clips are raw 16 kHz mono s16le.
         [--record KEYWORD]... [--speed X] [--jobs N] [--lead-ms MS] [--tail-ms MS] [-p NAME=VALUE[@SAMPLE]]...
         [-e SAMPLE]... MODEL CLIPS...
 
-runs libpryon (`pryon_test` from [echo-dot-assist](https://github.com/nemethhh/echo-dot-assist)
-`src/tools/pryon_test.c`, branch `rust-wake`, under qemu-arm against a Fire OS root filesystem;
-`PRYON_ORACLE_ROOTFS` and `PRYON_PRYON_TEST` stand in for the two flags) and the wake engine on the same `.raw` or
+runs libpryon (through `pryon_test`, a small armv7 C harness around libpryon's API that is not part of this
+repository, under qemu-arm against a Fire OS root filesystem; `PRYON_ORACLE_ROOTFS` and `PRYON_PRYON_TEST` stand in
+for the two flags) and the wake engine on the same `.raw` or
 16 kHz mono `.wav` clips (files or directories) and prints every difference as
 `DIFF <clip> <keyword> oracle=<event|-> rust=<event|->`, then a summary per keyword.
 Exit 0 clean, 1 differences, 2 usage or oracle errors or a set the engine refuses or cannot read.
@@ -241,7 +234,8 @@ keyword the oracle accepted at least once, also one accepted only on synthetic c
 `--record KEYWORD` (a keyword the set serves) limits it to the keywords chosen. A record holds the set, the keyword,
 the clip count and digest, the padding, accept and near-miss counts, the events the gate allowance set aside
 (`gate_exempt`), the date and the pryon-rs commit. A clip the oracle did not hear to the end is an error, so it never
-yields a record. hassmic builds its list of validated (set, keyword) pairs from `validated/`. The committed records:
+yields a record. An application can serve only the (set, keyword) pairs listed in `validated/`. The committed
+records:
 
 | Record | Clips | Accepts | Near misses | Set aside by the gate |
 |---|---|---|---|---|
@@ -332,7 +326,7 @@ linker. The `unshare` is needed because bionic hangs under bare qemu-arm:
 
     cargo test --workspace
 
-That runs everything that needs no Amazon files. Tests that need a model, libpryon or local clips print
+That runs everything that needs no Amazon files. Tests that need a model, libpryon or your own clips print
 `skipped: set VAR` unless these are set:
 
 - `PRYON_AED_MODEL_DIR`: the firmware sound model directory
@@ -359,9 +353,9 @@ That runs everything that needs no Amazon files. Tests that need a model, libpry
 ### Oracle fixtures
 
 `pryon/tests/fixtures/oracle/{fw,davs}/<clip>.txt` are libpryon's outputs on synthetic clips that the tests
-regenerate from `pryon-testkit`, one file per clip and model. They were made with `aed_test`, the libpryon test
-tool from [echo-dot-assist](https://github.com/Gamer92000/echo-dot-assist) (`src/tools/aed_test.c`), run under
-qemu-arm against an Echo Dot 3 root filesystem:
+regenerate from `pryon-testkit`, one file per clip and model. They were made with `aed_test`, a small armv7 C harness
+around libpryon's sound API (not part of this repository), run under qemu-arm against an Echo Dot 3 root
+filesystem:
 
     pryon-cli synth noise noise.raw
     unshare --user --map-root-user --pid --fork --kill-child \
@@ -383,8 +377,8 @@ pypryon's `vendor/pryon-native/pryon_lfbe.c` (the C front end, with the wake wor
 by the ignored test `write_fixtures`) and their outputs from pypryon's CPUNK rewrite run in onnxruntime
 (`<case>.out.f32`).
 
-`pryon/tests/fixtures/wake/{fw,alexa}/<clip>.txt` are the wake events of `pryon_test` (echo-dot-assist
-`src/tools/pryon_test.c`) for the firmware ALEXA set and alexa-en-US on the synthetic clips, run as above with
+`pryon/tests/fixtures/wake/{fw,alexa}/<clip>.txt` are the wake events of `pryon_test` (the harness `validate`
+uses) for the firmware ALEXA set and alexa-en-US on the synthetic clips, run as above with
 `-m SET/pryon.manifest -x 1` (at `-x 1000` libpryon drops most of these 20-25 s clips). Their tests need
 `PRYON_WAKE_FW_DIR` and `PRYON_WAKE_SETS_DIR`.
 
@@ -402,7 +396,7 @@ set the keyword end of events in libpryon's start window comes from uninitialise
 times exist is compared there.
 In all wake fixtures the `META` lines keep only the `kw*` fields, `activeKeywords`, `clientProperties` (which also
 carries libpryon's `PryonLastReceivedSampleIndex`), the LSB-metadata flags and, in `synth-afe/`, the AFE times.
-Outputs on real recordings and captured tensors stay local: only events on synthetic clips and sets are committed.
+Only events on synthetic clips and sets are committed: no outputs on real recordings and no captured tensors.
 
 ## Third-party notices
 
