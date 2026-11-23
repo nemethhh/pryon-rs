@@ -127,7 +127,12 @@ pub fn zero_probability(text: &str) -> (String, bool) {
 
 /// `set`, or a symlink copy under `work` with probabilistic-accept-probability 0: libpryon's draw is clock-seeded.
 pub fn deterministic_set(set: &Path, work: &Path) -> std::io::Result<PathBuf> {
-    fn walk(src: &Path, dst: &Path, patch: &mut Vec<(PathBuf, String)>, links: &mut Vec<(PathBuf, PathBuf)>) -> std::io::Result<()> {
+    fn walk(
+        src: &Path,
+        dst: &Path,
+        patch: &mut Vec<(PathBuf, String)>,
+        links: &mut Vec<(PathBuf, PathBuf)>,
+    ) -> std::io::Result<()> {
         for e in std::fs::read_dir(src)? {
             let e = e?;
             let (s, d) = (e.path(), dst.join(e.file_name()));
@@ -239,7 +244,10 @@ impl OracleEnv {
             if timeout.is_some_and(|t| t0.elapsed() > t) {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, format!("pryon_test timed out after {:?}", timeout.unwrap())));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("pryon_test timed out after {:?}", timeout.unwrap()),
+                ));
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         };
@@ -276,7 +284,10 @@ mod tests {
         let ev = parse_wake(&out).unwrap();
         assert_eq!(ev.len(), 2);
         assert_eq!(ev[0].kind, OracleKind::Accept);
-        assert_eq!((ev[0].keyword.as_str(), ev[0].score.as_str(), ev[0].threshold.as_str()), ("ALEXA", "0.999451", "0.923"));
+        assert_eq!(
+            (ev[0].keyword.as_str(), ev[0].score.as_str(), ev[0].threshold.as_str()),
+            ("ALEXA", "0.999451", "0.923")
+        );
         assert_eq!((ev[0].begin, ev[0].end, ev[0].afe), (9600, 27840, None));
         assert_eq!(ev[1].kind, OracleKind::AcceptAuxiliary);
         assert_eq!((ev[1].score.as_str(), ev[1].threshold.as_str()), ("0.88", "0.69"));
@@ -346,7 +357,10 @@ mod tests {
         let t = r#"{ "a": 1, "probabilistic-accept-probability": 0.001, "b": { "probabilistic-accept-probability" : 1e-3 } }"#;
         let (z, changed) = zero_probability(t);
         assert!(changed);
-        assert_eq!(z, r#"{ "a": 1, "probabilistic-accept-probability": 0, "b": { "probabilistic-accept-probability" : 0 } }"#);
+        assert_eq!(
+            z,
+            r#"{ "a": 1, "probabilistic-accept-probability": 0, "b": { "probabilistic-accept-probability" : 0 } }"#
+        );
         assert_eq!(zero_probability(&z), (z.clone(), false));
         assert_eq!(zero_probability("{}"), ("{}".to_string(), false));
     }
@@ -381,7 +395,8 @@ mod tests {
         let pcm: Vec<u8> = synth(Clip::Noise)[..16000 * 5].iter().flat_map(|s| s.to_le_bytes()).collect();
         std::fs::write(&clip, pcm).unwrap();
         let manifest = Path::new("/system/local/models/keyword/en-US/ALEXA/pryon.manifest");
-        let cmds = [OracleCmd::Property { at: 4000, name: "AlarmState".into(), value: 1 }, OracleCmd::SessionEnd { at: 8000 }];
+        let cmds =
+            [OracleCmd::Property { at: 4000, name: "AlarmState".into(), value: 1 }, OracleCmd::SessionEnd { at: 8000 }];
         let out = env.run_wake(manifest, &clip, &cmds).unwrap();
         assert!(out.contains("command @4000 property AlarmState -> 0"), "{out}");
         assert!(out.contains("command @8000 SessionEnd -> 0"), "{out}");

@@ -65,7 +65,11 @@ const SHORT_LEN: usize = 320_000;
 // Never returns 0, so only intended runs are digital silence.
 fn noise_sample(rng: &mut Rng, amp: i32) -> i16 {
     let v = (rng.next_u32() % (2 * amp as u32 + 1)) as i32 - amp;
-    if v == 0 { 1 } else { v as i16 }
+    if v == 0 {
+        1
+    } else {
+        v as i16
+    }
 }
 
 fn noise(seed: u64, n: usize, amp: i32) -> Vec<i16> {
@@ -340,10 +344,8 @@ pub fn write_model_dir(dir: &std::path::Path, seed: u64, threshold: f32) {
             )
         })
         .collect();
-    let json = format!(
-        "{{\"configuration\": {{\"num_detection_types\": 12, \"acoustic_event\": [{}]}}}}",
-        types.join(", ")
-    );
+    let json =
+        format!("{{\"configuration\": {{\"num_detection_types\": 12, \"acoustic_event\": [{}]}}}}", types.join(", "));
     w("AED.json", json.as_bytes());
 }
 

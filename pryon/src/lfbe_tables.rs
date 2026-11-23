@@ -1,4 +1,5 @@
 // Povey window pow(0.5 - 0.5*cos(2*pi*i/399), 0.85) in f32, dumped from the C reference (keeps libm out).
+#[rustfmt::skip]
 pub(crate) const POVEY: [f32; 400] = [
     f32::from_bits(0x00000000), f32::from_bits(0x398b03f6), f32::from_bits(0x3a61d1c5), f32::from_bits(0x3ae0ee32),
     f32::from_bits(0x3b37623a), f32::from_bits(0x3b85f871), f32::from_bits(0x3bb69d19), f32::from_bits(0x3bed453b),
@@ -103,6 +104,7 @@ pub(crate) const POVEY: [f32; 400] = [
 ];
 
 // Ne10 radix-4 stage twiddles (re, im) interleaved, dumped from the C reference.
+#[rustfmt::skip]
 pub(crate) const NE_TW: [f32; 240] = [
     f32::from_bits(0x3f800000), f32::from_bits(0x80000000), f32::from_bits(0x3f800000), f32::from_bits(0x80000000),
     f32::from_bits(0x3f800000), f32::from_bits(0x80000000), f32::from_bits(0x3f7b14be), f32::from_bits(0xbe47c5c2),
@@ -167,6 +169,7 @@ pub(crate) const NE_TW: [f32; 240] = [
 ];
 
 // Ne10 r2c last-stage twiddles (re, im) interleaved, dumped from the C reference.
+#[rustfmt::skip]
 pub(crate) const NE_SU: [f32; 408] = [
     f32::from_bits(0x3f800000), f32::from_bits(0x80000000), f32::from_bits(0x3f7ffb11), f32::from_bits(0xbc490e90),
     f32::from_bits(0x3f7fec43), f32::from_bits(0xbcc90ab0), f32::from_bits(0x3f7fd397), f32::from_bits(0xbd16c32c),

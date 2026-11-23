@@ -158,7 +158,14 @@ pub fn fmt_g(x: f32) -> String {
         return if x.is_sign_negative() { "-0" } else { "0" }.into();
     }
     if !x.is_finite() {
-        return if x.is_nan() { "nan" } else if x < 0.0 { "-inf" } else { "inf" }.into();
+        return if x.is_nan() {
+            "nan"
+        } else if x < 0.0 {
+            "-inf"
+        } else {
+            "inf"
+        }
+        .into();
     }
     // every f32 has a finite decimal expansion; 160 digits hold it, so the rounding below sees the exact value
     let full = format!("{:.160e}", f64::from(x).abs());

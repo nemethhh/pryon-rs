@@ -61,9 +61,11 @@ impl LoadedSet {
             let file = &st.graph;
             let iface = onnx::interface(file)?;
             let port = |name: &str| {
-                iface.inputs.iter().find(|p| p.name == name).ok_or_else(|| {
-                    Error::Format(format!("{}: input {name} is not declared", file.display()))
-                })
+                iface
+                    .inputs
+                    .iter()
+                    .find(|p| p.name == name)
+                    .ok_or_else(|| Error::Format(format!("{}: input {name} is not declared", file.display())))
             };
             let mut bind: Vec<(String, Vec<usize>)> = Vec::new();
             let mut keep: Vec<&str> = Vec::new();
@@ -75,9 +77,10 @@ impl LoadedSet {
                     (n, None)
                 }
                 (1.., [StageInput::Artifact { input, artifact }]) => {
-                    let found = spec.stages[..s].iter().enumerate().find_map(|(p, ps)| {
-                        ps.outputs.iter().find(|(_, publ)| publ == artifact).map(|(c, _)| (p, c))
-                    });
+                    let found = spec.stages[..s]
+                        .iter()
+                        .enumerate()
+                        .find_map(|(p, ps)| ps.outputs.iter().find(|(_, publ)| publ == artifact).map(|(c, _)| (p, c)));
                     let Some((p, comp)) = found else {
                         return Err(unsupported(file, format!("input {input} reads artifact {artifact}, unpublished")));
                     };
@@ -305,7 +308,11 @@ mod tests {
     fn set(fw: bool, tag: &str) -> (TempDir, Arc<LoadedSet>) {
         let d = TempDir::new(&format!("pipeline-{tag}"));
         let o = WakeSetOpts { seed: 5, force_score: None };
-        if fw { write_fw_set(&d, &o) } else { write_davs_set(&d, &o) }
+        if fw {
+            write_fw_set(&d, &o)
+        } else {
+            write_davs_set(&d, &o)
+        }
         let s = Arc::new(LoadedSet::load(&d).unwrap());
         (d, s)
     }

@@ -105,10 +105,7 @@ fn loads_synthetic_davs() {
     assert!(enc.primed);
     assert_eq!(enc.feat_dim, 64);
     let stop = &s.stages[1];
-    assert_eq!(
-        stop.inputs,
-        vec![StageInput::Artifact { input: "input_6".into(), artifact: "encoder_output".into() }]
-    );
+    assert_eq!(stop.inputs, vec![StageInput::Artifact { input: "input_6".into(), artifact: "encoder_output".into() }]);
     assert_eq!(stop.feat_dim, 16);
     assert!(stop.primed && stop.lstm.is_empty());
     let alexa = &s.stages[2];
@@ -150,10 +147,18 @@ fn restart_trigger_fields() {
 fn multi_word_spotter_checks() {
     // libpryon's KeywordMultiWordSpotter: a smoother per component, at most two, the last remembering one frame
     let cases: [(&str, &str, &str); 5] = [
-        (r#""posterior-smoothers": [ { "type": "exponential-decay", "decay-rate": 0.0 },"#, r#""posterior-smoothers": ["#, "posterior-smoothers"),
+        (
+            r#""posterior-smoothers": [ { "type": "exponential-decay", "decay-rate": 0.0 },"#,
+            r#""posterior-smoothers": ["#,
+            "posterior-smoothers",
+        ),
         (r#""word-score-history-size": 1, "#, r#""word-score-history-size": 2, "#, "must be 1"),
         (r#""word-score-history-size": 100, "#, "", "word-score-history-size = None"),
-        (r#""word-score-history-size": 100, "#, r#""word-score-history-size": 0, "#, "word-score-history-size = Some(0)"),
+        (
+            r#""word-score-history-size": 100, "#,
+            r#""word-score-history-size": 0, "#,
+            "word-score-history-size = Some(0)",
+        ),
         (r#""word-score-history-size": 100, "#, r#""word-score-history-size": 1000000000000, "#, "buffer-size"),
     ];
     for (from, to, want) in cases {
@@ -184,8 +189,12 @@ fn aggregator_weights_need_exact_powf() {
 fn keyword_in_no_state_refused() {
     let d = davs("machine-orphan");
     let op = d.join("BDPGeneratedFiles/op.cfg.json");
-    edit(&op, r#",
-      { "name": "STOP", "next": "sleep" }"#, "");
+    edit(
+        &op,
+        r#",
+      { "name": "STOP", "next": "sleep" }"#,
+        "",
+    );
     let (file, what) = unsupported(load_set(&d));
     assert!(file.ends_with("op.cfg.json") && what.contains("STOP"), "{}: {what}", file.display());
 }
@@ -256,7 +265,11 @@ fn synthetic_graphs_run() {
 fn force_score_pins_class_one() {
     for (fwset, d) in [(true, TempDir::new("wakeset-force-fw")), (false, TempDir::new("wakeset-force-davs"))] {
         let o = WakeSetOpts { seed: 11, force_score: Some(0.99) };
-        if fwset { write_fw_set(&d, &o) } else { write_davs_set(&d, &o) }
+        if fwset {
+            write_fw_set(&d, &o)
+        } else {
+            write_davs_set(&d, &o)
+        }
         let s = load_set(&d).unwrap();
         for seed in [1, 2] {
             for (k, v) in run_set(&s, seed) {
@@ -513,11 +526,16 @@ fn cross_file_checks_named() {
         (kw, r#""exponential-decay", "decay-rate": 0.6"#, r#""median", "decay-rate": 0.6"#, "classifier.type = median"),
         (kw, r#""probabilistic-accept-probability": 0.001, "#, "", "probabilistic-accept-* given partially"),
         (dec, r#""scorer.num_dnn_outputs": 4"#, r#""scorer.num_dnn_outputs": 5"#, "num_dnn_outputs = 5"),
-        (dec, r#""scorer.initialize.frame_count": 1,
+        (
+            dec,
+            r#""scorer.initialize.frame_count": 1,
       "scorer.feat.dimensions": 16,
-      "scorer.num_dnn_outputs": 4"#, r#""scorer.initialize.frame_count": 2,
+      "scorer.num_dnn_outputs": 4"#,
+            r#""scorer.initialize.frame_count": 2,
       "scorer.feat.dimensions": 16,
-      "scorer.num_dnn_outputs": 4"#, "default_skip_frame_count = 0 with frame_count 2"),
+      "scorer.num_dnn_outputs": 4"#,
+            "default_skip_frame_count = 0 with frame_count 2",
+        ),
         (ta, r#""name": "encoder_output""#, r#""name": "encoder_out""#, "encoder_output is published but not in"),
         (ta, r#""in-memory""#, r#""disk""#, "tensor_artifacts[0].format = disk"),
         (ta, r#""tensor_artifacts_list_config""#, r#""other_config""#, "object_type_name = other_config"),

@@ -3,7 +3,7 @@
 use super::{arg, axes_of, axis, fold_numel, opt_arg, Attrs, Built, Op, Value};
 use crate::num::{cpunk_softmax, fmaf, vadd, vmul, vsub, zdiv, zsqrt};
 use crate::onnx::proto::NodeProto;
-use crate::onnx::tensor::{numel, Data, DType, Tensor};
+use crate::onnx::tensor::{numel, DType, Data, Tensor};
 
 /// Folds when every input is a constant f32 tensor, otherwise stays a runtime op.
 fn finish(op: Box<dyn Op>, ins: &[Value], dims: Vec<usize>) -> Result<Built, String> {

@@ -14,7 +14,11 @@ use std::sync::Arc;
 fn synth_model(fw: bool, force: Option<f32>, tag: &str) -> (TempDir, Arc<SpotterModel>) {
     let d = TempDir::new(&format!("wake-{tag}"));
     let o = WakeSetOpts { seed: 1, force_score: force };
-    if fw { write_fw_set(&d, &o) } else { write_davs_set(&d, &o) }
+    if fw {
+        write_fw_set(&d, &o)
+    } else {
+        write_davs_set(&d, &o)
+    }
     let m = Arc::new(SpotterModel::load(&d).unwrap());
     (d, m)
 }
@@ -277,7 +281,12 @@ const PASSES: &[Pass] = &[
         ends: &[],
         groups: &["alexa_real", "tts_alexa", "tts_stop", "tts_disney"],
     },
-    Pass { name: "AudioPlayerState=1@8000", props: &[(8000, "AudioPlayerState", 1)], ends: &[], groups: &["alexa_real"] },
+    Pass {
+        name: "AudioPlayerState=1@8000",
+        props: &[(8000, "AudioPlayerState", 1)],
+        ends: &[],
+        groups: &["alexa_real"],
+    },
     Pass { name: "-e 8000", props: &[], ends: &[8000], groups: &["alexa_real"] },
     Pass { name: "-e 28000", props: &[], ends: &[28000], groups: &["tts_stop", "tts_disney"] },
 ];
@@ -313,7 +322,8 @@ fn oracle_corpus_validate_cache() {
                 cmds.push(Cmd::End(shift(at)));
             }
             let ends: Vec<u64> = pass.ends.iter().map(|&at| shift(at)).collect();
-            let chosen: Vec<_> = clips.iter().filter(|c| pass.groups.is_empty() || pass.groups.contains(&c.0.as_str())).collect();
+            let chosen: Vec<_> =
+                clips.iter().filter(|c| pass.groups.is_empty() || pass.groups.contains(&c.0.as_str())).collect();
             let results = par_map(&chosen, |(group, clip, path)| {
                 let pcm = pad_clip(&read_clip(path), LEAD_MS, TAIL_MS);
                 let bytes: Vec<u8> = pcm.iter().flat_map(|x| x.to_le_bytes()).collect();
@@ -340,7 +350,11 @@ fn oracle_corpus_validate_cache() {
             let missing = results.iter().filter(|r| r.is_none()).count();
             assert!(missing < chosen.len(), "{name} [{}]: nothing cached", pass.name);
             if missing > 0 && !partial_ok {
-                failures.push(format!("{name} [{}]: {missing} of {} clips uncached (PRYON_CORPUS_PARTIAL=1 allows)", pass.name, chosen.len()));
+                failures.push(format!(
+                    "{name} [{}]: {missing} of {} clips uncached (PRYON_CORPUS_PARTIAL=1 allows)",
+                    pass.name,
+                    chosen.len()
+                ));
             }
             let (mut total, mut skip) = (Tally::default(), GateTally::default());
             for (clip, t, bad, g) in results.into_iter().flatten() {
@@ -392,7 +406,11 @@ enum Cmd<'a> {
 fn probe_set(name: &str, fw: bool, force: f32, edits: &[(Cfg, Edit)]) -> (TempDir, Arc<SpotterModel>) {
     let d = TempDir::new(&format!("probe-{name}"));
     let o = WakeSetOpts { seed: 1, force_score: Some(force) };
-    if fw { write_fw_set(&d, &o) } else { write_davs_set(&d, &o) }
+    if fw {
+        write_fw_set(&d, &o)
+    } else {
+        write_davs_set(&d, &o)
+    }
     let base = if fw { d.join("") } else { d.join("BDPGeneratedFiles") };
     for &(cfg, e) in edits {
         let path = base.join(match cfg {
@@ -460,7 +478,15 @@ fn fixture(dir: &str, name: &str) -> String {
 
 /// Every event of `tests/fixtures/wake/<dir>/<name>.txt` (libpryon, -x 1, two identical runs), every keyword:
 /// kind, begin, end and the printed score exact; returns Rust's events.
-fn check_probe(dir: &str, name: &str, fw: bool, force: f32, edits: &[(Cfg, Edit)], cmds: &[Cmd], clip: Clip) -> Vec<Ev> {
+fn check_probe(
+    dir: &str,
+    name: &str,
+    fw: bool,
+    force: f32,
+    edits: &[(Cfg, Edit)],
+    cmds: &[Cmd],
+    clip: Clip,
+) -> Vec<Ev> {
     let (d, m) = probe_set(name, fw, force, edits);
     let text = fixture(dir, name);
     let oracle = parse_wake(&text).unwrap();
@@ -541,10 +567,8 @@ fn synth_variant_davs_probabilistic_near_miss() {
 
 #[test]
 fn synth_variant_davs_probabilistic_lock_0_freezes() {
-    let lock = Edit::Once(
-        r#""lock-period": 132 } },"#,
-        r#""lock-period": 132, "probabilistic-accept-lock-period": 0 } },"#,
-    );
+    let lock =
+        Edit::Once(r#""lock-period": 132 } },"#, r#""lock-period": 132, "probabilistic-accept-lock-period": 0 } },"#);
     synth_variant("davs_plock0", false, 0.8, &[lock]);
 }
 
@@ -633,7 +657,13 @@ fn property_mid_stream_matches_oracle() {
     assert!(off.iter().any(|e| e.kind == OracleKind::NearMiss && e.end > 40000));
     // with two matching overrides the first listed wins (AlarmState 0.95 before AudioPlayerState 0.7)
     let prec = [
-        (Cfg::Kw, Edit::Once(r#""accept-threshold": 0.7, "clientProperties""#, r#""accept-threshold": 0.95, "clientProperties""#)),
+        (
+            Cfg::Kw,
+            Edit::Once(
+                r#""accept-threshold": 0.7, "clientProperties""#,
+                r#""accept-threshold": 0.95, "clientProperties""#,
+            ),
+        ),
         (
             Cfg::Kw,
             Edit::Once(
@@ -714,7 +744,13 @@ fn machine_timeout_matches_oracle() {
 #[test]
 fn stop_while_awake_matches_oracle() {
     // firmware order (ALEXA before STOP): STOP, enabled by ALEXA's accept, runs in that frame one frame ahead
-    let r = script("fw_stop", true, 0.91, &[(Cfg::Kw, Edit::Once(r#""accept-threshold": 0.5 }"#, r#""accept-threshold": 0.04 }"#))], &[]);
+    let r = script(
+        "fw_stop",
+        true,
+        0.91,
+        &[(Cfg::Kw, Edit::Once(r#""accept-threshold": 0.5 }"#, r#""accept-threshold": 0.04 }"#))],
+        &[],
+    );
     assert_eq!((r[1].keyword.as_str(), r[1].begin, r[1].end), ("STOP", 0, 960));
 }
 
@@ -757,8 +793,14 @@ fn restart_trigger_matches_oracle() {
 fn prob_accept_not_emitted() {
     // probability 1: libpryon accepts every probabilistic window; the engine reports the near miss it would be
     // with probability 0 (what deterministic_set gives the oracle)
-    let one = [(Cfg::Kw, Edit::Once(r#""probabilistic-accept-probability": 0.001"#, r#""probabilistic-accept-probability": 1"#))];
-    let zero = [(Cfg::Kw, Edit::Once(r#""probabilistic-accept-probability": 0.001"#, r#""probabilistic-accept-probability": 0"#))];
+    let one = [(
+        Cfg::Kw,
+        Edit::Once(r#""probabilistic-accept-probability": 0.001"#, r#""probabilistic-accept-probability": 1"#),
+    )];
+    let zero = [(
+        Cfg::Kw,
+        Edit::Once(r#""probabilistic-accept-probability": 0.001"#, r#""probabilistic-accept-probability": 0"#),
+    )];
     assert!(fixture("synth-scripts", "prob1").contains("detection_type=AcceptProbabilistic"));
     let r0 = script("prob0", false, 0.8, &zero, &[]);
     let (_d, m) = probe_set("prob1", false, 0.8, &one);

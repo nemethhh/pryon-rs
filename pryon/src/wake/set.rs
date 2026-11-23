@@ -1,8 +1,8 @@
 //! Firmware and DAVS layouts to a [`SetSpec`]; set checksum.
 
 use super::kwcfg::{self, ClassifierSpec, MachineSpec, Nemort, OutputType, RestartSpec, SpotterSpec};
-use crate::json::Doc;
 use super::pconfig::{inside, join, read_manifest, read_text, rel, unsupported, PConfig};
+use crate::json::Doc;
 use crate::lfbe::LfbeSpec;
 use crate::onnx;
 use crate::Error;

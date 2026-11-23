@@ -6,7 +6,11 @@ pub(crate) fn quantize(x: &[f32], inv: f32, off: f32, k: &mut [u8]) {
         let t = inv * (v - off);
         *o = if i < n16 {
             let h = t + 0.5f32.copysign(t);
-            if h > 0.0 { h.trunc().min(255.0) as u8 } else { 0 }
+            if h > 0.0 {
+                h.trunc().min(255.0) as u8
+            } else {
+                0
+            }
         } else if t > 255.0 {
             255
         } else if t >= 0.0 {
@@ -177,9 +181,17 @@ pub(crate) fn zdiv(a: f32, b: f32) -> f32 {
         || r.abs() == f32::MIN_POSITIVE && {
             let ((ma, ea), (mb, eb)) = (parts(a), parts(b));
             let (ma, mb, d) = (u64::from(ma), u64::from(mb), ea - eb + 126);
-            if d >= 0 { d < 40 && ma << d < mb } else { d <= -40 || ma < mb << -d }
+            if d >= 0 {
+                d < 40 && ma << d < mb
+            } else {
+                d <= -40 || ma < mb << -d
+            }
         };
-    if tiny { 0.0f32.copysign(r) } else { r }
+    if tiny {
+        0.0f32.copysign(r)
+    } else {
+        r
+    }
 }
 
 /// VFP square root under FPSCR.FZ (correctly rounded; its result is never subnormal).
@@ -203,7 +215,11 @@ fn parts(x: f32) -> (u32, i32) {
     let u = x.to_bits();
     let e = (u >> 23 & 0xFF) as i32;
     let m = u & 0x7F_FFFF;
-    if e == 0 { (m, -149) } else { (m | 0x80_0000, e - 150) }
+    if e == 0 {
+        (m, -149)
+    } else {
+        (m | 0x80_0000, e - 150)
+    }
 }
 
 /// `a·b + c` rounded once (bionic `fmaf`), in integer arithmetic: no FMA instruction, no f64.
@@ -265,7 +281,11 @@ fn round_scaled(m: u64, neg: bool, e: i32, ftz: bool) -> f32 {
         let sh = (lsb - e) as u32;
         let (q, rem) = if sh >= 64 { (0, m) } else { (m >> sh, m & ((1u64 << sh) - 1)) };
         let half = if sh > 64 { u64::MAX } else { 1u64 << (sh - 1) };
-        if rem > half || (rem == half && q & 1 == 1) { q + 1 } else { q }
+        if rem > half || (rem == half && q & 1 == 1) {
+            q + 1
+        } else {
+            q
+        }
     };
     let bits = if top > 127 { 0x7F80_0000 } else { ((((lsb + 149) as u32) << 23) + q as u32).min(0x7F80_0000) };
     f32::from_bits(bits | u32::from(neg) << 31)

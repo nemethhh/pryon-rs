@@ -157,7 +157,12 @@ impl Arena {
     }
 }
 
-pub(crate) fn plan(m: &ModelProto, bind: &[(&str, &[usize])], keep: &[&str], ops: &[(&str, BuildFn)]) -> Result<Plan, Fail> {
+pub(crate) fn plan(
+    m: &ModelProto,
+    bind: &[(&str, &[usize])],
+    keep: &[&str],
+    ops: &[(&str, BuildFn)],
+) -> Result<Plan, Fail> {
     if m.ir_version < 3 {
         return Err(Unsupported(format!("IR version {}", m.ir_version)));
     }
@@ -267,7 +272,9 @@ pub(crate) fn plan(m: &ModelProto, bind: &[(&str, &[usize])], keep: &[&str], ops
                 Value::Absent
             } else {
                 vs.get(x)?.ok_or_else(|| {
-                    Format(format!("node {label}: input {x} used before it is defined (nodes must be in topological order)"))
+                    Format(format!(
+                        "node {label}: input {x} used before it is defined (nodes must be in topological order)"
+                    ))
                 })?
             });
         }
@@ -320,7 +327,8 @@ pub(crate) fn plan(m: &ModelProto, bind: &[(&str, &[usize])], keep: &[&str], ops
         }
     }
 
-    if let Some(io) = inputs.iter().find(|io| vs.vals.get(io.name.as_str()).and_then(Value::dtype) != Some(DType::F32)) {
+    if let Some(io) = inputs.iter().find(|io| vs.vals.get(io.name.as_str()).and_then(Value::dtype) != Some(DType::F32))
+    {
         return Err(Unsupported(format!("non-float runtime tensor {} (graph input)", io.name)));
     }
     let mut outputs = Vec::new();

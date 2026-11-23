@@ -26,7 +26,14 @@ pub(crate) struct QWeights {
 
 impl QWeights {
     /// `sums` is the model's own row-sum input, which must agree with `w`.
-    pub fn new(rows: usize, cols: usize, w: &[i8], sw: Vec<f32>, zw: Vec<i32>, sums: &[i64]) -> Result<QWeights, String> {
+    pub fn new(
+        rows: usize,
+        cols: usize,
+        w: &[i8],
+        sw: Vec<f32>,
+        zw: Vec<i32>,
+        sums: &[i64],
+    ) -> Result<QWeights, String> {
         if rows == 0 || cols == 0 || cols > MAX_COLS {
             return Err(format!("weights of {rows} × {cols} (rows of 1..={MAX_COLS} columns)"));
         }
@@ -149,7 +156,11 @@ mod tests {
             let mut y = vec![0.0; 20];
             qmatmul_row(&x, &wq, None, &mut q, &mut y);
             for (r, row) in wvals(20, 37).chunks(37).enumerate() {
-                let acc: i64 = row.iter().zip(&qx).map(|(&w, &v)| (i64::from(v) - i64::from(rq.z)) * i64::from(i32::from(w) + 41)).sum();
+                let acc: i64 = row
+                    .iter()
+                    .zip(&qx)
+                    .map(|(&w, &v)| (i64::from(v) - i64::from(rq.z)) * i64::from(i32::from(w) + 41))
+                    .sum();
                 assert_eq!(y[r].to_bits(), (acc as f32 * (rq.s * 0.01)).to_bits(), "off {off} row {r}");
             }
         }
@@ -173,7 +184,11 @@ mod tests {
             let row = &w[r * k..][..k];
             let want = dequant_ref(&rq, &qx, row, sw[r], zw[r], 0.0);
             assert_eq!(y[r].to_bits(), want.to_bits(), "row {r}: {} vs {want}", y[r]);
-            let exact: i64 = row.iter().zip(&qx).map(|(&a, &b)| (i64::from(b) - i64::from(rq.z)) * i64::from(i32::from(a) - zw[r])).sum();
+            let exact: i64 = row
+                .iter()
+                .zip(&qx)
+                .map(|(&a, &b)| (i64::from(b) - i64::from(rq.z)) * i64::from(i32::from(a) - zw[r]))
+                .sum();
             inexact += usize::from(want != exact as f32 * (rq.s * sw[r]));
         }
         assert!(inexact > 0, "the exact integer accumulator gives the same outputs");

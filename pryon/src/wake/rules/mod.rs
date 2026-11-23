@@ -134,7 +134,11 @@ fn kw_frames(kw_window: u32, cap: f32, s: f32, e: f32, f: u64) -> (u64, u64) {
         s
     } else {
         let a = if s > START_FLOOR { s } else { START_FLOOR };
-        if a < cap { a } else { cap }
+        if a < cap {
+            a
+        } else {
+            cap
+        }
     };
     // NaN takes the clamping branch, as libpryon's compares do
     let e = if e >= 0.0 && s < e && e <= END_CAP {
@@ -142,7 +146,11 @@ fn kw_frames(kw_window: u32, cap: f32, s: f32, e: f32, f: u64) -> (u64, u64) {
     } else {
         let b = if e > 0.0 { e } else { 0.0 };
         let b = if b < END_CAP { b } else { END_CAP };
-        if s < b { b } else { s }
+        if s < b {
+            b
+        } else {
+            s
+        }
     };
     let n = kw_window as f32;
     let start = ((s * n) - n) as i64 + f as i64 + 1;
@@ -308,7 +316,9 @@ impl Orchestra {
                         return Err(what(format!("{n} word components with a single-component classifier")));
                     };
                     if !s.smoothers.is_empty() {
-                        return Err(what("posterior-smoothers on a single-component classifier (not implemented)".into()));
+                        return Err(what(
+                            "posterior-smoothers on a single-component classifier (not implemented)".into(),
+                        ));
                     }
                     let col = column(s, &c.component, c.class)?;
                     let Some(se_name) = &c.start_end else {
@@ -383,7 +393,8 @@ impl Orchestra {
         let span_frames = u64::from(restart.span_ms) / u64::from(FRAME_MS) + 1;
         let events = (0..names.len())
             .map(|k| {
-                let gap = spots.iter().filter(|s| s.keyword == k).map(|s| s.lock.min(s.notify_lock).min(s.prob_lock)).min();
+                let gap =
+                    spots.iter().filter(|s| s.keyword == k).map(|s| s.lock.min(s.notify_lock).min(s.prob_lock)).min();
                 let n = span_frames / gap.unwrap_or(1).max(1) + u64::from(restart.max_events) + 1;
                 VecDeque::with_capacity(n.min(4096) as usize)
             })
@@ -799,7 +810,6 @@ mod tests {
         assert_eq!(Thr::new(0.7, Some(0.5), Some(0.3)), Thr { accept: 0.7, prob: 0.5, notify: 0.3 });
         assert_eq!(Thr::new(0.4, Some(0.5), Some(0.45)), Thr { accept: 0.4, prob: 0.4, notify: 0.4 });
     }
-
 
     #[test]
     fn deadline_between_steps() {

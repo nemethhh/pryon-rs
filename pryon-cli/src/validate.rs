@@ -5,8 +5,8 @@ use pryon_testkit::compare::{
     compare_gated, oracle_cache_key, pad_clip, pushed, Ev, GateTally, KwGated, Limits, Tally, FW_GATE_MAX_FRAMES,
     LEAD_MS, TAIL_MS,
 };
-use pryon_testkit::oracle::{deterministic_set, parse_wake, restarts, OracleCmd, OracleEnv, OracleKind};
 use pryon_testkit::fnv1a64;
+use pryon_testkit::oracle::{deterministic_set, parse_wake, restarts, OracleCmd, OracleEnv, OracleKind};
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -70,7 +70,11 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
             },
             "--lead-ms" | "--tail-ms" => {
                 let ms = val()?.parse::<u32>().map_err(|_| format!("{o} needs milliseconds"))?;
-                if o == "--lead-ms" { a.lead_ms = ms } else { a.tail_ms = ms }
+                if o == "--lead-ms" {
+                    a.lead_ms = ms
+                } else {
+                    a.tail_ms = ms
+                }
             }
             "-p" => {
                 let v = val()?;
@@ -108,7 +112,9 @@ fn parse_args(args: &[String]) -> Result<Args, String> {
 }
 
 fn is_clip(p: &Path) -> bool {
-    p.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("raw") || e.eq_ignore_ascii_case("wav"))
+    p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("raw") || e.eq_ignore_ascii_case("wav"))
 }
 
 /// `seen` holds the directories already walked (canonical), so symlinked directory cycles end.
@@ -159,7 +165,9 @@ fn wav_data(b: &[u8]) -> Result<&[u8], String> {
             b"fmt " if len >= 16 && body + 16 <= b.len() => {
                 let (tag, ch, rate, bits) = (u16_at(body), u16_at(body + 2), u32_at(body + 4), u16_at(body + 14));
                 if (tag, ch, rate, bits) != (1, 1, 16000, 16) {
-                    return Err(format!("WAV is format {tag}, {ch} ch, {rate} Hz, {bits} bit; need PCM mono 16000 Hz 16 bit"));
+                    return Err(format!(
+                        "WAV is format {tag}, {ch} ch, {rate} Hz, {bits} bit; need PCM mono 16000 Hz 16 bit"
+                    ));
                 }
                 fmt_ok = true;
             }
@@ -289,12 +297,15 @@ fn oracle_text(c: &Ctx, path: &Path, pcm: &[i16], fnv: u64, index: usize) -> Res
     };
     let secs = pcm.len() as f64 / 16000.0;
     let timeout = Duration::from_secs_f64(10.0 * secs / c.args.speed + 60.0);
-    let text = env.run_wake_at(&c.manifest, &clip, &cmds, c.args.speed, Some(timeout)).map_err(|e| format!("oracle: {e}"))?;
+    let text =
+        env.run_wake_at(&c.manifest, &clip, &cmds, c.args.speed, Some(timeout)).map_err(|e| format!("oracle: {e}"))?;
     if let Some(f) = cached {
         let dir = f.parent().unwrap();
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let tmp = f.with_extension(format!("tmp{}-{index}", std::process::id()));
-        std::fs::write(&tmp, &text).and_then(|_| std::fs::rename(&tmp, &f)).map_err(|e| format!("{}: {e}", f.display()))?;
+        std::fs::write(&tmp, &text)
+            .and_then(|_| std::fs::rename(&tmp, &f))
+            .map_err(|e| format!("{}: {e}", f.display()))?;
     }
     Ok(text)
 }
@@ -340,7 +351,8 @@ fn par_map<T: Sync, R: Send>(jobs: usize, items: &[T], f: impl Fn(usize, &T) -> 
 }
 
 fn today() -> String {
-    let days = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() / 86400) as i64;
+    let days =
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() / 86400) as i64;
     // Hinnant's civil_from_days.
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
@@ -388,14 +400,18 @@ pub fn run(args: &[String]) -> Result<ExitCode, (bool, String)> {
         let ov: Vec<f32> = t.overrides.iter().map(|o| o.accept).collect();
         limits.add(&s.name, t.accept, t.notify, &ov);
     }
-    let env = match (a.rootfs.clone().or_else(|| std::env::var_os("PRYON_ORACLE_ROOTFS").map(Into::into)), a.pryon_test.clone().or_else(|| std::env::var_os("PRYON_PRYON_TEST").map(Into::into))) {
+    let env = match (
+        a.rootfs.clone().or_else(|| std::env::var_os("PRYON_ORACLE_ROOTFS").map(Into::into)),
+        a.pryon_test.clone().or_else(|| std::env::var_os("PRYON_PRYON_TEST").map(Into::into)),
+    ) {
         (Some(rootfs), Some(pryon_test)) => Some(OracleEnv { rootfs, pryon_test }),
         _ => None,
     };
     let checksum = model.checksum().to_string();
     let scratch = Scratch(std::env::temp_dir().join(format!("pryon-validate-{}", std::process::id())));
     std::fs::create_dir_all(&scratch.0).map_err(|e| (false, e.to_string()))?;
-    let oracle_set = deterministic_set(&model_dir, &scratch.0.join("oracle-set")).map_err(|e| (false, format!("oracle set: {e}")))?;
+    let oracle_set = deterministic_set(&model_dir, &scratch.0.join("oracle-set"))
+        .map_err(|e| (false, format!("oracle set: {e}")))?;
     let ctx = Ctx {
         args: &a,
         model: model.clone(),

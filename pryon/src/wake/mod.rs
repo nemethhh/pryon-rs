@@ -171,7 +171,11 @@ mod tests {
     fn model(fw: bool, force: f32) -> (TempDir, Arc<SpotterModel>) {
         let d = TempDir::new("spotter");
         let o = WakeSetOpts { seed: 1, force_score: Some(force) };
-        if fw { write_fw_set(&d, &o) } else { write_davs_set(&d, &o) }
+        if fw {
+            write_fw_set(&d, &o)
+        } else {
+            write_davs_set(&d, &o)
+        }
         let m = Arc::new(SpotterModel::load(&d).unwrap());
         (d, m)
     }

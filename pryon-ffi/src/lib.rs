@@ -145,7 +145,8 @@ fn convert(w: &SoundWindow) -> pryon_sound_result {
         end_sample: w.end_sample,
         max_energy: w.max_energy,
         n: w.types.len() as i32,
-        r#type: [pryon_sound_type_result { score: 0.0, samples_above: 0, detected: 0, near_miss: 0 }; PRYON_SOUND_MAX_TYPES],
+        r#type: [pryon_sound_type_result { score: 0.0, samples_above: 0, detected: 0, near_miss: 0 };
+            PRYON_SOUND_MAX_TYPES],
     };
     for (d, t) in r.r#type.iter_mut().zip(&w.types) {
         *d = pryon_sound_type_result {

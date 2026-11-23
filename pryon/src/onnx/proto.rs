@@ -325,8 +325,7 @@ fn parse_attr(b: &[u8]) -> Result<(String, AttrValue), String> {
 
 fn parse_tensor(b: &[u8]) -> Result<TensorProto, String> {
     let mut t = TensorProto::default();
-    let (mut raw, mut f32s, mut i32s, mut i64s, mut f64s) =
-        (None, Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut raw, mut f32s, mut i32s, mut i64s, mut f64s) = (None, Vec::new(), Vec::new(), Vec::new(), Vec::new());
     fields(b, |f, v| {
         match f {
             1 => push_ints(&mut t.dims, &v)?,
@@ -449,7 +448,9 @@ mod tests {
         assert_eq!(g.inputs[0].dims, vec![Dim::Param("N".into()), Dim::Value(4), Dim::Unknown]);
         assert_eq!(g.outputs[0].dims, vec![Dim::Value(2)]);
         let raw = |v: &[f32]| TensorData::Raw(v.iter().flat_map(|x| x.to_le_bytes()).collect());
-        let ini = |i: usize| (&g.initializers[i].name[..], g.initializers[i].data_type, &g.initializers[i].dims, &g.initializers[i].data);
+        let ini = |i: usize| {
+            (&g.initializers[i].name[..], g.initializers[i].data_type, &g.initializers[i].dims, &g.initializers[i].data)
+        };
         assert_eq!(ini(0), ("w", 1, &vec![2, 2], &raw(&[1.0, -2.5, 3.0, 0.5])));
         assert_eq!(ini(1), ("wf", 1, &vec![2], &TensorData::F32(vec![7.0, 8.0])));
         assert_eq!(ini(2), ("wd", 11, &vec![1], &TensorData::F64(vec![0.25])));
@@ -484,7 +485,13 @@ mod tests {
     #[test]
     fn unknown_fields_skipped() {
         // field 99 as varint, 64-bit, length-delimited and 32-bit, at model and graph level
-        let junk: Vec<u8> = [&[0x98, 0x06, 5][..], &[0x99, 0x06, 1, 2, 3, 4, 5, 6, 7, 8], &[0x9a, 0x06, 2, 9, 9], &[0x9d, 0x06, 1, 2, 3, 4]].concat();
+        let junk: Vec<u8> = [
+            &[0x98, 0x06, 5][..],
+            &[0x99, 0x06, 1, 2, 3, 4, 5, 6, 7, 8],
+            &[0x9a, 0x06, 2, 9, 9],
+            &[0x9d, 0x06, 1, 2, 3, 4],
+        ]
+        .concat();
         let mut g = junk.clone();
         g.extend([0x0a, 4, 0x22, 2, b'O', b'p']); // node { op_type = "Op" }
         let mut m = junk;
@@ -499,7 +506,8 @@ mod tests {
     #[test]
     fn packed_and_unpacked_ints() {
         let mut out = Vec::new();
-        push_ints(&mut out, &Val::Len(&[1, 0xac, 0x02, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 1])).unwrap();
+        push_ints(&mut out, &Val::Len(&[1, 0xac, 0x02, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 1]))
+            .unwrap();
         push_ints(&mut out, &Val::Varint(7)).unwrap();
         assert_eq!(out, vec![1, 300, -1, 7]);
         // dims unpacked and packed inside a tensor

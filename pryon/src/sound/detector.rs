@@ -150,7 +150,8 @@ impl SoundDetector {
         } else {
             let mut sel = Vec::with_capacity(types.len());
             for name in types {
-                let i = all.iter().position(|t| t.name == *name).ok_or_else(|| Error::UnknownType((*name).to_string()))?;
+                let i =
+                    all.iter().position(|t| t.name == *name).ok_or_else(|| Error::UnknownType((*name).to_string()))?;
                 if sel.contains(&i) {
                     return Err(Error::Config(format!("duplicate type: {name}")));
                 }

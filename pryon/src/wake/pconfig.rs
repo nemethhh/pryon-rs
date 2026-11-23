@@ -178,7 +178,11 @@ fn strip_comment(line: &str) -> &str {
 }
 
 fn unquote(s: &str) -> &str {
-    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') { &s[1..s.len() - 1] } else { s }
+    if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
+        &s[1..s.len() - 1]
+    } else {
+        s
+    }
 }
 
 #[cfg(test)]

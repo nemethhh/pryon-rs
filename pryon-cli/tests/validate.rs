@@ -35,7 +35,8 @@ impl Fixture {
         assert!(cli(&["synth-wake-set", "fw", &s(&set), "--force", "0.99"]).status.success());
         assert!(cli(&["synth", "noise", &s(&clip)]).status.success());
         // the oracle sees the clip between validate's default silences
-        let pcm: Vec<i16> = std::fs::read(&clip).unwrap().chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
+        let pcm: Vec<i16> =
+            std::fs::read(&clip).unwrap().chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]])).collect();
         let padded: Vec<u8> = pad_clip(&pcm, LEAD_MS, TAIL_MS).iter().flat_map(|x| x.to_le_bytes()).collect();
         let padded_clip = dir.join("padded.raw");
         std::fs::write(&padded_clip, &padded).unwrap();
@@ -131,21 +132,15 @@ fn record_written_on_exact() {
     let rec = std::fs::read_to_string(f.dir.join("records").join(format!("{sum}.ALEXA.rec"))).unwrap();
     let keys: Vec<&str> = rec.lines().map(|l| l.split('=').next().unwrap()).collect();
     let want = [
-        "set",
-        "keyword",
-        "clips",
-        "clips_digest",
-        "lead_ms",
-        "tail_ms",
-        "accepts",
-        "near_misses",
-        "gate_exempt",
-        "date",
-        "pryon_rs",
+        "set", "keyword", "clips", "clips_digest", "lead_ms", "tail_ms", "accepts", "near_misses", "gate_exempt",
+        "date", "pryon_rs",
     ];
     assert_eq!(keys, want, "{rec}");
     assert!(rec.contains(&format!("lead_ms={LEAD_MS}\ntail_ms={TAIL_MS}\n")), "{rec}");
-    assert!(rec.contains(&format!("set={sum}\n")) && rec.contains("keyword=ALEXA\n") && rec.contains("clips=1\n"), "{rec}");
+    assert!(
+        rec.contains(&format!("set={sum}\n")) && rec.contains("keyword=ALEXA\n") && rec.contains("clips=1\n"),
+        "{rec}"
+    );
     let digest = fnv1a64(&fnv1a64(&std::fs::read(&f.clip).unwrap()).to_be_bytes());
     assert!(rec.contains(&format!("clips_digest={digest:016x}\n")), "{rec}");
     assert!(rec.contains("gate_exempt=0\n"), "{rec}");

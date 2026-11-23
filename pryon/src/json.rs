@@ -56,7 +56,11 @@ impl<'a> Obj<'a> {
 
     /// The path of `key` inside this object.
     pub fn at(&self, key: &str) -> String {
-        if self.path.is_empty() { key.to_string() } else { format!("{}.{key}", self.path) }
+        if self.path.is_empty() {
+            key.to_string()
+        } else {
+            format!("{}.{key}", self.path)
+        }
     }
 
     /// Fails on the first key not in `known`, or on a key given twice, naming it with its path.

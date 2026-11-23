@@ -7,28 +7,74 @@ const FW: (&str, i64, i64, Ops) = (
     6,
     11,
     &[
-        ("Add", 4), ("BatchNormalization", 7), ("Cast", 10), ("Concat", 10), ("Gather", 5), ("HybridConv", 7),
-        ("HybridGemm", 4), ("HybridLSTM", 2), ("MaxPool", 2), ("Mul", 1), ("Relu", 9), ("Reshape", 10),
-        ("Shape", 10), ("Slice", 11), ("Softmax", 1), ("Squeeze", 6), ("Sub", 1), ("Tile", 1), ("Transpose", 4),
+        ("Add", 4),
+        ("BatchNormalization", 7),
+        ("Cast", 10),
+        ("Concat", 10),
+        ("Gather", 5),
+        ("HybridConv", 7),
+        ("HybridGemm", 4),
+        ("HybridLSTM", 2),
+        ("MaxPool", 2),
+        ("Mul", 1),
+        ("Relu", 9),
+        ("Reshape", 10),
+        ("Shape", 10),
+        ("Slice", 11),
+        ("Softmax", 1),
+        ("Squeeze", 6),
+        ("Sub", 1),
+        ("Tile", 1),
+        ("Transpose", 4),
         ("Unsqueeze", 4),
     ],
 );
 
 const ENCODER: Ops = &[
-    ("Add", 10), ("Concat", 11), ("HybridGemm", 12), ("Mul", 21), ("ReduceMax", 3), ("ReduceSum", 4), ("Relu", 9),
-    ("Reshape", 1), ("Slice", 31), ("Squeeze", 1), ("Sub", 1),
+    ("Add", 10),
+    ("Concat", 11),
+    ("HybridGemm", 12),
+    ("Mul", 21),
+    ("ReduceMax", 3),
+    ("ReduceSum", 4),
+    ("Relu", 9),
+    ("Reshape", 1),
+    ("Slice", 31),
+    ("Squeeze", 1),
+    ("Sub", 1),
 ];
 const DET: Ops = &[
-    ("Add", 5), ("HybridGemm", 5), ("HybridLSTM", 2), ("Relu", 2), ("Softmax", 2), ("Squeeze", 6), ("Tile", 1),
+    ("Add", 5),
+    ("HybridGemm", 5),
+    ("HybridLSTM", 2),
+    ("Relu", 2),
+    ("Softmax", 2),
+    ("Squeeze", 6),
+    ("Tile", 1),
     ("Unsqueeze", 4),
 ];
 const STOP: Ops = &[
-    ("Concat", 4), ("HybridConv", 4), ("HybridGemm", 2), ("Relu", 4), ("Reshape", 1), ("Slice", 4), ("Softmax", 1),
-    ("Squeeze", 2), ("Unsqueeze", 2),
+    ("Concat", 4),
+    ("HybridConv", 4),
+    ("HybridGemm", 2),
+    ("Relu", 4),
+    ("Reshape", 1),
+    ("Slice", 4),
+    ("Softmax", 1),
+    ("Squeeze", 2),
+    ("Unsqueeze", 2),
 ];
 const MSWW: Ops = &[
-    ("Add", 2), ("Concat", 6), ("HybridGemm", 12), ("Mul", 6), ("ReduceSum", 6), ("Relu", 8), ("Slice", 6),
-    ("Softmax", 1), ("Squeeze", 4), ("Unsqueeze", 2),
+    ("Add", 2),
+    ("Concat", 6),
+    ("HybridGemm", 12),
+    ("Mul", 6),
+    ("ReduceSum", 6),
+    ("Relu", 8),
+    ("Slice", 6),
+    ("Softmax", 1),
+    ("Squeeze", 4),
+    ("Unsqueeze", 2),
 ];
 
 fn check(path: &std::path::Path, ir: i64, opset: i64, want: Ops) {
@@ -129,7 +175,11 @@ fn pipeline_matches_pypryon() {
                 let over: Vec<usize> = (0..per_step.len()).filter(|&t| per_step[t] > TOL).collect();
                 let what = format!("{} {} {}", dir.display(), clip.file_name().unwrap().to_string_lossy(), c.key);
                 let first = over.first().copied();
-                println!("{what}: max |d| {d:.3e}, {} of {} steps over {TOL}, first {first:?}", over.len(), per_step.len());
+                println!(
+                    "{what}: max |d| {d:.3e}, {} of {} steps over {TOL}, first {first:?}",
+                    over.len(),
+                    per_step.len()
+                );
                 assert!(first.is_none_or(|t| t >= PREFIX), "{what}: step {first:?} differs by more than {TOL}");
                 assert!(d <= FLIP, "{what}: max |d| {d}");
                 worst[k] = worst[k].max(d);

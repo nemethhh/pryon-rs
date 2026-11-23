@@ -229,7 +229,8 @@ mod tests {
     #[test]
     fn fmaf_asm_equals_portable() {
         let mut next = xorshift(0x3c6e_f372);
-        let special = [0.0f32, -0.0, 1.0, -1.0, f32::MIN_POSITIVE, 1e-45, -3e-45, 1e-40, 3.4e38, -3.4e38, 0.5, 1.0000001];
+        let special =
+            [0.0f32, -0.0, 1.0, -1.0, f32::MIN_POSITIVE, 1e-45, -3e-45, 1e-40, 3.4e38, -3.4e38, 0.5, 1.0000001];
         let mut abc = Vec::new();
         for &x in &special {
             for &y in &special {
@@ -358,9 +359,33 @@ mod tests {
     #[cfg(all(pryon_neon, target_arch = "arm"))]
     fn cpunk_inputs(next: &mut impl FnMut() -> u32, n: usize) -> Vec<f32> {
         let c = f32::from_bits;
-        let special = [0.0, -0.0, c(1), c(0x8000_0001), c(0x007F_FFFF), c(0x807F_FFFF), f32::MIN_POSITIVE,
-            -f32::MIN_POSITIVE, c(0x0080_0001), 1.0, -1.0, 0.5, f32::MAX, f32::MIN, f32::INFINITY, f32::NEG_INFINITY,
-            f32::NAN, c(0xFFC0_0001), c(0x7F80_0001), 4194303.5, -4194304.0, 8388608.0, 127.49, 127.5, -0.5];
+        let special = [
+            0.0,
+            -0.0,
+            c(1),
+            c(0x8000_0001),
+            c(0x007F_FFFF),
+            c(0x807F_FFFF),
+            f32::MIN_POSITIVE,
+            -f32::MIN_POSITIVE,
+            c(0x0080_0001),
+            1.0,
+            -1.0,
+            0.5,
+            f32::MAX,
+            f32::MIN,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+            c(0xFFC0_0001),
+            c(0x7F80_0001),
+            4194303.5,
+            -4194304.0,
+            8388608.0,
+            127.49,
+            127.5,
+            -0.5,
+        ];
         (0..n)
             .map(|i| match next() % 4 {
                 0 => special[(next() as usize) % special.len()],
@@ -485,8 +510,14 @@ mod tests {
                         super::portable::cpunk_sigmoid_of_inplace(&mut b)
                     }
                     for i in 0..n {
-                        assert!(same(a[i], b[i]), "fpscr|={bits:#x} tanh={tanh} e={:e} ({:#010x}): {:e} vs {:e}",
-                            e[i], e[i].to_bits(), a[i], b[i]);
+                        assert!(
+                            same(a[i], b[i]),
+                            "fpscr|={bits:#x} tanh={tanh} e={:e} ({:#010x}): {:e} vs {:e}",
+                            e[i],
+                            e[i].to_bits(),
+                            a[i],
+                            b[i]
+                        );
                     }
                 }
             }

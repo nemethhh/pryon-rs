@@ -1,6 +1,8 @@
 //! Shape and data-movement operators; with bound input shapes their integer side always folds at load.
 
-use super::{arg, axes_of, axis, const_ints, copy_op, each_index, fold_numel, opt_arg, strides, view, Attrs, Built, Value};
+use super::{
+    arg, axes_of, axis, const_ints, copy_op, each_index, fold_numel, opt_arg, strides, view, Attrs, Built, Value,
+};
 use crate::onnx::proto::NodeProto;
 use crate::onnx::tensor::{numel, DType, Tensor, MAX_ELEMS};
 
@@ -131,7 +133,12 @@ pub(super) fn slice(_: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -> Resu
     let r = dims.len();
     let ints = |i: usize, what: &str| opt_arg(ins, i).map(|v| const_ints(v, what)).transpose();
     let (starts, ends, axes, steps) = if ins.len() > 1 {
-        (ints(1, "starts")?.ok_or("starts missing")?, ints(2, "ends")?.ok_or("ends missing")?, ints(3, "axes")?, ints(4, "steps")?)
+        (
+            ints(1, "starts")?.ok_or("starts missing")?,
+            ints(2, "ends")?.ok_or("ends missing")?,
+            ints(3, "axes")?,
+            ints(4, "steps")?,
+        )
     } else {
         (a.ints("starts")?.ok_or("starts missing")?, a.ints("ends")?.ok_or("ends missing")?, a.ints("axes")?, None)
     };

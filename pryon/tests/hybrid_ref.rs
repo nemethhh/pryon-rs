@@ -113,7 +113,8 @@ fn conv_case(name: &str, xd: [usize; 4], n: usize, kernel: [usize; 2], strides: 
     let k = c * kernel[0] * kernel[1];
     let yd = [b, n, (h - kernel[0]) / strides[0] + 1, (w - kernel[1]) / strides[1] + 1];
     let x: Vec<f32> = r.rows(b * c * h, w);
-    let m = qweights(ModelBuilder::new(6, 11).input("x", F, &d(&xd)).output("y", F, &d(&yd)), &mut r, "c", &[], n, k, 0.01);
+    let m =
+        qweights(ModelBuilder::new(6, 11).input("x", F, &d(&xd)).output("y", F, &d(&yd)), &mut r, "c", &[], n, k, 0.01);
     let bv = if bias { r.range(-1.0, 1.0, n) } else { vec![0.0; n] };
     let model = m.init_f32("c_b", &[n as i64], &bv).node_named(
         "conv",
@@ -338,7 +339,13 @@ fn conv_missing_bias_refused() {
         .init_f32("sw", &[1], &[1.0])
         .init_i32("zw", &[1], &[0])
         .init_i32("sums", &[1], &[2])
-        .node_named("c", "HybridConv", &["x", "w", "sw", "zw", "sums"], &["y"], &[("kernel_shape", Attr::Ints(vec![2, 1]))]);
+        .node_named(
+            "c",
+            "HybridConv",
+            &["x", "w", "sw", "zw", "sums"],
+            &["y"],
+            &[("kernel_shape", Attr::Ints(vec![2, 1]))],
+        );
     let e = unsupported(load(m, &[("x", &[1, 1, 4, 4])]));
     assert!(e.contains("HybridConv (node c)") && e.contains("bias"), "{e}");
 }
@@ -365,10 +372,11 @@ fn lstm_reverse_refused() {
 
 #[test]
 fn lstm_h0_mismatch_without_c0_refused() {
-    let m = ModelBuilder::new(8, 15)
-        .input("x", F, &d(&[1, 1, 8]))
-        .input("h0", F, &d(&[1, 2, 3]))
-        .output("y", F, &d(&[1, 1, 2, 4]));
+    let m = ModelBuilder::new(8, 15).input("x", F, &d(&[1, 1, 8])).input("h0", F, &d(&[1, 2, 3])).output(
+        "y",
+        F,
+        &d(&[1, 1, 2, 4]),
+    );
     let mut r = R::new("h0");
     let m = qweights(m, &mut r, "w", &[1], 16, 8, 0.02);
     let m = qweights(m, &mut r, "r", &[1], 16, 4, 0.02).init_f32("b", &[1, 32], &[0.0; 32]).node_named(

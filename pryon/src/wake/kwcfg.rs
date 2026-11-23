@@ -404,7 +404,11 @@ fn multi_word(d: &Doc, s: &Obj, components: &[WordComponent], smoothers: &[f32])
     let wca = s.at("word-component-array");
     if smoothers.len() != components.len() {
         let k = components.len();
-        return Err(d.unsup(format!("{} with {} entries for {k} word components", s.at("posterior-smoothers"), smoothers.len())));
+        return Err(d.unsup(format!(
+            "{} with {} entries for {k} word components",
+            s.at("posterior-smoothers"),
+            smoothers.len()
+        )));
     }
     if components.len() > 2 {
         return Err(d.unsup(format!("{wca} has {} entries (libpryon takes at most 2)", components.len())));
@@ -542,7 +546,8 @@ pub(crate) fn spotters(
     d.pin_num(&am, "speech-pdf", 0.0, true)?;
     let mut restart = RESTART_DEFAULT;
     if let Some(r) = d.opt_sub(&top, "restart-trigger", &["max-event-count", "evaluation-span-msec"])? {
-        restart = RestartSpec { max_events: d.int(&r, "max-event-count")?, span_ms: d.int(&r, "evaluation-span-msec")? };
+        restart =
+            RestartSpec { max_events: d.int(&r, "max-event-count")?, span_ms: d.int(&r, "evaluation-span-msec")? };
         if restart.max_events == 0 || restart.span_ms == 0 {
             return Err(d.unsup(format!("{} = {restart:?} (implemented: both positive)", top.at("restart-trigger"))));
         }

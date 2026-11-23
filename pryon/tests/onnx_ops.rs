@@ -83,11 +83,12 @@ fn unknown_attr_named() {
 
 #[test]
 fn external_data_refused() {
-    let m = ModelBuilder::new(8, 15)
-        .input("x", F, &d(&[2]))
-        .output("y", F, &d(&[2]))
-        .init_external("w", F, &[2])
-        .node("Add", &["x", "w"], &["y"], &[]);
+    let m = ModelBuilder::new(8, 15).input("x", F, &d(&[2])).output("y", F, &d(&[2])).init_external("w", F, &[2]).node(
+        "Add",
+        &["x", "w"],
+        &["y"],
+        &[],
+    );
     let e = unsupported(load(m, &[("x", &[2])], &[]));
     assert!(e.contains("external data") && e.contains('w'), "{e}");
 }
@@ -156,10 +157,7 @@ fn elementwise_broadcast() {
     assert_eq!(o[0], [11.0, 22.0, 33.0, 14.0, 25.0, 36.0]);
     assert_eq!(o[1], [2.0, 20.0, 200.0, 3.0, 30.0, 300.0]);
     assert_eq!(o[2], [1.0, 0.0, 0.0, 2.0, 0.0, 0.0]);
-    assert_eq!(
-        o[3],
-        [101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 201.0, 202.0, 203.0, 204.0, 205.0, 206.0]
-    );
+    assert_eq!(o[3], [101.0, 102.0, 103.0, 104.0, 105.0, 106.0, 201.0, 202.0, 203.0, 204.0, 205.0, 206.0]);
 }
 
 #[test]
@@ -199,9 +197,7 @@ fn transpose_perm() {
     assert_eq!(shape_of(&g, "y"), [3, 4, 2]);
     let x: Vec<f32> = (0..24).map(|v| v as f32).collect();
     let (o, _) = run(g, &[("x", &x), ("w", &x[..6])], &["y", "t"]);
-    let want = [
-        0, 12, 1, 13, 2, 14, 3, 15, 4, 16, 5, 17, 6, 18, 7, 19, 8, 20, 9, 21, 10, 22, 11, 23,
-    ];
+    let want = [0, 12, 1, 13, 2, 14, 3, 15, 4, 16, 5, 17, 6, 18, 7, 19, 8, 20, 9, 21, 10, 22, 11, 23];
     assert_eq!(o[0], want.map(|v| v as f32));
     assert_eq!(o[1], [0.0, 3.0, 1.0, 4.0, 2.0, 5.0]);
 }
@@ -279,7 +275,14 @@ fn kept_input_initial() {
 
 #[test]
 fn bound_shape_conflict() {
-    let m = || ModelBuilder::new(8, 15).input("x", F, &d(&[1, 4])).output("y", F, &d(&[1, 4])).node("Relu", &["x"], &["y"], &[]);
+    let m = || {
+        ModelBuilder::new(8, 15).input("x", F, &d(&[1, 4])).output("y", F, &d(&[1, 4])).node(
+            "Relu",
+            &["x"],
+            &["y"],
+            &[],
+        )
+    };
     let e = unsupported(load(m(), &[("x", &[1, 5])], &[]));
     assert!(e.contains("input x") && e.contains("[1, 5]"), "{e}");
     let e = unsupported(load(m(), &[("x", &[4])], &[]));
@@ -327,7 +330,14 @@ fn constant_output_and_dead_nodes() {
 
 #[test]
 fn absurd_sizes_refused() {
-    let relu = || ModelBuilder::new(8, 15).input("x", F, &[Dim::Unknown, Dim::Unknown]).output("y", F, &[]).node("Relu", &["x"], &["y"], &[]);
+    let relu = || {
+        ModelBuilder::new(8, 15).input("x", F, &[Dim::Unknown, Dim::Unknown]).output("y", F, &[]).node(
+            "Relu",
+            &["x"],
+            &["y"],
+            &[],
+        )
+    };
     let e = unsupported(load(relu(), &[("x", &[1 << 14, 1 << 14])], &[]));
     assert!(e.contains("elements"), "{e}");
     let e = unsupported(load(relu(), &[("x", &[usize::MAX, 2])], &[]));
@@ -362,11 +372,12 @@ fn placeholder_state_and_repeated_inputs() {
     assert_eq!(o[0], [1.0, 2.0]);
     let e = load(m(), &[("x", &[2])], &["st"]).unwrap_err().to_string();
     assert!(e.contains("initializer raw has no data"), "{e}");
-    let clash = ModelBuilder::new(8, 15)
-        .input("x", F, &d(&[2]))
-        .input("x", F, &d(&[3]))
-        .output("y", F, &d(&[2]))
-        .node("Relu", &["x"], &["y"], &[]);
+    let clash = ModelBuilder::new(8, 15).input("x", F, &d(&[2])).input("x", F, &d(&[3])).output("y", F, &d(&[2])).node(
+        "Relu",
+        &["x"],
+        &["y"],
+        &[],
+    );
     let e = load(clash, &[("x", &[2])], &[]).unwrap_err().to_string();
     assert!(e.contains("input x declared twice"), "{e}");
 }
@@ -440,10 +451,12 @@ fn softmax_ref(x: &[f32]) -> Vec<f32> {
 #[test]
 fn softmax_opset11_flattens() {
     let x: Vec<f32> = (0..12).map(|i| (i as f32 * 0.37).sin() * 3.0).collect();
-    let m = ModelBuilder::new(6, 11)
-        .input("x", F, &d(&[2, 2, 3]))
-        .output("y", F, &d(&[2, 2, 3]))
-        .node("Softmax", &["x"], &["y"], &[("axis", Attr::Int(1))]);
+    let m = ModelBuilder::new(6, 11).input("x", F, &d(&[2, 2, 3])).output("y", F, &d(&[2, 2, 3])).node(
+        "Softmax",
+        &["x"],
+        &["y"],
+        &[("axis", Attr::Int(1))],
+    );
     let g = load(m, &[("x", &[2, 2, 3])], &[]).unwrap();
     assert_eq!(shape_of(&g, "y"), [2, 2, 3]);
     let (o, _) = run(g, &[("x", &x)], &["y"]);
@@ -457,20 +470,24 @@ fn softmax_opset13_axis() {
     let x: Vec<f32> = (0..12).map(|i| (i as f32 * 0.37).cos() * 2.0).collect();
     let mk = |axis: Option<i64>| -> Vec<f32> {
         let attrs: Vec<(&str, Attr)> = axis.map(|a| ("axis", Attr::Int(a))).into_iter().collect();
-        let m = ModelBuilder::new(8, 13)
-            .input("x", F, &d(&[2, 2, 3]))
-            .output("y", F, &d(&[2, 2, 3]))
-            .node("Softmax", &["x"], &["y"], &attrs);
+        let m = ModelBuilder::new(8, 13).input("x", F, &d(&[2, 2, 3])).output("y", F, &d(&[2, 2, 3])).node(
+            "Softmax",
+            &["x"],
+            &["y"],
+            &attrs,
+        );
         run(load(m, &[("x", &[2, 2, 3])], &[]).unwrap(), &[("x", &x)], &["y"]).0.remove(0)
     };
     let last = mk(None);
     close(&last, &(0..4).flat_map(|r| softmax_ref(&x[r * 3..r * 3 + 3])).collect::<Vec<_>>(), 1e-6);
     assert_eq!(mk(Some(-1)), last);
     // an axis before the last: libpryon would normalise from the axis on, not over the axis alone
-    let m = ModelBuilder::new(8, 13)
-        .input("x", F, &d(&[2, 2, 3]))
-        .output("y", F, &d(&[2, 2, 3]))
-        .node("Softmax", &["x"], &["y"], &[("axis", Attr::Int(1))]);
+    let m = ModelBuilder::new(8, 13).input("x", F, &d(&[2, 2, 3])).output("y", F, &d(&[2, 2, 3])).node(
+        "Softmax",
+        &["x"],
+        &["y"],
+        &[("axis", Attr::Int(1))],
+    );
     let e = unsupported(load(m, &[("x", &[2, 2, 3])], &[]));
     assert!(e.contains("axis 1"), "{e}");
 }
@@ -498,10 +515,12 @@ fn reduce_keepdims_and_axes_input() {
     assert_eq!(shape_of(&g, "s"), [3]);
     assert_eq!(run(g, &[("x", &x)], &["s"]).0[0], [5.0, 7.0, 9.0]);
 
-    let noop = ModelBuilder::new(8, 18)
-        .input("x", F, &d(&[2, 3]))
-        .output("s", F, &d(&[2, 3]))
-        .node("ReduceSum", &["x"], &["s"], &[("noop_with_empty_axes", Attr::Int(1))]);
+    let noop = ModelBuilder::new(8, 18).input("x", F, &d(&[2, 3])).output("s", F, &d(&[2, 3])).node(
+        "ReduceSum",
+        &["x"],
+        &["s"],
+        &[("noop_with_empty_axes", Attr::Int(1))],
+    );
     let e = unsupported(load(noop, &[("x", &[2, 3])], &[]));
     assert!(e.contains("noop_with_empty_axes"), "{e}");
 }
@@ -527,10 +546,12 @@ fn reduce_other_axes_refused() {
 #[test]
 fn maxpool_kernel_stride() {
     let x: Vec<f32> = (0..16).map(|i| ((i * 7) % 16) as f32).collect();
-    let m = ModelBuilder::new(6, 11)
-        .input("x", F, &d(&[1, 1, 4, 4]))
-        .output("y", F, &d(&[1, 1, 2, 2]))
-        .node("MaxPool", &["x"], &["y"], &[("kernel_shape", Attr::Ints(vec![2, 2])), ("strides", Attr::Ints(vec![2, 2]))]);
+    let m = ModelBuilder::new(6, 11).input("x", F, &d(&[1, 1, 4, 4])).output("y", F, &d(&[1, 1, 2, 2])).node(
+        "MaxPool",
+        &["x"],
+        &["y"],
+        &[("kernel_shape", Attr::Ints(vec![2, 2])), ("strides", Attr::Ints(vec![2, 2]))],
+    );
     let g = load(m, &[("x", &[1, 1, 4, 4])], &[]).unwrap();
     assert_eq!(shape_of(&g, "y"), [1, 1, 2, 2]);
     let (o, _) = run(g, &[("x", &x)], &["y"]);
@@ -550,10 +571,12 @@ fn maxpool_pads_refused() {
         ("ceil_mode", Attr::Int(1)),
         ("auto_pad", Attr::Str("SAME_UPPER".into())),
     ] {
-        let m = ModelBuilder::new(6, 11)
-            .input("x", F, &d(&[1, 1, 4, 4]))
-            .output("y", F, &d(&[1, 1, 2, 2]))
-            .node("MaxPool", &["x"], &["y"], &[("kernel_shape", Attr::Ints(vec![2, 2])), (name, attr)]);
+        let m = ModelBuilder::new(6, 11).input("x", F, &d(&[1, 1, 4, 4])).output("y", F, &d(&[1, 1, 2, 2])).node(
+            "MaxPool",
+            &["x"],
+            &["y"],
+            &[("kernel_shape", Attr::Ints(vec![2, 2])), (name, attr)],
+        );
         let e = unsupported(load(m, &[("x", &[1, 1, 4, 4])], &[]));
         assert!(e.contains(name), "{e}");
     }
@@ -615,10 +638,13 @@ fn float_ops_fold_constants() {
 
 #[test]
 fn extra_outputs_refused() {
-    let mp = ModelBuilder::new(6, 11)
-        .input("x", F, &d(&[1, 1, 4, 4]))
-        .output("y", F, &d(&[1, 1, 2, 2]))
-        .node_named("p", "MaxPool", &["x"], &["y", "idx"], &[("kernel_shape", Attr::Ints(vec![2, 2])), ("strides", Attr::Ints(vec![2, 2]))]);
+    let mp = ModelBuilder::new(6, 11).input("x", F, &d(&[1, 1, 4, 4])).output("y", F, &d(&[1, 1, 2, 2])).node_named(
+        "p",
+        "MaxPool",
+        &["x"],
+        &["y", "idx"],
+        &[("kernel_shape", Attr::Ints(vec![2, 2])), ("strides", Attr::Ints(vec![2, 2]))],
+    );
     let e = unsupported(load(mp, &[("x", &[1, 1, 4, 4])], &[]));
     assert!(e.contains("MaxPool (node p) with 2 outputs"), "{e}");
     let bn = ModelBuilder::new(6, 11)
@@ -655,7 +681,10 @@ fn softmax_bits() {
         (&[2.5, -0.75, 0.3, 1.125], &[0x3f368ac1, 0x3ce27e55, 0x3da1cf51, 0x3e389d8a]),
         (
             &[0.9, -2.2, 0.35, 1.7, -0.6, 0.05, 2.4, -1.1, 0.8],
-            &[0x3dcc646d, 0x3b9352c6, 0x3d6bd921, 0x3e637115, 0x3cb66ca2, 0x3d2eb87c, 0x3ee50176, 0x3c5d4abd, 0x3db8f118],
+            &[
+                0x3dcc646d, 0x3b9352c6, 0x3d6bd921, 0x3e637115, 0x3cb66ca2, 0x3d2eb87c, 0x3ee50176, 0x3c5d4abd,
+                0x3db8f118,
+            ],
         ),
     ];
     for (x, want) in cases {

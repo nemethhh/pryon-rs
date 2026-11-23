@@ -136,7 +136,11 @@ fn ulp(a: f32, b: f32) -> u32 {
     }
     let key = |x: f32| {
         let u = x.to_bits();
-        if u >> 31 == 1 { !u } else { u | 1 << 31 }
+        if u >> 31 == 1 {
+            !u
+        } else {
+            u | 1 << 31
+        }
     };
     key(a).abs_diff(key(b))
 }
@@ -263,9 +267,8 @@ fn node_table(clip: &Path, stage: &str) -> HashMap<String, (usize, String, Vec<S
     let text = std::fs::read_to_string(&path);
     let text = text.unwrap_or_else(|e| panic!("{}: {e} (wake_capture.py --nodes-only)", path.display()));
     let Value::Array(nodes) = serde_json::from_str(&text).unwrap() else { panic!("{}", path.display()) };
-    let strs = |v: &Value| -> Vec<String> {
-        v.as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect()
-    };
+    let strs =
+        |v: &Value| -> Vec<String> { v.as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string()).collect() };
     let mut out = HashMap::new();
     for n in &nodes {
         let idx = n["node"].as_u64().unwrap() as usize;
@@ -340,8 +343,7 @@ fn capture_nodes_bits() {
                         if !inputs_equal {
                             return;
                         }
-                        let finite =
-                            ins.iter().all(|x| step.opt(x).is_none_or(|v| v.iter().all(|y| y.is_finite())));
+                        let finite = ins.iter().all(|x| step.opt(x).is_none_or(|v| v.iter().all(|y| y.is_finite())));
                         let root = r.roots.entry(tensor.to_string()).or_insert_with(|| Root {
                             op: op.clone(),
                             node: *node,
@@ -405,7 +407,11 @@ fn stage_report(set: &LoadedSet, stage: &str, clips: usize, r: &StageReport) -> 
             if f.is_none_or(|(ft, _)| ft != t) {
                 o += &format!(
                     "   first diverging node on any input: {t} ({}, node {}) at step {} of {}, max ulp {}\n",
-                    x.op, x.node, x.first.1, x.first.0, ulp(x.max_ulp)
+                    x.op,
+                    x.node,
+                    x.first.1,
+                    x.first.0,
+                    ulp(x.max_ulp)
                 );
             }
             o += "   nodes diverging on bit-equal inputs: steps (finite-input steps), first step, max ulp (finite):\n";

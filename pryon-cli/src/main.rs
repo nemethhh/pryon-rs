@@ -519,11 +519,7 @@ fn cmd_rusage(args: &[String]) -> Result<ExitCode, Fail> {
     if r < 0 {
         return Err(Fail::Run(format!("wait4: {}", std::io::Error::last_os_error())));
     }
-    let code = if libc::WIFEXITED(status) {
-        libc::WEXITSTATUS(status)
-    } else {
-        128 + libc::WTERMSIG(status)
-    };
+    let code = if libc::WIFEXITED(status) { libc::WEXITSTATUS(status) } else { 128 + libc::WTERMSIG(status) };
     println!("user_s: {:.3}", secs(ru.ru_utime));
     println!("sys_s: {:.3}", secs(ru.ru_stime));
     println!("cpu_s: {:.3}", cpu(&ru));

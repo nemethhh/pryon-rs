@@ -5,7 +5,7 @@ use crate::cpunk::{qmatmul_row, QWeights, MAX_COLS};
 use crate::kernels::{cpunk_exp_inplace, cpunk_sigmoid_of_inplace, cpunk_tanh_of_inplace, fmaf_inplace};
 use crate::num::{vadd, vmul};
 use crate::onnx::proto::NodeProto;
-use crate::onnx::tensor::{numel, Data, DType};
+use crate::onnx::tensor::{numel, DType, Data};
 
 fn float_arg(ins: &[Value], i: usize) -> Result<&Value, String> {
     let v = arg(ins, i)?;
