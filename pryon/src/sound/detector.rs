@@ -110,10 +110,10 @@ impl Energy {
                 *n += (all - if t <= 32768 { n_min } else { 0 }) as u32;
             }
             self.samples += seg.len() as u64;
-            if self.samples % BLOCK == 0 {
+            if self.samples.is_multiple_of(BLOCK) {
                 self.end_block();
             }
-            if self.samples % WINDOW_SAMPLES == 0 {
+            if self.samples.is_multiple_of(WINDOW_SAMPLES) {
                 let fresh = vec![0; self.above.len()];
                 self.done_above.push_back(std::mem::replace(&mut self.above, fresh));
             }
@@ -125,11 +125,11 @@ impl Energy {
         self.blocks[(b % FRAME_BLOCKS as u64) as usize] = (!self.block_void).then_some(self.block_max);
         self.block_max = 0;
         self.block_void = false;
-        if b + 1 >= FRAME_BLOCKS as u64 && b % 2 == 0 {
+        if b + 1 >= FRAME_BLOCKS as u64 && b.is_multiple_of(2) {
             let frame_max = self.blocks.iter().try_fold(0, |m, b| b.map(|x| m.max(x))).unwrap_or(0);
             self.max = self.max.max(frame_max);
             self.frames += 1;
-            if self.frames % WINDOW_FRAMES as u64 == 0 {
+            if self.frames.is_multiple_of(WINDOW_FRAMES as u64) {
                 self.done_max.push_back(std::mem::replace(&mut self.max, 0));
             }
         }
@@ -305,7 +305,7 @@ mod tests {
     }
 
     fn clip_with_energy(v: &[(i16, usize)]) -> Vec<i16> {
-        let mut pcm: Vec<i16> = v.iter().flat_map(|&(x, n)| std::iter::repeat(x).take(n)).collect();
+        let mut pcm: Vec<i16> = v.iter().flat_map(|&(x, n)| std::iter::repeat_n(x, n)).collect();
         pcm.resize(159_680 + 400, 0);
         pcm
     }

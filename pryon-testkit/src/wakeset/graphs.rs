@@ -51,6 +51,7 @@ fn qnames(p: &str) -> [String; 4] {
 
 /// A classifier head `x [rows, k] -> y [rows, n]` (HybridGemm with bias); under `force` its weights are negligible
 /// and the class-1 bias puts the softmax class-1 score at `force`.
+#[allow(clippy::too_many_arguments)]
 fn head(m: ModelBuilder, r: &mut R, p: &str, x: &str, y: &str, n: usize, k: usize, force: Option<f32>) -> ModelBuilder {
     let (scale, bias) = match force {
         Some(s) => {
@@ -148,6 +149,7 @@ fn slice(m: ModelBuilder, x: &str, y: &str, axis: i64, start: i64, end: i64) -> 
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn conv(m: ModelBuilder, r: &mut R, p: &str, x: &str, y: &str, n: usize, c: usize, k: [usize; 2]) -> ModelBuilder {
     let m = qweights(m, r, p, &[], n, c * k[0] * k[1], 0.01).init_f32(&format!("{p}_b"), &[n as i64], &r.vec(n, 0.2));
     let [w, sw, zw, sums] = qnames(p);

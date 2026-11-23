@@ -178,6 +178,7 @@ pub unsafe extern "C" fn pryon_sound_type_name(s: *const pryon_sound, i: c_int) 
         return std::ptr::null();
     }
     catch_unwind(AssertUnwindSafe(|| unsafe {
+        #[allow(clippy::needless_borrow)] // explicit: rustc denies an implicit autoref through a raw pointer
         (&(*s).names).get(i as usize).map_or(std::ptr::null(), |c| c.as_ptr())
     }))
     .unwrap_or(std::ptr::null())
@@ -373,6 +374,7 @@ pub unsafe extern "C" fn pryon_spotter_keyword_name(s: *const pryon_spotter, i: 
         return std::ptr::null();
     }
     catch_unwind(AssertUnwindSafe(|| unsafe {
+        #[allow(clippy::needless_borrow)] // explicit: rustc denies an implicit autoref through a raw pointer
         (&(*s).names).get(i as usize).map_or(std::ptr::null(), |c| c.as_ptr())
     }))
     .unwrap_or(std::ptr::null())

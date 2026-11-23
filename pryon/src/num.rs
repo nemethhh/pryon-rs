@@ -190,6 +190,7 @@ pub(crate) fn zsqrt(a: f32) -> f32 {
 /// Round half to even (`nearbyintf` in the default mode), without libm.
 pub(crate) fn rint(x: f32) -> f32 {
     const BIG: f32 = 8388608.0;
+    #[allow(clippy::neg_cmp_op_on_partial_ord)] // NaN takes this branch
     if !(x.abs() < BIG) {
         return x;
     }
@@ -554,7 +555,7 @@ mod tests {
         assert_eq!(bits(&xs.map(cpunk_tanh)), tanh);
         let mut next = xorshift(7);
         for _ in 0..200_000 {
-            let x = f32::from_bits(next() % 0x42C8_0000 | (next() & 0x8000_0000));
+            let x = f32::from_bits((next() % 0x42C8_0000) | (next() & 0x8000_0000));
             let e = ref_exp(x);
             assert_eq!(cpunk_sigmoid(x).to_bits(), (e / (e + 1.0)).to_bits(), "sigmoid({x:e})");
             let e = ref_exp(x + x);

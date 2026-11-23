@@ -80,7 +80,7 @@ impl ChannelNorm {
     }
 
     fn flush_raw(&mut self, out: &mut Vec<(usize, Frame)>) {
-        out.extend(self.pending.drain(..));
+        out.append(&mut self.pending);
     }
 }
 
@@ -119,7 +119,7 @@ impl SilenceTracker {
             }
             self.zeros.push_back(s == 0);
             self.total += 1;
-            if self.total >= FRAME as u64 && (self.total - FRAME as u64) % HOP as u64 == 0 {
+            if self.total >= FRAME as u64 && (self.total - FRAME as u64).is_multiple_of(HOP as u64) {
                 out.push(self.window_silent());
             }
         }
@@ -165,8 +165,8 @@ mod tests {
         let frames = vec![(fr(3.7), false); 100];
         let mut n = ChannelNorm::new();
         let mut out = Vec::new();
-        for t in 0..99 {
-            n.push(t, &frames[t].0, false, &mut out);
+        for (t, f) in frames.iter().enumerate().take(99) {
+            n.push(t, &f.0, false, &mut out);
             assert!(out.is_empty());
         }
         n.push(99, &frames[99].0, false, &mut out);

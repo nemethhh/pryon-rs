@@ -775,14 +775,14 @@ const ECHO: SpotterOptions = SpotterOptions { echo_stream: true };
 fn mixed(k: usize) -> LsbFrame {
     match k {
         0..300 => LsbFrame::Clean,
-        300..700 if k % 3 == 0 => LsbFrame::Corrupt,
+        300..700 if k.is_multiple_of(3) => LsbFrame::Corrupt,
         300..700 => LsbFrame::V3_3,
         700..900 => LsbFrame::V2_4,
         900..1000 => LsbFrame::V2_0,
         1000..1100 => LsbFrame::V3_0,
         1100..1300 => LsbFrame::V0_0,
         1300..1500 => LsbFrame::Clean,
-        1500..1600 if k % 2 == 0 => LsbFrame::V3_3,
+        1500..1600 if k.is_multiple_of(2) => LsbFrame::V3_3,
         1500..1600 => LsbFrame::V2_4,
         1600..2000 => LsbFrame::V1_0,
         _ => LsbFrame::V3_3,

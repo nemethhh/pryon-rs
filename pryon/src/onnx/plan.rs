@@ -244,6 +244,7 @@ pub(crate) fn plan(m: &ModelProto, bind: &[(&str, &[usize])], keep: &[&str], ops
         }
     }
 
+    #[allow(clippy::type_complexity)]
     let mut pending: Vec<(usize, Box<dyn Op>, Vec<Vec<usize>>)> = Vec::new();
     let mut folded = 0usize;
     for (i, n) in g.nodes.iter().enumerate().filter(|&(i, _)| live[i]) {

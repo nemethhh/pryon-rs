@@ -137,7 +137,7 @@ fn read_pcm(p: &Path) -> Result<Vec<i16>, String> {
     } else {
         &b
     };
-    if data.len() % 2 != 0 {
+    if !data.len().is_multiple_of(2) {
         return Err("odd byte count, not s16le".into());
     }
     Ok(data.chunks_exact(2).map(|x| i16::from_le_bytes([x[0], x[1]])).collect())

@@ -167,9 +167,9 @@ pub(super) fn hybrid_conv(_: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -
     }
     let (wd, wv) = weights(ins, 1)?;
     let cols = c * k.0 * k.1;
-    let n = match wd {
-        &[n, kk] if kk == cols => n,
-        &[n, wc, wh, ww] if (wc, wh, ww) == (c, k.0, k.1) => n,
+    let n = match *wd {
+        [n, kk] if kk == cols => n,
+        [n, wc, wh, ww] if (wc, wh, ww) == (c, k.0, k.1) => n,
         _ => return Err(format!("weights of shape {wd:?} for {c} channels and kernel {k:?}")),
     };
     let wq = qweights(ins, 1, n, cols, wv.to_vec())?;

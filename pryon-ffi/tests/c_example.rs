@@ -12,6 +12,7 @@ fn build_example(name: &str, work: &pryon_testkit::TempDir) -> Option<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let prof = profile_dir();
     // Only the host cc can build and run the example.
+    #[allow(clippy::eq_op)] // build-time constants, equal unless cross-compiling
     if env!("PRYON_FFI_HOST") != env!("PRYON_FFI_TARGET") {
         eprintln!("skipped: cross-target run ({})", env!("PRYON_FFI_TARGET"));
         return None;

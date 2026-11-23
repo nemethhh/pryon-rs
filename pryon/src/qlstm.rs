@@ -67,6 +67,7 @@ impl QLstm {
         sigmoid_inplace(ifo);
         let (i, fo) = ifo.split_at(n);
         let (f, o) = fo.split_at(n);
+        #[allow(clippy::assign_op_pattern)] // operand order as libpryon's
         for j in 0..n {
             self.c[j] = f[j] * self.c[j];
             self.c[j] = self.c[j] + i[j] * g[j];

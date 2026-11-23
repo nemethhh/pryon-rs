@@ -11,10 +11,14 @@ const MAX_BINS: usize = 128;
 pub(crate) const FL: usize = 400;
 pub(crate) const HOP: usize = 160;
 const N: usize = 512;
+// Ne10's twiddle literals as written there
+#[allow(clippy::approx_constant)]
 const TW81: f32 = 0.70710678;
+#[allow(clippy::approx_constant)]
 const TW81N: f32 = -0.70710678;
 
 /// FreeBSD msun `__ieee754_logf`, including its non-finite and subnormal handling (no libm).
+#[allow(clippy::excessive_precision)] // msun's literals as written there
 pub(crate) fn msun_logf(x: f32) -> f32 {
     const LN2_HI: f32 = 6.9313812256e-01;
     const LN2_LO: f32 = 9.0580006145e-06;
@@ -558,8 +562,8 @@ impl Lfbe {
 
     fn frame(&mut self, pos: usize, out: &mut [f32]) {
         let w = &mut self.w;
-        for i in 0..FL {
-            w[i] = self.buf[pos + i] as f32;
+        for (v, &s) in w[..FL].iter_mut().zip(&self.buf[pos..pos + FL]) {
+            *v = s as f32;
         }
         let ones = [1f32; FL];
         let mean = -sdot_vfp(&w[..FL], &ones) / FL as f32;

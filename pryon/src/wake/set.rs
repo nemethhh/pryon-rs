@@ -164,7 +164,7 @@ fn fe_spec(cfg: &PConfig, top: &Path) -> Result<LfbeSpec, Error> {
     let bins = int_key(cfg, top, "fe.mel_fbank.num_bins")?;
     let (low_hz, high_hz) = (f32_key(cfg, top, "fe.mel_fbank.low_freq")?, f32_key(cfg, top, "fe.mel_fbank.high_freq")?);
     let file = &setting(cfg, top, "fe.mel_fbank.num_bins")?.file;
-    if !(1..=128).contains(&bins) || !(0.0 <= low_hz && low_hz < high_hz && high_hz <= 8000.0) {
+    if !((1..=128).contains(&bins) && 0.0 <= low_hz && low_hz < high_hz && high_hz <= 8000.0) {
         return Err(unsupported(file, format!("mel bank of {bins} bins over {low_hz}..{high_hz} Hz")));
     }
     let dims = int_key(cfg, top, "fe.feat.dimensions")?;

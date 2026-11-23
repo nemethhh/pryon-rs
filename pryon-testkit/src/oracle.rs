@@ -23,6 +23,7 @@ pub struct OracleEvent {
 
 /// The n-th RESULT pairs with the n-th KWS line carrying `classifier_score=` (recognition ids do not pair them).
 pub fn parse_wake(output: &str) -> Result<Vec<OracleEvent>, String> {
+    #[allow(clippy::type_complexity)]
     let mut results: Vec<(String, u32, u64, u64, Option<(i64, i64)>)> = Vec::new();
     let mut kws: Vec<(String, String, String)> = Vec::new();
     for line in output.lines() {
@@ -101,7 +102,7 @@ pub fn zero_probability(text: &str) -> (String, bool) {
         };
         let lead = v.len() - v.trim_start().len();
         let num = v[lead..].find(|c: char| !(c.is_ascii_digit() || "+-.eE".contains(c))).unwrap_or(v.len() - lead);
-        changed |= v[lead..lead + num].parse::<f64>().map_or(true, |x| x != 0.0);
+        changed |= v[lead..lead + num].parse::<f64>() != Ok(0.0);
         out.push_str(&rest[..i + PROBABILITY.len() + colon + 1 + lead]);
         out.push('0');
         rest = &v[lead + num..];

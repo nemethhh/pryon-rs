@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn block_index_is_a_permutation() {
-        let mut seen = vec![false; 8 * 24];
+        let mut seen = [false; 8 * 24];
         for r in 0..8 {
             for c in 0..24 {
                 assert!(!std::mem::replace(&mut seen[block_index(r, c, 24)], true));

@@ -509,6 +509,7 @@ fn reduce_keepdims_and_axes_input() {
 /// libpryon runs other reductions with other kernels (an all-axes NEON lane sum, a VFP chain per row): refused.
 #[test]
 fn reduce_other_axes_refused() {
+    #[allow(clippy::type_complexity)]
     let cases: [(&str, &[usize], Vec<(&str, Attr)>); 4] = [
         ("ReduceSum", &[2, 3], vec![("axes", Attr::Ints(vec![1]))]),
         ("ReduceSum", &[2, 3], vec![]),

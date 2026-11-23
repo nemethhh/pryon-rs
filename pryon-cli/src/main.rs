@@ -336,6 +336,7 @@ fn cmd_wake(args: &[String]) -> Res {
     let pcm = read_clip(&clip)?;
     let chunk = o.chunk.unwrap_or(pcm.len().max(1));
     // (sample, order, command): properties before session ends at the same sample, each in command-line order
+    #[allow(clippy::type_complexity)]
     let mut cmds: Vec<(u64, usize, Option<(&str, i32)>)> = Vec::new();
     for (i, (at, n, v)) in o.props.iter().enumerate() {
         cmds.push((*at, i, Some((n.as_str(), *v))));

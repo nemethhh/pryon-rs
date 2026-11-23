@@ -104,16 +104,19 @@ impl Session {
 
     /// `run`, calling `f(name, shape, data)` for every runtime value right after it is computed.
     #[doc(hidden)]
+    #[allow(clippy::type_complexity)]
     pub fn run_traced(&mut self, f: &mut dyn FnMut(&str, &[usize], &[f32])) {
         self.exec(Some(&mut |n, d, x| f(n, d, x)));
     }
 
     /// `run_traced` whose callback may overwrite each value before later nodes read it (per-node comparisons).
     #[doc(hidden)]
+    #[allow(clippy::type_complexity)]
     pub fn run_forced(&mut self, f: &mut dyn FnMut(&str, &[usize], &mut [f32])) {
         self.exec(Some(f));
     }
 
+    #[allow(clippy::type_complexity)]
     fn exec(&mut self, mut trace: Option<&mut dyn FnMut(&str, &[usize], &mut [f32])>) {
         let base = self.arena.as_mut_ptr();
         for s in &self.graph.plan.steps {

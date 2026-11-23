@@ -347,6 +347,44 @@ pub fn write_model_dir(dir: &std::path::Path, seed: u64, threshold: f32) {
     w("AED.json", json.as_bytes());
 }
 
+/// Unique scratch directory under the temp dir, removed on drop (also on panic).
+pub struct TempDir(std::path::PathBuf);
+
+impl TempDir {
+    pub fn new(tag: &str) -> TempDir {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let n = N.fetch_add(1, Ordering::Relaxed);
+        let p = std::env::temp_dir().join(format!("pryon-{tag}-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&p);
+        std::fs::create_dir_all(&p).unwrap();
+        TempDir(p)
+    }
+
+    pub fn path(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl std::ops::Deref for TempDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl AsRef<std::path::Path> for TempDir {
+    fn as_ref(&self) -> &std::path::Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -453,43 +491,5 @@ mod tests {
         let g = synth(Clip::Gap49);
         let zeros: Vec<usize> = (0..g.len()).filter(|&i| g[i] == 0).collect();
         assert_eq!(zeros, (4000..11760).collect::<Vec<_>>());
-    }
-}
-
-/// Unique scratch directory under the temp dir, removed on drop (also on panic).
-pub struct TempDir(std::path::PathBuf);
-
-impl TempDir {
-    pub fn new(tag: &str) -> TempDir {
-        use std::sync::atomic::{AtomicU32, Ordering};
-        static N: AtomicU32 = AtomicU32::new(0);
-        let n = N.fetch_add(1, Ordering::Relaxed);
-        let p = std::env::temp_dir().join(format!("pryon-{tag}-{}-{n}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&p);
-        std::fs::create_dir_all(&p).unwrap();
-        TempDir(p)
-    }
-
-    pub fn path(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl std::ops::Deref for TempDir {
-    type Target = std::path::Path;
-    fn deref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl AsRef<std::path::Path> for TempDir {
-    fn as_ref(&self) -> &std::path::Path {
-        &self.0
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }

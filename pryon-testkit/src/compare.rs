@@ -458,6 +458,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::excessive_precision)]
     fn fmt_g_is_c_percent_g() {
         let cases: [(f32, &str); 14] = [
             (0.99, "0.99"),
@@ -492,7 +493,8 @@ mod tests {
             afe: None,
         };
         let e = |score| Ev { keyword: "ALEXA".into(), kind: OracleKind::Accept, score, begin: 100, end: 2000 };
-        let run = |s, exact| compare(&[o.clone()], &[e(s)], &Limits::default(), exact, &mut Vec::new()).matched;
+        let o = std::slice::from_ref(&o);
+        let run = |s, exact| compare(o, &[e(s)], &Limits::default(), exact, &mut Vec::new()).matched;
         assert_eq!(run(0.045, true), 1);
         // 0.0450001 prints as "0.0450001": a 6-decimal rule would call it equal
         assert_eq!(run(0.0450001, true), 0);
