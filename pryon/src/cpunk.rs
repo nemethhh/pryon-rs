@@ -26,7 +26,7 @@ pub(crate) struct QWeights {
 
 impl QWeights {
     /// `sums` is the model's own row-sum input, which must agree with `w`.
-    pub fn new(rows: usize, cols: usize, w: Vec<i8>, sw: Vec<f32>, zw: Vec<i32>, sums: &[i64]) -> Result<QWeights, String> {
+    pub fn new(rows: usize, cols: usize, w: &[i8], sw: Vec<f32>, zw: Vec<i32>, sums: &[i64]) -> Result<QWeights, String> {
         if rows == 0 || cols == 0 || cols > MAX_COLS {
             return Err(format!("weights of {rows} × {cols} (rows of 1..={MAX_COLS} columns)"));
         }
@@ -120,7 +120,7 @@ mod tests {
     fn weights(rows: usize, cols: usize, zw: i32) -> QWeights {
         let w = wvals(rows, cols);
         let sums: Vec<i64> = w.chunks(cols).map(|r| r.iter().map(|&v| i64::from(v)).sum()).collect();
-        QWeights::new(rows, cols, w, vec![0.01; rows], vec![zw; rows], &sums).unwrap()
+        QWeights::new(rows, cols, &w, vec![0.01; rows], vec![zw; rows], &sums).unwrap()
     }
 
     fn quantized(x: &[f32]) -> (RowQ, Vec<i8>) {
@@ -163,7 +163,7 @@ mod tests {
         let w: Vec<i8> = (0..2 * k).map(|i| if i < k { 127 } else { -128 + (i % 3) as i8 }).collect();
         let sums: Vec<i64> = w.chunks(k).map(|r| r.iter().map(|&v| i64::from(v)).sum()).collect();
         let (sw, zw) = ([0.003f32, 0.002], [-90, 77]);
-        let wq = QWeights::new(2, k, w.clone(), sw.to_vec(), zw.to_vec(), &sums).unwrap();
+        let wq = QWeights::new(2, k, &w, sw.to_vec(), zw.to_vec(), &sums).unwrap();
         let (rq, qx) = quantized(&x);
         assert!((7000..9000).contains(&rq.z), "z {}", rq.z);
         let mut y = [0f32; 2];
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn sums_must_be_row_sums() {
-        let e = QWeights::new(2, 2, vec![1, 2, 3, 4], vec![1.0; 2], vec![0; 2], &[3, 6]).err().unwrap();
+        let e = QWeights::new(2, 2, &[1, 2, 3, 4], vec![1.0; 2], vec![0; 2], &[3, 6]).err().unwrap();
         assert!(e.contains("row 1: 6 vs 7"), "{e}");
     }
 

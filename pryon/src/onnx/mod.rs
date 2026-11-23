@@ -23,6 +23,8 @@ impl Graph {
     pub fn load(path: &Path, bind: &[(&str, &[usize])], keep: &[&str]) -> Result<Graph, Error> {
         let bytes = std::fs::read(path).map_err(|source| Error::Io { path: path.to_path_buf(), source })?;
         let m = proto::parse_model(&bytes).map_err(|e| Error::Format(format!("{}: {e}", path.display())))?;
+        // the model owns its tensors: the file's bytes would only add to the load's peak memory
+        drop(bytes);
         let plan = plan::plan(&m, bind, keep, ops::OPS).map_err(|f| match f {
             Fail::Unsupported(what) => Error::Unsupported { file: path.to_path_buf(), what },
             Fail::Format(e) => Error::Format(format!("{}: {e}", path.display())),

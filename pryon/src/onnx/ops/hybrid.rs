@@ -34,7 +34,7 @@ fn float_vec(ins: &[Value], i: usize, n: usize) -> Result<(), String> {
 }
 
 /// Scales, zero points and row sums at `base + 1..=base + 3`, completing the weights at `base`.
-fn qweights(ins: &[Value], base: usize, rows: usize, cols: usize, w: Vec<i8>) -> Result<QWeights, String> {
+fn qweights(ins: &[Value], base: usize, rows: usize, cols: usize, w: &[i8]) -> Result<QWeights, String> {
     let konst = |i: usize| {
         let t = arg(ins, i)?.konst().ok_or_else(|| format!("input {i} computed at runtime"))?;
         if t.len() != rows {
@@ -81,8 +81,9 @@ pub(super) fn hybrid_gemm(_: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -
     let (wd, w) = weights(ins, 1)?;
     let trans_b = a.int("transB")?.unwrap_or(1);
     let (n, k, w) = match (trans_b, wd) {
-        (1, &[n, k]) => (n, k, w.to_vec()),
-        (0, &[k, n]) => (n, k, (0..n * k).map(|i| w[(i % k) * n + i / k]).collect()),
+        // borrowed when already [N, K]: a copy of a large weight tensor raises the peak memory of a load
+        (1, &[n, k]) => (n, k, std::borrow::Cow::Borrowed(w)),
+        (0, &[k, n]) => (n, k, std::borrow::Cow::Owned((0..n * k).map(|i| w[(i % k) * n + i / k]).collect())),
         (0 | 1, _) => return Err(format!("weights of shape {wd:?}")),
         _ => return Err(format!("attribute transB = {trans_b}")),
     };
@@ -90,7 +91,7 @@ pub(super) fn hybrid_gemm(_: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -
     if xd.last() != Some(&k) {
         return Err(format!("input of shape {xd:?} against weights of {k} columns"));
     }
-    let wq = qweights(ins, 1, n, k, w)?;
+    let wq = qweights(ins, 1, n, k, &w)?;
     let bias = opt_arg(ins, 5).is_some();
     if bias {
         float_vec(ins, 5, n)?;
@@ -172,7 +173,7 @@ pub(super) fn hybrid_conv(_: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -
         [n, wc, wh, ww] if (wc, wh, ww) == (c, k.0, k.1) => n,
         _ => return Err(format!("weights of shape {wd:?} for {c} channels and kernel {k:?}")),
     };
-    let wq = qweights(ins, 1, n, cols, wv.to_vec())?;
+    let wq = qweights(ins, 1, n, cols, wv)?;
     if opt_arg(ins, 5).is_none() {
         return Err("input 5 (bias) missing".into());
     }
@@ -283,8 +284,8 @@ pub(super) fn hybrid_lstm(n: &NodeProto, a: &mut Attrs, ins: &[Value], _: i64) -
     if wd != [1, g4, n_in] {
         return Err(format!("input weights of shape {wd:?} for input {:?}", x.dims()));
     }
-    let w = qweights(ins, 1, g4, n_in, wv.to_vec())?;
-    let r = qweights(ins, 5, g4, hid, rv.to_vec())?;
+    let w = qweights(ins, 1, g4, n_in, wv)?;
+    let r = qweights(ins, 5, g4, hid, rv)?;
     float_vec(ins, 9, 2 * g4)?;
     if opt_arg(ins, 10).is_some() {
         return Err("input 10 (sequence_lens)".into());
@@ -320,7 +321,7 @@ mod tests {
     fn lstm(n_in: usize, hid: usize, w: (&[i8], &[f32]), r: (&[i8], &[f32])) -> Lstm {
         let q = |rows: usize, cols: usize, (w, sw): (&[i8], &[f32])| {
             let sums: Vec<i64> = w.chunks(cols).map(|r| r.iter().map(|&v| i64::from(v)).sum()).collect();
-            QWeights::new(rows, cols, w.to_vec(), sw.to_vec(), vec![0; rows], &sums).unwrap()
+            QWeights::new(rows, cols, w, sw.to_vec(), vec![0; rows], &sums).unwrap()
         };
         Lstm { w: q(4 * hid, n_in, w), r: q(4 * hid, hid, r), hid, lanes: 1, steps: 1, xrows: 1, nout: 3 }
     }
