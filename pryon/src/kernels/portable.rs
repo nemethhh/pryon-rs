@@ -41,3 +41,36 @@ pub(crate) fn fmaf_inplace(a: &[f32], b: &[f32], c: &mut [f32]) {
         *o = crate::num::fmaf(x, y, *o);
     }
 }
+
+pub(crate) fn cpunk_minmax(x: &[f32]) -> (f32, f32) {
+    let (mut lo, mut hi) = (f32::MAX, -f32::MAX);
+    for &v in x {
+        (lo, hi) = (crate::num::vmin(lo, v), crate::num::vmax(hi, v));
+    }
+    (lo, hi)
+}
+
+pub(crate) fn cpunk_quant4(x: &[f32], inv: f32, zb: i32, q: &mut [i8]) -> i32 {
+    let mut sum = 0i32;
+    for (o, &v) in q.iter_mut().zip(x) {
+        // 1.5·2^23 + v·inv: the float's low bits are the rounded integer while |v·inv| < 2^22
+        let r = (crate::num::vmla(12582912.0, inv, v).to_bits() as i32).wrapping_add(zb).clamp(0, 127);
+        *o = r as i8;
+        sum = sum.wrapping_add(r);
+    }
+    sum
+}
+
+pub(crate) fn cpunk_deq(dot: &[i32], w: [&[f32]; 3], bias: Option<&[f32]>, [c, zf, sx]: [f32; 3], y: &mut [f32]) {
+    use crate::num::{vmla, vmul, vsub};
+    let [zw, sums, sw] = w;
+    for (r, o) in y.iter_mut().enumerate() {
+        let corr = vmla(vmul(c, zw[r]), zf, sums[r]);
+        let acc = vsub(dot[r] as f32, corr);
+        let scale = vmul(sx, sw[r]);
+        *o = match bias {
+            Some(b) => vmla(vmul(b[r], 1.0), scale, acc),
+            None => vmul(scale, acc),
+        };
+    }
+}

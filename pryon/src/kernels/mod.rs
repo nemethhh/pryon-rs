@@ -43,6 +43,27 @@ pub(crate) use armv7::{sigmoid_inplace, tanh_inplace};
 #[cfg(not(all(pryon_neon, target_arch = "arm")))]
 pub(crate) use portable::{sigmoid_inplace, tanh_inplace};
 
+/// `(lo, hi)` of `x` by NEON `vmin`/`vmax` from `(f32::MAX, −f32::MAX)`: CPUNK's row range.
+#[cfg(all(pryon_neon, target_arch = "arm"))]
+pub(crate) use armv7::cpunk_minmax;
+#[cfg(not(all(pryon_neon, target_arch = "arm")))]
+pub(crate) use portable::cpunk_minmax;
+
+/// `q[c] = clamp(bits(vmla(1.5·2²³, inv, x[c])) + zb, 0, 127)` for `c < x.len()` (a multiple of 4, `q` at least as
+/// long); returns `Σ q[c]`: CPUNK's NEON row quantiser.
+#[cfg(all(pryon_neon, target_arch = "arm"))]
+pub(crate) use armv7::cpunk_quant4;
+#[cfg(not(all(pryon_neon, target_arch = "arm")))]
+pub(crate) use portable::cpunk_quant4;
+
+/// CPUNK's NEON dequant for `r < y.len()`, with `w = [zw, sums, sw]` and `s = [c, zf, sx]`:
+/// `y[r] = vmla(vmul(bias[r], 1), vmul(sx, sw[r]), vsub(dot[r], vmla(vmul(c, zw[r]), zf, sums[r])))`, or the plain
+/// product without a bias.
+#[cfg(all(pryon_neon, target_arch = "arm"))]
+pub(crate) use armv7::cpunk_deq;
+#[cfg(not(all(pryon_neon, target_arch = "arm")))]
+pub(crate) use portable::cpunk_deq;
+
 /// int8 weight as stored: offset binary (w + 128).
 pub(crate) fn store_weight(w: i8) -> u8 {
     w as u8 ^ 0x80
@@ -321,6 +342,105 @@ mod tests {
                 super::portable::dequant_rows(&acc, s, &rs, &b, &a, &bias, &mut yb);
                 let bits = |v: &[f32]| v.iter().map(|x| x.to_bits()).collect::<Vec<_>>();
                 assert_eq!(bits(&ya), bits(&yb), "n={n} s={s:?}");
+            }
+        }
+    }
+
+    /// Floats for the CPUNK kernels: ±0, subnormals, FLT_MIN neighbours, ±inf, NaNs, extremes and random bits.
+    #[cfg(all(pryon_neon, target_arch = "arm"))]
+    fn cpunk_inputs(next: &mut impl FnMut() -> u32, n: usize) -> Vec<f32> {
+        let c = f32::from_bits;
+        let special = [0.0, -0.0, c(1), c(0x8000_0001), c(0x007F_FFFF), c(0x807F_FFFF), f32::MIN_POSITIVE,
+            -f32::MIN_POSITIVE, c(0x0080_0001), 1.0, -1.0, 0.5, f32::MAX, f32::MIN, f32::INFINITY, f32::NEG_INFINITY,
+            f32::NAN, c(0xFFC0_0001), c(0x7F80_0001), 4194303.5, -4194304.0, 8388608.0, 127.49, 127.5, -0.5];
+        (0..n)
+            .map(|i| match next() % 4 {
+                0 => special[(next() as usize) % special.len()],
+                1 => f32::from_bits(next()),
+                2 => (next() as i32 as f32) * 1e-7,
+                _ => ((next() % 400) as f32 - 140.0) * 0.37 + i as f32 * 1e-3,
+            })
+            .collect()
+    }
+
+    #[cfg(all(pryon_neon, target_arch = "arm"))]
+    fn same(a: f32, b: f32) -> bool {
+        a.to_bits() == b.to_bits()
+    }
+
+    #[cfg(all(pryon_neon, target_arch = "arm"))]
+    #[test]
+    fn cpunk_minmax_asm_equals_portable() {
+        let mut next = xorshift(0x510e_527f);
+        for n in (0..=19).chain([64, 1440, 4093]) {
+            for round in 0..200 {
+                let mut x = cpunk_inputs(&mut next, n);
+                // rows without NaN too, or the default NaN would hide the ±0 and subnormal rules
+                if round % 2 == 0 {
+                    x.retain(|v| !v.is_nan());
+                }
+                let (a, b) = (super::cpunk_minmax(&x), super::portable::cpunk_minmax(&x));
+                assert!(same(a.0, b.0) && same(a.1, b.1), "n={n} {a:?} {b:?} {x:?}");
+            }
+        }
+    }
+
+    #[cfg(all(pryon_neon, target_arch = "arm"))]
+    #[test]
+    fn cpunk_quant4_asm_equals_portable() {
+        let mut next = xorshift(0x9b05_688c);
+        let invs = [1.0f32, 0.0, -0.0, 3.7, 1e-30, 1e30, f32::from_bits(1), f32::INFINITY, f32::NAN, 127.0 / 3.0];
+        for n in (0..=40).step_by(4).chain([1440, 4096]) {
+            for round in 0..100 {
+                let x = cpunk_inputs(&mut next, n);
+                let inv = if round < invs.len() { invs[round] } else { f32::from_bits(next()) };
+                let zb = match round % 3 {
+                    0 => 0xB4C0_0000u32 as i32,
+                    1 => (0xB4C0_0000u32 as i32).wrapping_add((next() % 256) as i32 - 128),
+                    _ => next() as i32,
+                };
+                let (mut qa, mut qb) = (vec![1i8; n + 4], vec![1i8; n + 4]);
+                let sa = super::cpunk_quant4(&x, inv, zb, &mut qa);
+                let sb = super::portable::cpunk_quant4(&x, inv, zb, &mut qb);
+                assert_eq!((sa, &qa), (sb, &qb), "n={n} inv={inv:e} zb={zb:#x}");
+            }
+        }
+        // products just off k + 0.5: the rounded product ties where a fused one would not
+        let x: Vec<f32> = (0..4096).map(|k| (2 * k + 1) as f32 / 6.0).collect();
+        for inv in [3.0f32, 1.0 / 3.0, 3.0000002] {
+            let zb = 0xB4C0_0000u32 as i32 - 1000;
+            let (mut qa, mut qb) = (vec![0i8; 4096], vec![0i8; 4096]);
+            let sa = super::cpunk_quant4(&x, inv, zb, &mut qa);
+            assert_eq!((sa, &qa), (super::portable::cpunk_quant4(&x, inv, zb, &mut qb), &qb), "inv={inv:e}");
+        }
+    }
+
+    #[cfg(all(pryon_neon, target_arch = "arm"))]
+    #[test]
+    fn cpunk_deq_asm_equals_portable() {
+        let mut next = xorshift(0x1f83_d9ab);
+        for n in (0..=19).chain([64, 1024]) {
+            for round in 0..150 {
+                let f = cpunk_inputs(&mut next, 5 * n + 3);
+                let dot: Vec<i32> = (0..n)
+                    .map(|_| match next() % 3 {
+                        0 => next() as i32,
+                        1 => (next() % 2_000_001) as i32 - 1_000_000,
+                        _ => [0, 1, -1, i32::MAX, i32::MIN, 16_777_217][(next() % 6) as usize],
+                    })
+                    .collect();
+                let w = [&f[..n], &f[n..2 * n], &f[2 * n..3 * n]];
+                let s = [f[5 * n], f[5 * n + 1], f[5 * n + 2]];
+                let s = if round % 2 == 0 { s.map(|v| if v.is_finite() { v } else { 0.25 }) } else { s };
+                for bias in [None, Some(&f[3 * n..4 * n])] {
+                    let (mut ya, mut yb) = (f[4 * n..5 * n].to_vec(), vec![0.0f32; n]);
+                    super::cpunk_deq(&dot, w, bias, s, &mut ya);
+                    super::portable::cpunk_deq(&dot, w, bias, s, &mut yb);
+                    for r in 0..n {
+                        let b = bias.is_some();
+                        assert!(same(ya[r], yb[r]), "n={n} r={r} bias={b} s={s:?}: {} vs {}", ya[r], yb[r]);
+                    }
+                }
             }
         }
     }

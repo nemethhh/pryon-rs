@@ -306,9 +306,9 @@ BatchNormalization's `fmaf` and CPUNK's exp polynomial. The portable code comput
 integer arithmetic (no FMA instruction, no `f64`, no libm).
 
 The wake engine has its own armv7 kernels: the int8 dot product (weights padded at load to a multiple of 16 columns
-and 4 rows), CPUNK's exp, and the LSTM cell's `fmaf`. NEON `vfma` runs the exp and always flushes subnormals as
-libpryon's does; VFP `vfma` runs `fmaf` with FPSCR's FZ, DN and rounding mode cleared so it is not flushed, as
-bionic's `fmaf` is not.
+and 4 rows), CPUNK's row range, row quantiser and dequantisation, CPUNK's exp, and the LSTM cell's `fmaf`. NEON
+`vfma` runs the exp and always flushes subnormals as libpryon's does; VFP `vfma` runs `fmaf` with FPSCR's FZ, DN and
+rounding mode cleared so it is not flushed, as bionic's `fmaf` is not.
 
 ## Building for the Echo
 

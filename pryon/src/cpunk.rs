@@ -2,8 +2,8 @@
 //! (CortexA15 target, FPSCR.FZ set): a per-row activation quantiser, an exact int8 dot product and libpryon's f32
 //! dequantisation (libpryon.so 0x123897c: quantiser 0x1236440/0x1248fc0, matmul 0x516e80, dequant 0x123a544).
 
-use crate::kernels::dot_i8_rows;
-use crate::num::{rint, vmax, vmin, vmla, vmul, vsub, zdiv, zmul, zsub};
+use crate::kernels::{cpunk_deq, cpunk_minmax, cpunk_quant4, dot_i8_rows};
+use crate::num::{rint, zdiv, zmul, zsub};
 
 /// Longest activation row; the quantised row is a stack buffer of this many bytes.
 pub(crate) const MAX_COLS: usize = 4096;
@@ -73,52 +73,23 @@ pub(crate) fn row_params(lo: f32, hi: f32) -> (f32, i32) {
 /// Quantises `x` into `q[..x.len()]` as QuantizeLinearImpl<CortexA15> (0x1248fc0) does: NEON for all but the
 /// last `len % 4` values, VFP for those.
 pub(crate) fn quantize_row(x: &[f32], q: &mut [i8]) -> RowQ {
-    let (mut lo, mut hi) = (f32::MAX, -f32::MAX);
-    for &v in x {
-        (lo, hi) = (vmin(lo, v), vmax(hi, v));
-    }
+    let (lo, hi) = cpunk_minmax(x);
     let (s, z) = row_params(lo, hi);
     let inv = zdiv(1.0, s);
     let head = x.len() & !3;
-    let zb = z.wrapping_add(0xB4C0_0000u32 as i32);
-    let mut sum_q = 0i32;
-    for (c, (o, &v)) in q.iter_mut().zip(x).enumerate() {
-        let r = if c < head {
-            // 1.5·2^23 + v·inv: the float's low bits are the rounded integer while |v·inv| < 2^22
-            (vmla(12582912.0, inv, v).to_bits() as i32).wrapping_add(zb)
-        } else {
-            (rint(zmul(inv, v)) as i32).wrapping_add(z)
-        };
-        let r = r.clamp(0, 127);
+    let mut sum_q = cpunk_quant4(&x[..head], inv, z.wrapping_add(0xB4C0_0000u32 as i32), q);
+    for (o, &v) in q[head..].iter_mut().zip(&x[head..]) {
+        let r = (rint(zmul(inv, v)) as i32).wrapping_add(z).clamp(0, 127);
         *o = r as i8;
         sum_q += r;
     }
     RowQ { s, z, sum_q }
 }
 
-/// The per-row constants of FusedDequantActivationImpl<CortexA15> (0x123a544).
-struct Deq {
-    zf: f32,
-    c: f32,
-    sx: f32,
-}
-
-impl Deq {
-    fn new(rq: &RowQ, cols: usize) -> Deq {
-        let zf = rq.z as f32;
-        Deq { zf, c: zsub(rq.sum_q as f32, zmul(cols as f32, zf)), sx: zmul(rq.s, 1.0) }
-    }
-
-    /// `bias + (s·sw)·(dot − (c·zw + z·Σw))` in f32: exact only while the terms stay below 2^24.
-    fn out(&self, dot: i32, r: usize, wq: &QWeights, bias: Option<f32>) -> f32 {
-        let corr = vmla(vmul(self.c, wq.zw[r]), self.zf, wq.sums[r]);
-        let acc = vsub(dot as f32, corr);
-        let scale = vmul(self.sx, wq.sw[r]);
-        match bias {
-            Some(b) => vmla(vmul(b, 1.0), scale, acc),
-            None => vmul(scale, acc),
-        }
-    }
+/// The per-row constants of FusedDequantActivationImpl<CortexA15> (0x123a544): `[c, zf, sx]` for `kernels::cpunk_deq`.
+fn deq_consts(rq: &RowQ, cols: usize) -> [f32; 3] {
+    let zf = rq.z as f32;
+    [zsub(rq.sum_q as f32, zmul(cols as f32, zf)), zf, zmul(rq.s, 1.0)]
 }
 
 /// `y[r]` for one activation row `x`: libpryon's quantised product, with `bias[r]` fused as in its kernel.
@@ -126,16 +97,15 @@ impl Deq {
 pub(crate) fn qmatmul_row(x: &[f32], wq: &QWeights, bias: Option<&[f32]>, scratch: &mut [i8], y: &mut [f32]) {
     let (cols, stride) = (wq.cols, wq.stride);
     let q = &mut scratch[..stride];
-    let d = Deq::new(&quantize_row(&x[..cols], q), cols);
+    let d = deq_consts(&quantize_row(&x[..cols], q), cols);
     q[cols..].fill(0);
     let mut acc = [0i32; BLOCK];
     for (b, (w, yb)) in wq.w.chunks(BLOCK * stride).zip(y[..wq.rows].chunks_mut(BLOCK)).enumerate() {
         let acc = &mut acc[..w.len() / stride];
         dot_i8_rows(w, stride, q, acc);
-        for (j, (o, &dot)) in yb.iter_mut().zip(acc.iter()).enumerate() {
-            let r = b * BLOCK + j;
-            *o = d.out(dot, r, wq, bias.map(|v| v[r]));
-        }
+        let r = b * BLOCK..b * BLOCK + yb.len();
+        let consts = [&wq.zw[r.clone()], &wq.sums[r.clone()], &wq.sw[r.clone()]];
+        cpunk_deq(acc, consts, bias.map(|v| &v[r]), d, yb);
     }
 }
 

@@ -373,3 +373,144 @@ pub(crate) fn fmaf_inplace(a: &[f32], b: &[f32], c: &mut [f32]) {
         );
     }
 }
+
+pub(crate) fn cpunk_minmax(x: &[f32]) -> (f32, f32) {
+    let n4 = x.len() & !3;
+    let (mut lo, mut hi) = (f32::MAX, -f32::MAX);
+    if n4 > 0 {
+        let (l, h): (u32, u32);
+        // SAFETY: reads n4 floats of x.
+        unsafe {
+            asm!(
+                "vdup.32 q0, {l}",
+                "vdup.32 q1, {h}",
+                "2:",
+                "vld1.32 {{d4-d5}}, [{x}]!",
+                "vmin.f32 q0, q0, q2",
+                "vmax.f32 q1, q1, q2",
+                "subs {n}, {n}, #4",
+                "bne 2b",
+                // min and max commute, NEON's ±0 and default-NaN rules included: lane order does not matter
+                "vpmin.f32 d0, d0, d1",
+                "vpmin.f32 d0, d0, d0",
+                "vpmax.f32 d2, d2, d3",
+                "vpmax.f32 d2, d2, d2",
+                "vmov.32 {l}, d0[0]",
+                "vmov.32 {h}, d2[0]",
+                l = inout(reg) lo.to_bits() => l,
+                h = inout(reg) hi.to_bits() => h,
+                x = inout(reg) x.as_ptr() => _,
+                n = inout(reg) n4 => _,
+                out("q0") _, out("q1") _, out("q2") _,
+                options(nostack),
+            );
+        }
+        (lo, hi) = (f32::from_bits(l), f32::from_bits(h));
+    }
+    for &v in &x[n4..] {
+        (lo, hi) = (crate::num::vmin(lo, v), crate::num::vmax(hi, v));
+    }
+    (lo, hi)
+}
+
+pub(crate) fn cpunk_quant4(x: &[f32], inv: f32, zb: i32, q: &mut [i8]) -> i32 {
+    let n = x.len();
+    assert!(n.is_multiple_of(4) && q.len() >= n);
+    if n == 0 {
+        return 0;
+    }
+    let sum: i32;
+    // SAFETY: reads n floats of x, writes n bytes of q (one 4-byte lane store per pass).
+    unsafe {
+        asm!(
+            "vdup.32 q8, {c}",
+            "vdup.32 q9, {inv}",
+            "vdup.32 q10, {zb}",
+            "vmov.i32 q11, #0",
+            "vmov.i32 q12, #127",
+            "vmov.i32 q13, #0",
+            "2:",
+            "vld1.32 {{d0-d1}}, [{x}]!",
+            "vmov q1, q8",
+            "vmla.f32 q1, q9, q0",
+            "vadd.i32 q1, q1, q10",
+            "vmax.s32 q1, q1, q11",
+            "vmin.s32 q1, q1, q12",
+            "vadd.i32 q13, q13, q1",
+            "vmovn.i32 d4, q1",
+            "vmovn.i16 d4, q2",
+            "vst1.32 {{d4[0]}}, [{q}]!",
+            "subs {n}, {n}, #4",
+            "bne 2b",
+            "vpadd.i32 d26, d26, d27",
+            "vpadd.i32 d26, d26, d26",
+            "vmov.32 {c}, d26[0]",
+            c = inout(reg) 12582912.0f32.to_bits() => sum,
+            inv = in(reg) inv.to_bits(),
+            zb = in(reg) zb,
+            x = inout(reg) x.as_ptr() => _,
+            q = inout(reg) q.as_mut_ptr() => _,
+            n = inout(reg) n => _,
+            out("q0") _, out("q1") _, out("q2") _, out("q8") _, out("q9") _, out("q10") _, out("q11") _,
+            out("q12") _, out("q13") _,
+            options(nostack),
+        );
+    }
+    sum
+}
+
+pub(crate) fn cpunk_deq(dot: &[i32], w: [&[f32]; 3], bias: Option<&[f32]>, s: [f32; 3], y: &mut [f32]) {
+    let [zw, sums, sw] = w;
+    let n = y.len();
+    assert!(dot.len() >= n && zw.len() >= n && sums.len() >= n && sw.len() >= n);
+    assert!(bias.is_none_or(|b| b.len() >= n));
+    let n4 = n & !3;
+    if n4 > 0 {
+        // SAFETY: reads n4 values of dot, zw, sums, sw and bias (when given), writes n4 of y.
+        unsafe {
+            asm!(
+                "vld1.32 {{d16[], d17[]}}, [{k}]!",
+                "vld1.32 {{d18[], d19[]}}, [{k}]!",
+                "vld1.32 {{d20[], d21[]}}, [{k}]",
+                "vmov.f32 q11, #1.0",
+                "2:",
+                "vld1.32 {{d0-d1}}, [{zw}]!",
+                "vld1.32 {{d2-d3}}, [{sums}]!",
+                "vmul.f32 q0, q8, q0",
+                "vmla.f32 q0, q9, q1",
+                "vld1.32 {{d4-d5}}, [{dot}]!",
+                "vcvt.f32.s32 q2, q2",
+                "vsub.f32 q2, q2, q0",
+                "vld1.32 {{d6-d7}}, [{sw}]!",
+                "vmul.f32 q3, q10, q3",
+                "cmp {b}, #0",
+                "beq 3f",
+                "vld1.32 {{d0-d1}}, [{b}]!",
+                "vmul.f32 q0, q0, q11",
+                "vmla.f32 q0, q3, q2",
+                "b 4f",
+                "3:",
+                "vmul.f32 q0, q3, q2",
+                "4:",
+                "vst1.32 {{d0-d1}}, [{y}]!",
+                "subs {n}, {n}, #4",
+                "bne 2b",
+                k = inout(reg) s.as_ptr() => _,
+                zw = inout(reg) zw.as_ptr() => _,
+                sums = inout(reg) sums.as_ptr() => _,
+                sw = inout(reg) sw.as_ptr() => _,
+                dot = inout(reg) dot.as_ptr() => _,
+                b = inout(reg) bias.map_or(core::ptr::null(), |b| b.as_ptr()) => _,
+                y = inout(reg) y.as_mut_ptr() => _,
+                n = inout(reg) n4 => _,
+                out("q0") _, out("q1") _, out("q2") _, out("q3") _, out("q8") _, out("q9") _, out("q10") _,
+                out("q11") _,
+                options(nostack),
+            );
+        }
+    }
+    if n4 < n {
+        let b = bias.map(|b| &b[n4..]);
+        super::portable::cpunk_deq(&dot[n4..], [&zw[n4..], &sums[n4..], &sw[n4..]], b, s, &mut y[n4..]);
+    }
+}
