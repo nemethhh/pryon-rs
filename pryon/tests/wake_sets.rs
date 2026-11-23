@@ -159,7 +159,7 @@ fn multi_word_spotter_checks() {
             r#""word-score-history-size": 0, "#,
             "word-score-history-size = Some(0)",
         ),
-        (r#""word-score-history-size": 100, "#, r#""word-score-history-size": 1000000000000, "#, "buffer-size"),
+        (r#""word-score-history-size": 100, "#, r#""word-score-history-size": 4000000000, "#, "buffer-size"),
     ];
     for (from, to, want) in cases {
         let d = davs("multi-word");
