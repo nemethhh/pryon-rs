@@ -1,0 +1,11 @@
+set=3e1c0db2cc5bdd846dba970750af8c15
+keyword=STOP
+clips=994
+clips_digest=9cfa2d6d0912eb61
+lead_ms=2500
+tail_ms=1000
+accepts=3
+near_misses=0
+gate_exempt=0
+date=2026-11-23
+pryon_rs=56edac143d093030e993898782b0b5bf3d453bdb
