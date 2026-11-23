@@ -1,5 +1,9 @@
 //! Reimplementation of libpryon: the acoustic event (Alexa Guard) detector, bit-exact (see [`SoundDetector`]), and the
-//! wake word engine (see [`Spotter`]).
+//! wake word engine (see [`Spotter`]) for the firmware and DAVS en-US wake word sets.
+//!
+//! A wake word set the engine does not fully understand is refused at load with [`Error::Unsupported`] naming the
+//! element; nothing runs part of a set. libpryon's probabilistic accept is not reproduced: such scores are near
+//! misses. The README lists the validated sets and what is still to be checked on a device.
 pub mod cmn;
 pub mod config;
 mod cpunk;

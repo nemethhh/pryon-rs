@@ -1,12 +1,16 @@
 # pryon-rs
 
-An open, native Rust reimplementation of the acoustic event detector in Amazon's `libpryon.so`, the engine behind
-Alexa Guard's sound detection on Echo devices (smoke and CO alarms, glass breaking, dog barks, a baby crying, and
-eight more sound types). It produces **the same scores, bit for bit, and the same decisions** as libpryon, at roughly
-**half the CPU and a quarter of the memory** on an Echo Dot.
+An open, native Rust reimplementation of two engines in Amazon's `libpryon.so`:
 
-It is a plain library with a Rust and a C API: 16 kHz mono int16 audio in, one result per ~10 s window out. No
-threads, no global state, no dependencies at run time. It was written to replace libpryon in
+- the **acoustic event detector** behind Alexa Guard's sound detection on Echo devices (smoke and CO alarms, glass
+  breaking, dog barks, a baby crying, and eight more sound types). It produces **the same scores, bit for bit, and
+  the same decisions** as libpryon, at roughly **half the CPU and a quarter of the memory** on an Echo Dot;
+- the **wake word engine** ("Alexa", "Echo", "Computer", ...): the firmware ALEXA model and the en-US wake word sets
+  Amazon serves. On a PC it produces the same events and the same printed scores as libpryon on the sets validated
+  so far (the firmware set outside libpryon's start gate, below); it has not yet been run on a device.
+
+It is a plain library with a Rust and a C API: 16 kHz mono int16 audio in, sound results per ~10 s window or wake
+word detections out. No threads, no global state, no dependencies at run time. It was written to replace libpryon in
 [hassmic](https://github.com/nemethhh/echo-dot-assist/tree/rust-sound), which turns stock Echos into Home Assistant
 voice satellites, but nothing in it assumes hassmic, Home Assistant or an Echo.
 
@@ -14,6 +18,8 @@ Not affiliated with Amazon. This repository contains no Amazon code, models, fir
 model from a device you own.
 
 ## Status
+
+Sound detection:
 
 | Check | Result |
 |---|---|
@@ -23,9 +29,36 @@ model from a device you own.
 | Peak memory | Echo Dot 3: 16.8 → 3.9 MB; Echo Dot 2: 11.0 → 2.9 MB |
 | Model load | Echo Dot 3: ~85 ms; Echo Dot 2: ~60 ms |
 
-Guard sound detection only, for now. Wake word and whisper detection are planned; they use other model formats.
+Wake words (`pryon-cli validate --exact`, below, on 994 local clips: 329 real "Alexa" and 411 real "Computer"
+recordings, TTS "Alexa", "Hey Disney", "Stop" and "Ziggy", spoken commands, long speech, synthetic clips):
+
+| Check | Result |
+|---|---|
+| alexa-en-US on a PC | every event (ALEXA, HEY_DISNEY, STOP) equal to libpryon's in kind, begin, end and printed score; also with client properties set and with session ends mid-clip |
+| Firmware ALEXA on a PC | the same, outside libpryon's firmware start gate (below), which validate sets aside and counts; after a session end 0.5 s into each clip most events fall in the gate (366 of 388 set aside) |
+| Network tensors | every node output of both sets bit-equal to libpryon's own tensors, captured under qemu-arm on 4 clips |
+| armv7 build under qemu-arm | `pryon-cli wake --bits` output byte-identical to x86_64 (both sets, 106 s of real "Alexa" recordings) |
+| On the device (Echo Dot 3, Echo Dot 2) | not run yet: parity, CPU and memory against libpryon |
+
+Still pending on a device, none of it run yet (gate 1 is the PC parity above):
+
+- gate 2, parity: the engine on the Echo Dot 3 and Echo Dot 2 identical to the PC, and libpryon there identical to
+  the qemu oracle;
+- gate 3, resources: CPU per second of audio and peak memory per wake word slot against libpryon (target: 1.3× less
+  CPU or better), and the worst single feed;
+- the Echo front-end clock (`SpotterOptions::echo_stream`) against a real `micAsr` capture: so far it is checked only
+  on synthetic clips carrying every metadata version libpryon parses;
+- the flush-to-zero behaviour of the NEON and VFP kernels on the Cortex-A35 and A53: so far it is checked under
+  qemu-arm and against the ARM architecture manual.
+
+After those, hassmic's soak (both engines on the same slot for 24 h, events compared) decides whether its default
+moves to this engine for a set.
+
+Whisper detection is not implemented.
 
 ## Models
+
+### Sound detection
 
 A model is a directory with `pryon.config`, `AED.json` and `model_gcmvn.cpu.v1.q.mlp`. Two generations are
 known, both supported:
@@ -36,6 +69,49 @@ known, both supported:
 
 The type list and every threshold come from the model's `AED.json`.
 
+### Wake words
+
+A wake word set is a directory with a `pryon.manifest`. The engine executes the set's ONNX graphs as they are, and
+its keyword rules come from the set's own `kw.cfg.json`, `decoders.cfg.json` and `op.cfg.json` (thresholds,
+client-property overrides, lock periods, smoothers, auxiliary spotters, the operating state), with libpryon's
+semantics read out of the library. A new set made of known operators and rule fields needs no code, only validation.
+
+| Set | Keywords | State |
+|---|---|---|
+| firmware `/system/local/models/keyword/en-US/ALEXA` | ALEXA, STOP | validated (ALEXA) |
+| `alexa-en-US` | ALEXA, HEY_DISNEY, STOP | validated (ALEXA, STOP) |
+| `echo-en-US` | ECHO, HEY_DISNEY, STOP | loads and runs; not validated |
+| `amazon-en-US`, `computer-en-US`, `ziggy-en-US` (one set, byte-identical) | AMAZON, COMPUTER, ZIGGY, HEY_DISNEY, STOP | loads and runs; not validated |
+
+Every keyword of a set is served, HEY_DISNEY included: a HEY_DISNEY accept wakes the set like any wake word.
+`op.cfg.json` gives the set's operating state: in the en-US sets a wake word moves it from `sleep` to `awake`, STOP
+is spotted only while `awake`, and `awake` returns to `sleep` on STOP, after its timeout (175 frames) or at a session
+end.
+
+A set the engine does not fully understand is refused at load with `Error::Unsupported { file, what }` naming the
+operator and node, attribute, layout or `pryon.config` key, or rule field; it never panics and never runs part of a
+set. That covers:
+
+- the de-DE sets: `alexa-de-DE` (its decoder layout belongs to NTT score fusion, which is not implemented) and
+  `amazon-de-DE` (the older single-graph format);
+- other locales, classifiers and aggregators not in the covered sets, ONNX files with external data, operators
+  outside the 23 implemented ones (`Add, BatchNormalization, Cast, Concat, Gather, HybridConv, HybridGemm,
+  HybridLSTM, MaxPool, Mul, Neg, ReduceMax, ReduceSum, Relu, Reshape, Shape, Slice, Softmax, Squeeze, Sub, Tile,
+  Transpose, Unsqueeze`).
+
+Decoders no keyword reads (voice activity, speaker ID) are never opened; NTT fusion, watermark and fingerprint
+configuration is not run.
+
+libpryon's probabilistic accept is not reproduced: a satellite must not wake at random. In alexa-en-US's ALEXA,
+libpryon turns a score above `probabilistic-accept-threshold` (and below the accept threshold) into an accept
+(`AcceptProbabilistic`) with `probabilistic-accept-probability` 0.001, drawn from a clock-seeded generator. The
+engine follows libpryon's rule up to the draw and always reports such a score as a near miss, as libpryon does
+with the probability set to 0.
+
+Next (milestone B): validate `echo-en-US` and the shared amazon/computer/ziggy set, one record per keyword (COMPUTER
+has the 411 real recordings; AMAZON and ZIGGY only TTS so far), plus whatever operators or rule fields they turn
+out to need.
+
 ## Use
 
 ### Rust
@@ -43,6 +119,8 @@ The type list and every threshold come from the model's `AED.json`.
 ```toml
 pryon = { git = "https://github.com/nemethhh/pryon-rs" }
 ```
+
+Sound detection:
 
 ```rust
 use pryon::{SoundDetector, SoundModel};
@@ -59,11 +137,31 @@ for w in &windows {
 }
 ```
 
+Wake words:
+
+```rust
+use pryon::{DetectionKind, Spotter, SpotterModel, SpotterOptions};
+use std::{path::Path, sync::Arc};
+
+let model = Arc::new(SpotterModel::load(Path::new("/path/to/alexa-en-US"))?); // refuses what it cannot run
+let mut sp = Spotter::new(model, SpotterOptions::default())?;
+let mut found = Vec::new();
+sp.feed(&pcm, &mut found); // any chunk size
+for d in found.drain(..) {
+    if d.kind == DetectionKind::Accept {
+        println!("{} {}..{}", sp.keywords()[d.keyword], d.begin_sample, d.end_sample);
+    }
+}
+sp.set_property("AlarmState", 1); // kw.cfg threshold overrides; unknown names are ignored
+sp.reset(&mut found); // session end
+```
+
 `cargo doc --open -p pryon` documents every public item.
 
 ### C
 
-`pryon-ffi/include/pryon.h` documents the API (open, feed, type names, reset, close). Build the static library and
+`pryon-ffi/include/pryon.h` documents the API: `pryon_sound_*` (open, feed, type names, reset, close) and
+`pryon_spotter_*` (open, feed, set_property, reset, keyword names, checksum, close). Build the static library and
 link it with the native libraries rustc lists for the target
 (`cargo rustc -p pryon-ffi --release --crate-type staticlib -- --print native-static-libs`):
 
@@ -71,7 +169,8 @@ link it with the native libraries rustc lists for the target
     cc app.c target/release/libpryon_ffi.a -lgcc_s -lutil -lrt -lpthread -lm -ldl -lc         # x86_64 Linux
     armv7a-linux-androideabi24-clang app.c libpryon_ffi.a -ldl -llog -lunwind -lm -lc           # Echo (NDK r21e)
 
-`pryon-ffi/examples/sound.c` is a complete program; `cargo test` builds and runs it.
+`pryon-ffi/examples/sound.c` and `pryon-ffi/examples/spotter.c` are complete programs; `cargo test` builds and runs
+them.
 
 ### Command line
 
@@ -82,46 +181,82 @@ link it with the native libraries rustc lists for the target
 - `bench -m MODEL [--chunk N] [--speed X] CLIP.raw`: CPU per second of audio, worst single feed, peak memory;
   `--speed 1` feeds in real time
 - `rusage -- CMD ...`: run a command and report its CPU time and peak memory (to measure libpryon the same way)
-- `validate [--oracle-rootfs DIR --pryon-test PATH] [--cache DIR] [--exact] [--records DIR] [--record KEYWORD]...
-  [--speed X] [--jobs N] [--lead-ms MS] [--tail-ms MS] [-p NAME=VALUE[@SAMPLE]]... [-e SAMPLE]... MODEL CLIPS...`:
-  run libpryon (`pryon_test` under qemu-arm; `PRYON_ORACLE_ROOTFS` and `PRYON_PRYON_TEST` stand in for the two
-  flags) and the wake engine on the same `.raw` or 16 kHz mono `.wav` clips
-  (files or directories) and print every difference as `DIFF <clip> <keyword> oracle=<event|-> rust=<event|->`, then
-  a summary per keyword. Exit 0 clean, 1 differences, 2 usage or oracle errors. The oracle runs in real time
-  (`--speed 1`, the default) because libpryon's results depend on feed timing at higher speeds, `--jobs` clips at a
-  time. Both engines get each clip between `--lead-ms` (default 2500) and `--tail-ms` (default 1000) of digital
-  silence: the firmware oracle scores nothing in its first ~1.7 s, and libpryon reports an accept only ~120 ms after
-  the keyword ends, so not at the very end of a clip; events are printed in clip samples. That firmware gate comes
-  from libpryon itself: the firmware graph's conv buffers have no stored values, and libpryon starts them from
-  uninitialised heap memory (NaN, denormals, 1e12-size garbage) at the start, after every session end and after
-  every decoder restart, so its scores are NaN until that garbage has left the network (168 or 174 frames in the
-  installs measured; the garbage, and with it the length, follows the install path). The engine starts the buffers
-  from zeros and does not reproduce the garbage. So on a set whose buffers libpryon leaves uninitialised (the
-  firmware set; not the DAVS sets), and only there, validate sets aside and counts (`GATE` lines, `GATE ALLOWANCE`,
-  the record's `gate_exempt`): one-sided events, or pairs of equal kind, whose ends lie within 174 frames plus the
-  set's longest lock period after a session end or a restart both engines agree on; engine events inside the gate
-  that libpryon lacks; and, when such an event was excused before it in the clip, the events after the first
-  restart the two engines place differently (a gate-hidden accept moves the engine's restart point); without one,
-  a restart placed differently is a difference. Everything else is a difference. `-p` sets a client
-  property and `-e` ends the session (`Spotter::reset`, libpryon's `PryonDecoder_SessionEnd`) before the given clip
-  sample, in both engines. libpryon's probabilistic accept (a random accept of a near miss, drawn from a
-  clock-seeded generator) is switched off for the oracle only: it runs a copy of the set whose
-  `probabilistic-accept-probability` values are 0 (symlinks plus the edited `kw.cfg.json`), which is the field's
-  only effect; the engine never draws. When libpryon restarts its decoder after too many accepts, `pryon_test`
-  creates a new one and goes on from the sample after the triggering frame, as the engine does. `--cache` keeps
-  oracle outputs as `<set checksum>/<key>.txt`, the key covering the padded clip, the commands, the speed and the
-  harness version. On a clean `--exact` run (every event's kind, begin and end equal, and the engine's score printed
-  as `pryon_test` prints it, C `%g`, equal to the oracle's string) it writes `validated/<checksum>.<KEYWORD>.rec`
-  for each keyword the oracle accepted at least once, also one accepted only on synthetic clips (HEY_DISNEY on the
-  TTS clips); `--record KEYWORD` (a keyword the set serves) limits it to the keywords chosen: the set, the
-  keyword, the clip count and digest, the padding, accept and near-miss counts, the events the gate allowance set
-  aside, date and pryon-rs commit. A clip the oracle did not hear to the end is an error, so it never yields a
-  record.
-- `synth NAME OUT.raw`, `synth-model DIR`: synthetic test clips and a random-weight model in the real format
+- `wake -m SET [-p NAME=VALUE[@SAMPLE]]... [--reset-at SAMPLE]... [--chunk N] [--bits] CLIP.raw`: print the wake
+  engine's detections (`EVENT` lines) and decoder restarts; `-p` sets a client property and `--reset-at` ends the
+  session before the given sample
+- `bench-wake -m SET [--chunk N] CLIP.raw`: as `bench`, for a wake word set
+- `inspect SET`: what the loader read from a wake word set (stages, spotters, thresholds, operating states)
+- `validate ... MODEL CLIPS...`: compare the wake engine with libpryon, below
+- `synth NAME OUT.raw`, `synth-model DIR`, `synth-wake-set fw|davs DIR [--seed N] [--force SCORE]`: synthetic test
+  clips, a random-weight sound model and random-weight wake word sets in the real formats
+- `wake-dump -m SET [--lfbe OUT.f32] [--out DIR] CLIP.raw`: the front end's frames and every stage output, for
+  comparisons with a reference
 
 Clips are raw 16 kHz mono s16le.
 
+### Validating a wake word set
+
+    pryon-cli validate [--oracle-rootfs DIR --pryon-test PATH] [--cache DIR] [--exact] [--records DIR]
+        [--record KEYWORD]... [--speed X] [--jobs N] [--lead-ms MS] [--tail-ms MS] [-p NAME=VALUE[@SAMPLE]]...
+        [-e SAMPLE]... MODEL CLIPS...
+
+runs libpryon (`pryon_test` from [echo-dot-assist](https://github.com/nemethhh/echo-dot-assist)
+`src/tools/pryon_test.c`, branch `rust-wake`, under qemu-arm against a Fire OS root filesystem;
+`PRYON_ORACLE_ROOTFS` and `PRYON_PRYON_TEST` stand in for the two flags) and the wake engine on the same `.raw` or
+16 kHz mono `.wav` clips (files or directories) and prints every difference as
+`DIFF <clip> <keyword> oracle=<event|-> rust=<event|->`, then a summary per keyword.
+Exit 0 clean, 1 differences, 2 usage or oracle errors.
+
+- **Timing.** The oracle runs in real time (`--speed 1`, the default), `--jobs` clips at a time: at higher speeds
+  libpryon's results depend on feed timing. `--cache` keeps oracle outputs as `<set checksum>/<key>.txt`, the key
+  covering the padded clip, the commands, the speed and the harness version.
+- **Padding.** Both engines get each clip between `--lead-ms` (default 2500) and `--tail-ms` (default 1000) of
+  digital silence: the lead covers libpryon's firmware start gate (below), the tail its reporting delay (an accept
+  comes ~120 ms after the keyword ends, so not at the very end of a clip). Events are printed in clip samples.
+- **Commands.** `-p` sets a client property and `-e` ends the session (`Spotter::reset`, libpryon's
+  `PryonDecoder_SessionEnd`) before the given clip sample, in both engines. When libpryon restarts its decoder after
+  too many accepts of one keyword (`restart-trigger`, default 12 within 60 s), `pryon_test` creates a new one and goes
+  on from the sample after the triggering frame, as the engine does.
+- **Probabilistic accept.** The oracle runs on a copy of the set whose `probabilistic-accept-probability` values are
+  0 (symlinks plus the edited `kw.cfg.json`), which is the field's only effect; the engine never draws.
+- **Exact.** `--exact` compares every event's kind, begin and end and the engine's score printed as `pryon_test`
+  prints it (C `%g`) with the oracle's string.
+
+**The firmware start gate.** The firmware graph's conv buffers have no stored values. libpryon starts them from
+uninitialised heap memory (NaN, denormals, 1e12-size garbage) at the start, after every session end
+(`PryonDecoder_SessionEnd`) and after every decoder restart, so the resulting NaNs keep libpryon silent until that
+garbage has left the network: the first 168 or 174 frames (about 1.7 s) in the installs measured (the garbage, and with
+it the length, follows the install path). The engine starts the buffers from zeros, the only defined state, and does not
+reproduce the garbage: there is no rule in the model files to follow. So on a set whose buffers libpryon leaves
+uninitialised (the firmware set; not the DAVS sets), and only there, validate sets aside the following and counts them
+(`GATE` lines per clip, `GATE ALLOWANCE` in the summary, `gate_exempt` in the record); the gate at the start of a clip
+falls in the leading silence instead:
+
+- one-sided events, or pairs of equal kind, whose ends lie within 174 frames plus the set's longest lock period
+  after a session end or a restart both engines place at the same sample;
+- engine events within 174 frames of such a point that libpryon lacks;
+- the events after the first restart the two engines place differently, but only when an event of the two kinds
+  above was set aside before it in the clip (a gate-hidden accept moves the engine's restart point); without one, a
+  restart placed differently is a difference.
+
+Everything else is a difference.
+
+**Records.** A clean `--exact` run writes `validated/<checksum>.<KEYWORD>.rec` (or under `--records DIR`) for each
+keyword the oracle accepted at least once, also one accepted only on synthetic clips (HEY_DISNEY on TTS clips);
+`--record KEYWORD` (a keyword the set serves) limits it to the keywords chosen. A record holds the set, the keyword,
+the clip count and digest, the padding, accept and near-miss counts, the events the gate allowance set aside
+(`gate_exempt`), the date and the pryon-rs commit. A clip the oracle did not hear to the end is an error, so it never
+yields a record. hassmic builds its list of validated (set, keyword) pairs from `validated/`. The committed records:
+
+| Record | Clips | Accepts | Near misses | Set aside by the gate |
+|---|---|---|---|---|
+| `74a26372ecb79fc6e5954d9f9fff29a3.ALEXA` (firmware) | 994 | 434 | 35 | 646, all from one long-speech clip after a restart moved by the gate |
+| `3e1c0db2cc5bdd846dba970750af8c15.ALEXA` (alexa-en-US) | 994 | 670 | 22 | 0 |
+| `3e1c0db2cc5bdd846dba970750af8c15.STOP` (alexa-en-US) | 994 | 3 | 0 | 0 |
+
 ## What a result means
+
+### Sound detection
 
 - A window is 159 680 samples (998 frames of 10 ms, 9.98 s), counted from the first sample fed. Its result comes
   out of the `feed` call that delivers the 240th sample after the window's end. A trailing partial window gives
@@ -136,21 +271,44 @@ Clips are raw 16 kHz mono s16le.
 These rules were measured against libpryon's own output, including its quirks (digital silence, how −32768 is
 counted).
 
+### Wake words
+
+- A `Detection` has the keyword (an index into `keywords()`), its kind (`Accept`, `AcceptAuxiliary` for an accept
+  by the keyword's verifier spotter, `NearMiss`), the score, and `begin_sample`/`end_sample` counted from the first
+  sample fed to the `Spotter`; `reset` does not restart that count.
+- `set_property(name, value)` applies from the first 10 ms frame that starts after the samples fed so far.
+- `reset` is libpryon's session end: a pending near miss is reported, then the front end, network, rules and
+  operating state restart; client properties stay.
+- libpryon restarts its decoder by itself after `restart-trigger` accepts of one keyword; the engine does the same
+  (`Spotter::origin` moves to the sample after the triggering frame).
+- With `SpotterOptions::echo_stream` (C: `PRYON_SPOTTER_ECHO_STREAM`), for an Echo's `micAsr` stream that carries
+  the front end's clock in its lowest bits, each detection gets `afe`: libpryon's
+  `timestamp_before_ww_start/_end`. Off by default; other platforms have no such marks.
+
 ## How it works
 
-Audio → log mel filterbank, 20 bins, 25 ms frames every 10 ms (the same float operation order as libpryon's
-Kaldi/Ne10 front end) → per-window mean normalisation with libpryon's handling of digital silence → an int8
-dynamic-quantised LSTM trunk (20→64) and nine LSTM heads (64→96) on every other frame → nine float outputs routed to
-the model's twelve types → sigmoid. Every float operation is rounded where libpryon rounds it: no fused
+Sound detection: audio → log mel filterbank, 20 bins, 25 ms frames every 10 ms (the same float operation order as
+libpryon's Kaldi/Ne10 front end) → per-window mean normalisation with libpryon's handling of digital silence → an
+int8 dynamic-quantised LSTM trunk (20→64) and nine LSTM heads (64→96) on every other frame → nine float outputs
+routed to the model's twelve types → sigmoid. Every float operation is rounded where libpryon rounds it: no fused
 multiply-add, libpryon's exp and reciprocal approximations, its quantiser's rounding. On 32-bit ARM, NEON assembly
 does the heavy parts. Each assembly kernel has a portable Rust twin and a test that the two agree, and the portable
 code runs on every other target.
 
-The wake engine's int8 product (libpryon's CPUNK) has its own armv7 kernels: the int8 dot product (weights padded at
-load to a multiple of 16 columns and 4 rows), CPUNK's exp, and the LSTM cell's `fmaf`. libpryon fuses these two, so
-the kernels do too: NEON `vfma` for the exp, which always flushes subnormals as libpryon's does, and VFP `vfma` for
-`fmaf`, run with FPSCR's FZ, DN and rounding mode cleared so it is not flushed, as bionic's `fmaf` is not. Their
-portable twins compute the fused results exactly in integer arithmetic.
+Wake words: audio → the same front end with the set's 64 bins over 80–7200 Hz → a small ONNX executor (hand-written
+protobuf reader, graphs checked at load against the implemented operators and attributes, shapes resolved once,
+streaming state carried between steps) running the set's encoder and decoders, or the firmware's single graph →
+libpryon's score smoothers and keyword rules → detections. The `Hybrid*` operators follow libpryon's int8 product
+(CPUNK: per-row activation quantisation, an exact int8 dot product, its dequantisation order), and every float
+operator follows libpryon's operation order, including its flush-to-zero of subnormals, which the engine applies in
+software on every target. Fused multiply-add is used only where libpryon fuses: the LSTM cell's and
+BatchNormalization's `fmaf` and CPUNK's exp polynomial. The portable code computes these fused results exactly in
+integer arithmetic (no FMA instruction, no `f64`, no libm).
+
+The wake engine has its own armv7 kernels: the int8 dot product (weights padded at load to a multiple of 16 columns
+and 4 rows), CPUNK's exp, and the LSTM cell's `fmaf`. NEON `vfma` runs the exp and always flushes subnormals as
+libpryon's does; VFP `vfma` runs `fmaf` with FPSCR's FZ, DN and rounding mode cleared so it is not flushed, as
+bionic's `fmaf` is not.
 
 ## Building for the Echo
 
@@ -179,15 +337,29 @@ linker. The `unshare` is needed because bionic hangs under bare qemu-arm:
 
     cargo test --workspace
 
-That runs everything that needs no Amazon files. Tests that need a model or local clips print `skipped: set VAR`
-unless these are set:
+That runs everything that needs no Amazon files. Tests that need a model, libpryon or local clips print
+`skipped: set VAR` unless these are set:
 
-- `PRYON_AED_MODEL_DIR`: the firmware model directory
-- `PRYON_AED_DAVS_DIR`: the newer model directory
+- `PRYON_AED_MODEL_DIR`: the firmware sound model directory
+- `PRYON_AED_DAVS_DIR`: the newer sound model directory
 - `PRYON_CLIPS_DIR`: a directory of your own clips, each `<name>.raw` with libpryon's output beside it as
   `<name>_out.txt` (newer model) and/or `<name>_fw_out.txt` (firmware model)
 - `PRYON_ORACLE_OVERRIDE_DIR`: compare against libpryon outputs in this directory (same `{fw,davs}/<clip>.txt`
   layout) instead of the committed ones, e.g. outputs produced on a device
+- `PRYON_WAKE_FW_DIR`: the firmware ALEXA directory (`/system/local/models/keyword/en-US/ALEXA`)
+- `PRYON_WAKE_SETS_DIR`: a directory holding the DAVS sets as `<word>-en-US/` (and `alexa-de-DE/`, `amazon-de-DE/`
+  for the refusal tests)
+- `PRYON_ORACLE_ROOTFS`, `PRYON_PRYON_TEST`: a Fire OS root filesystem and an armv7 `pryon_test` built against it,
+  for the tests that run libpryon under qemu-arm
+- `PRYON_WAKE_CORPUS`: a directory of `<group>/<clip>.raw` clips; the corpus test compares both engines on every
+  clip, with the oracle outputs of a `validate --cache` run kept in `validate-v2/` beside it
+  (`PRYON_CORPUS_PARTIAL=1` accepts a cache that lacks some clips)
+- `PRYON_PYPRYON_REF`: per-step stage outputs of [pypryon](https://github.com/nemethhh/pryon-wyoming), the
+  intermediate reference, as `<set checksum>/...`
+- `PRYON_CAPTURE_DIR`: libpryon's own tensors per step and node, captured under qemu-arm, as
+  `<set checksum>/<clip>/` (`pcm.raw`, `<stage>/<step>/shape.json` and `<tensor>.f32`)
+- `PRYON_AFE_CLIP`: an Echo `micAsr` capture (or a directory of `.raw` clips) for the front-end clock test, with
+  `PRYON_ORACLE_ROOTFS` and `PRYON_PRYON_TEST`
 
 ### Oracle fixtures
 
@@ -205,15 +377,19 @@ dropped audio. The tests compare the printed scores (6 decimals), the decisions,
 `numSamplesAboveEnergyThreshold`. `davs/bits/<clip>.txt` adds the exact score bits of each window, from a Python
 reference of the recipe that matches the printed scores.
 
-On a PC, very small intermediate values are not flushed to zero, whereas NEON flushes them (as libpryon does on the
-device). No fixture is affected. Run on the device to confirm parity there.
+In the sound detector on a PC, very small intermediate values are not flushed to zero, whereas NEON flushes them (as
+libpryon does on the device). No fixture is affected. Run on the device to confirm parity there.
 
-### Wake oracle fixtures
+### Wake fixtures
+
+`pryon/tests/fixtures/lfbe64/` are the 64-bin front end's frames on the first 3 s of the `lfbe/` clips, from
+`pryon_lfbe.c` (the C front end, with the wake word models' bins and mel range). `hybrid/` holds testkit-built
+`Hybrid*` graphs with random weights (`<case>.onnx`, inputs `<case>.in.f32`, written by the ignored test
+`write_fixtures`) and their outputs from pypryon's CPUNK rewrite run in onnxruntime (`<case>.out.f32`).
 
 `pryon/tests/fixtures/wake/{fw,alexa}/<clip>.txt` are the wake events of `pryon_test` (echo-dot-assist
 `src/tools/pryon_test.c`) for the firmware ALEXA set and alexa-en-US on the synthetic clips, run as above with
-`-m SET/pryon.manifest -x 1000`. Their tests need `PRYON_WAKE_FW_DIR` (the firmware ALEXA directory) and
-`PRYON_WAKE_SETS_DIR` (a directory holding `alexa-en-US/`).
+`-m SET/pryon.manifest -x 1000`. Their tests need `PRYON_WAKE_FW_DIR` and `PRYON_WAKE_SETS_DIR`.
 
 `synth-{fw,davs}/<clip>.txt` are libpryon's events for the synthetic sets of `pryon-cli synth-wake-set fw|davs DIR
 --force 0.99` on the same clips; they probe libpryon's keyword rules. They were run in real time (`-x 1`): a set
@@ -226,11 +402,10 @@ aggregator, the restart trigger); every one was run twice with identical events.
 `quiet_tones`, whose low bits libpryon reads as a frame without a clock); their tests compare
 `SpotterOptions::echo_stream`'s `Detection::afe` with libpryon's `timestamp_before_ww_start/end`. On the firmware
 set the keyword end of events in libpryon's start window comes from uninitialised network state, so only whether
-times exist is compared there. Env-gated `afe_matches_oracle_meta` runs libpryon and the engine on `PRYON_AFE_CLIP`
-(an Echo `micAsr` capture, or a directory of `.raw` clips) with `PRYON_ORACLE_ROOTFS`, `PRYON_PRYON_TEST` and the
-real sets.
+times exist is compared there.
 In all wake fixtures the `META` lines keep only the `kw*` fields, `activeKeywords`, `clientProperties` (which also
 carries libpryon's `PryonLastReceivedSampleIndex`), the LSB-metadata flags and, in `synth-afe/`, the AFE times.
+Outputs on real recordings and captured tensors stay local: only events on synthetic clips and sets are committed.
 
 ## Third-party notices
 
