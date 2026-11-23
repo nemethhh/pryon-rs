@@ -14,6 +14,7 @@ mod kernels;
 mod lfbe_tables;
 pub mod mlp;
 mod num;
+#[doc(hidden)]
 pub mod onnx;
 mod qlstm;
 pub mod sound;
