@@ -267,7 +267,7 @@ pub(crate) fn dot_i8_rows(w: &[i8], cols: usize, q: &[i8], out: &mut [i32]) {
     }
 }
 
-// CPUNK exp (num::cpunk_exp): clamp, n, log2e, int bias, C1, C2, P1 held; P0 and the Horner terms reloaded each pass.
+// CPUNK exp (num::cpunk_exp): clamps, 1.5·2²³ rounding, log2e, int bias, C1, C2, top coefficient held; Horner terms reloaded.
 static CPUNK_EXP_K: [u32; 12] = [
     0x42B1_7217, 0xC2AE_AC4F, 0x4B40_0000, 0x3FB8_AA3B, 0xB4C0_0000, 0xBF31_7200, 0xB5BF_BE8E, 0x3C08_0161,
     0x3D2B_A65B, 0x3E2A_ACD3, 0x3EFF_FEC6, 0x3F7F_FFFC,
@@ -276,20 +276,25 @@ static CPUNK_EXP_K: [u32; 12] = [
 pub(crate) fn cpunk_exp_inplace(x: &mut [f32]) {
     let n4 = x.len() & !3;
     if n4 > 0 {
-        cpunk_exp4(x.as_mut_ptr(), n4);
+        // SAFETY: n4 is a nonzero multiple of 4 within x.
+        unsafe { cpunk_exp4(x.as_mut_ptr(), n4) };
     }
     if n4 < x.len() {
         let mut t = [0f32; 4];
         let tail = &mut x[n4..];
         t[..tail.len()].copy_from_slice(tail);
-        cpunk_exp4(t.as_mut_ptr(), 4);
+        // SAFETY: t holds 4 floats.
+        unsafe { cpunk_exp4(t.as_mut_ptr(), 4) };
         tail.copy_from_slice(&t[..tail.len()]);
     }
 }
 
-/// `cpunk_exp` over `n` (a nonzero multiple of 4) floats at `p`.
-fn cpunk_exp4(p: *mut f32, n: usize) {
-    // SAFETY: the callers pass n <= the length of the slice at p; reads and writes p[..n] four lanes at a time.
+/// `cpunk_exp` over `n` floats at `p`.
+///
+/// # Safety
+/// `n` is a nonzero multiple of 4 and `p[..n]` is valid for reads and writes.
+unsafe fn cpunk_exp4(p: *mut f32, n: usize) {
+    // SAFETY: per the contract; reads and writes p[..n] four lanes at a time.
     unsafe {
         asm!(
             "vld1.32 {{d8[], d9[]}}, [{k}]!",
@@ -525,20 +530,25 @@ pub(crate) fn cpunk_tanh_of_inplace(e: &mut [f32]) {
 fn cpunk_act_of(e: &mut [f32], tanh: bool) {
     let n4 = e.len() & !3;
     if n4 > 0 {
-        cpunk_act_of4(e.as_mut_ptr(), n4, tanh);
+        // SAFETY: n4 is a nonzero multiple of 4 within e.
+        unsafe { cpunk_act_of4(e.as_mut_ptr(), n4, tanh) };
     }
     if n4 < e.len() {
         let mut t = [1f32; 4];
         let tail = &mut e[n4..];
         t[..tail.len()].copy_from_slice(tail);
-        cpunk_act_of4(t.as_mut_ptr(), 4, tanh);
+        // SAFETY: t holds 4 floats.
+        unsafe { cpunk_act_of4(t.as_mut_ptr(), 4, tanh) };
         tail.copy_from_slice(&t[..tail.len()]);
     }
 }
 
-/// Over `n` (a nonzero multiple of 4) floats at `p`.
-fn cpunk_act_of4(p: *mut f32, n: usize, tanh: bool) {
-    // SAFETY: the callers pass n <= the length of the slice at p; reads and writes p[..n]; FPSCR is restored.
+/// Over `n` floats at `p`.
+///
+/// # Safety
+/// `n` is a nonzero multiple of 4 and `p[..n]` is valid for reads and writes.
+unsafe fn cpunk_act_of4(p: *mut f32, n: usize, tanh: bool) {
+    // SAFETY: per the contract; reads and writes p[..n]; FPSCR is restored.
     unsafe {
         asm!(
             // VFP vdiv honours FPSCR: FZ on, DN and RMode off (nearest), as the division libpryon runs

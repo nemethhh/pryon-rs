@@ -17,7 +17,7 @@ pub(crate) use armv7::cpunk_exp_inplace;
 #[cfg(not(all(pryon_neon, target_arch = "arm")))]
 pub(crate) use portable::cpunk_exp_inplace;
 
-/// `c[i] = num::fmaf(a[i], b[i], c[i])`, unflushed as bionic's fmaf, bit for bit whatever the caller's FPSCR.
+/// `c[i] = num::fmaf(a[i], b[i], c[i])`, unflushed as bionic's fmaf, bit for bit (NaN payloads aside) whatever the FPSCR.
 #[cfg(all(pryon_neon, target_arch = "arm"))]
 pub(crate) use armv7::fmaf_inplace;
 #[cfg(not(all(pryon_neon, target_arch = "arm")))]
@@ -467,16 +467,18 @@ mod tests {
         e.extend((0..2000u32).map(|i| c(0x0080_0000 + i * 4099)));
         // the caller's FPSCR as found, then with DN, FZ and round-towards-zero set
         for bits in [0, 0x03C0_0000] {
-            for n in [1, 2, 3, 5, 6, 7, e.len()] {
+            for n in [1, 2, 3, 4, 5, 6, 7, 8, e.len()] {
                 for tanh in [false, true] {
                     let (mut a, mut b) = (e[..n].to_vec(), e[..n].to_vec());
-                    with_fpscr(bits, || {
+                    let after = with_fpscr(bits, || {
                         if tanh {
                             super::cpunk_tanh_of_inplace(&mut a)
                         } else {
                             super::cpunk_sigmoid_of_inplace(&mut a)
                         }
+                        fpscr()
                     });
+                    assert_eq!(after & 0x03C0_0000, bits, "FPSCR not restored");
                     if tanh {
                         super::portable::cpunk_tanh_of_inplace(&mut b)
                     } else {
